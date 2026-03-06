@@ -278,6 +278,8 @@ CreateToggle(SecESP, "Ativar ESP", false, function(s)
 end)
 
 -- [[ PÁGINA: FARM ]]
+
+-- MELHORIA: AUTO FARM NPC (RESGATANDO LÓGICA ANTIGA E FLUIDA)
 local SecAF = CreateSection(PageFarm, "Auto Farm NPC")
 local FarmDir, FarmTarget, FarmOffset, FarmActive = "workspace.NPCs", "", -5, false
 CreateTextBox(SecAF, "Diretório NPCs", "workspace.NPCs", function(v) FarmDir = v end)
@@ -288,67 +290,49 @@ CreateButton(SecAF, "Atualizar Lista", function()
     FarmDropdown.UpdateList(list)
     if #list > 0 then FarmTarget = list[1] end
 end)
-CreateTextBox(SecAF, "Offset Altura", "-5", function(v) FarmOffset = tonumber(v) or -5 end)
-CreateToggle(SecAF, "Ativar Auto Farm", false, function(s) FarmActive = s end)
+CreateTextBox(SecAF, "Altura Offset", "-5", function(v) FarmOffset = tonumber(v) or -5 end)
+CreateToggle(SecAF, "Ativar Auto Farm NPC", false, function(s) FarmActive = s end)
 
--- OTIMIZAÇÃO: TELEPORT DE ITENS (ABAIXO DO NPC)
+-- MELHORIA: TELEPORT DE ITENS (ADICIONADO LOOP E PIVOTTO DIRETO)
 local SecTP = CreateSection(PageFarm, "Teleport de Itens")
-local ItemDir, ItemTarget = "workspace.Map", ""
+local ItemDir, ItemTarget, ItemLoop = "workspace.Map", "", false
 CreateTextBox(SecTP, "Diretório Itens", "workspace.Map", function(v) ItemDir = v end)
-local ItemDropdown = CreateDropdown(SecTP, "Selecionar", {}, function(opt) ItemTarget = opt end)
+local ItemDropdown = CreateDropdown(SecTP, "Selecionar Item", {}, function(opt) ItemTarget = opt end)
 CreateButton(SecTP, "Atualizar Itens", function()
     local folder = GetPathFromString(ItemDir); local list = {}
     if folder then for _, v in pairs(folder:GetChildren()) do table.insert(list, v.Name) end end
     ItemDropdown.UpdateList(list)
     if #list > 0 then ItemTarget = list[1] end
 end)
-CreateButton(SecTP, "Teleportar (Instantâneo)", function()
+CreateButton(SecTP, "Teleportar (Único)", function()
     local folder = GetPathFromString(ItemDir)
     local char = LocalPlayer.Character
     if folder and ItemTarget ~= "" and char then 
         local targetObj = folder:FindFirstChild(ItemTarget) 
         if targetObj then 
-            -- PivotTo é mais rápido e seguro para modelos e partes
             char:PivotTo(targetObj:IsA("Model") and targetObj:GetPivot() or targetObj.CFrame)
         end 
     end
 end)
+CreateToggle(SecTP, "Loop Teleport Item", false, function(s) ItemLoop = s end)
 
--- AJUSTE: COLETA AUTOMÁTICA OTIMIZADA
+-- COLETA AUTOMÁTICA OTIMIZADA
 local SecCol = CreateSection(PageFarm, "Coleta Automática (Touch)")
 local ColetaDir, LoopColeta = "workspace.Drops", false
-
 CreateTextBox(SecCol, "Diretório de Itens", "Ex: workspace.Drops", function(v) ColetaDir = v end)
-
 local function ExecutarColeta()
     local folder = GetPathFromString(ColetaDir)
     local char = LocalPlayer.Character
-    if not folder or not char then return end
-    
-    local root = char:FindFirstChild("HumanoidRootPart")
-    if not root then return end
-    
-    -- Função interna para processar cada parte
-    local function coletarParte(parte)
-        if parte:IsA("BasePart") then
-            firetouchinterest(root, parte, 0)
-            -- task.wait(0.01) -- Removido do loop interno para máxima velocidade
-            firetouchinterest(root, parte, 1)
+    if not folder or not char or not char:FindFirstChild("HumanoidRootPart") then return end
+    local root = char.HumanoidRootPart
+    for _, obj in ipairs(folder:GetDescendants()) do
+        if obj:IsA("BasePart") then
+            firetouchinterest(root, obj, 0)
+            firetouchinterest(root, obj, 1)
         end
     end
-
-    -- GetDescendants pega tudo dentro de pastas ou modelos de uma vez
-    for _, obj in ipairs(folder:GetDescendants()) do
-        coletarParte(obj)
-    end
 end
-
-CreateButton(SecCol, "Coletar Tudo Agora", function()
-    task.spawn(function()
-        pcall(ExecutarColeta)
-    end)
-end)
-
+CreateButton(SecCol, "Coletar Tudo Agora", function() task.spawn(function() pcall(ExecutarColeta) end) end)
 CreateToggle(SecCol, "Loop Coletar Tudo", false, function(s) LoopColeta = s end)
 
 -- [[ LÓGICA DE DRAG E LOOPS ]]
@@ -387,27 +371,58 @@ RunService.Heartbeat:Connect(function()
     end
 end)
 
--- LOOP DE FARM E COLETA OTIMIZADO
+-- LOOP PRINCIPAL DE FARM E TELEPORT (VELOCIDADE MÁXIMA 0.01s)
 task.spawn(function()
     while true do
+        -- LÓGICA DE FARM NPC (RESGATADA)
         if FarmActive and FarmTarget ~= "" then
             pcall(function()
-                local folder = GetPathFromString(FarmDir)
-                if folder and LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
-                    local t = folder:FindFirstChild(FarmTarget)
-                    if t and t:FindFirstChild("HumanoidRootPart") then 
-                        LocalPlayer.Character.HumanoidRootPart.CFrame = CFrame.new(t.HumanoidRootPart.Position + Vector3.new(0, FarmOffset, 0), t.HumanoidRootPart.Position) 
+                local char = LocalPlayer.Character
+                local root = char and char:FindFirstChild("HumanoidRootPart")
+                if root then
+                    local targetNPC = nil
+                    -- 1. Procura no diretório definido (Rápido)
+                    local folder = GetPathFromString(FarmDir)
+                    if folder then targetNPC = folder:FindFirstChild(FarmTarget) end
+                    
+                    -- 2. Se não achou, procura em todo o Workspace (Segurança do script antigo)
+                    if not targetNPC then
+                        for _, obj in ipairs(workspace:GetDescendants()) do
+                            if obj.Name == FarmTarget and obj:FindFirstChild("HumanoidRootPart") then
+                                targetNPC = obj
+                                break
+                            end
+                        end
+                    end
+
+                    if targetNPC and targetNPC:FindFirstChild("HumanoidRootPart") then
+                        local npcRoot = targetNPC.HumanoidRootPart
+                        local targetPos = npcRoot.Position + Vector3.new(0, FarmOffset, 0)
+                        -- Aplica CFrame direto com orientação (Resgatado do script original)
+                        root.CFrame = CFrame.new(targetPos, npcRoot.Position)
                     end
                 end
             end)
         end
-        
-        if LoopColeta then 
-            pcall(ExecutarColeta) 
-            task.wait(0.5) -- Pausa para evitar lag no Delta/Mobile
-        else
-            task.wait(0.1) 
+
+        -- LÓGICA DE TELEPORT ITEM (LOOP)
+        if ItemLoop and ItemTarget ~= "" then
+            pcall(function()
+                local folder = GetPathFromString(ItemDir)
+                local char = LocalPlayer.Character
+                if folder and char then
+                    local targetObj = folder:FindFirstChild(ItemTarget)
+                    if targetObj then
+                        char:PivotTo(targetObj:IsA("Model") and targetObj:GetPivot() or targetObj.CFrame)
+                    end
+                end
+            end)
         end
+
+        -- LÓGICA DE COLETA (SE ATIVO)
+        if LoopColeta then pcall(ExecutarColeta) end
+
+        task.wait(0.01) -- Velocidade máxima resgatada
     end
 end)
 
