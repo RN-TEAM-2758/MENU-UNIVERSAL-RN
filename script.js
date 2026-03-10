@@ -18,6 +18,7 @@ local Theme = {
 
 -- [[ VARIÁVEIS DE ESTADO E LÓGICA ]]
 local DropdownSignals = {}
+
 local function GetPathFromString(str)
     local success, result = pcall(function()
         local path = game
@@ -25,6 +26,19 @@ local function GetPathFromString(str)
             path = path[segment]
         end
         return path
+    end)
+    return success and result or nil
+end
+
+-- NOVA FUNÇÃO: Avalia strings complexas como código Lua (ex: workspace.Map:GetChildren()[6])
+local function EvaluatePath(pathStr)
+    if pathStr == "" then return nil end
+    local success, result = pcall(function()
+        -- Usamos loadstring para retornar o resultado da expressão
+        local func = loadstring("return " .. pathStr)
+        if func then
+            return func()
+        end
     end)
     return success and result or nil
 end
@@ -172,6 +186,7 @@ function CreateTextBox(parent, text, placeholder, callback)
     local box = Instance.new("TextBox", base)
     box.Size = UDim2.new(0.55, 0, 0, 28); box.Position = UDim2.new(0.45, 0, 0.5, -14); box.BackgroundColor3 = Theme.Button
     box.Text = ""; box.PlaceholderText = placeholder; box.TextColor3 = Theme.Text; box.Font = Enum.Font.Gotham; box.TextSize = 12
+    box.ClearTextOnFocus = false -- Agora não apaga o que escreves ao clicares!
     Instance.new("UICorner", box).CornerRadius = UDim.new(0, 6)
     box.FocusLost:Connect(function(enter) if enter then callback(box.Text) end end)
 end
@@ -279,7 +294,7 @@ end)
 
 -- [[ PÁGINA: FARM ]]
 
--- MELHORIA: AUTO FARM NPC (RESGATANDO LÓGICA ANTIGA E FLUIDA)
+-- AUTO FARM NPC
 local SecAF = CreateSection(PageFarm, "Auto Farm NPC")
 local FarmDir, FarmTarget, FarmOffset, FarmActive = "workspace.NPCs", "", -5, false
 CreateTextBox(SecAF, "Diretório NPCs", "workspace.NPCs", function(v) FarmDir = v end)
@@ -293,10 +308,12 @@ end)
 CreateTextBox(SecAF, "Altura Offset", "-5", function(v) FarmOffset = tonumber(v) or -5 end)
 CreateToggle(SecAF, "Ativar Auto Farm NPC", false, function(s) FarmActive = s end)
 
--- MELHORIA: TELEPORT DE ITENS (ADICIONADO LOOP E PIVOTTO DIRETO)
+-- TELEPORT DE ITENS (COM CAMINHO DIRETO OU LISTA)
 local SecTP = CreateSection(PageFarm, "Teleport de Itens")
 local ItemDir, ItemTarget, ItemLoop = "workspace.Map", "", false
-CreateTextBox(SecTP, "Diretório Itens", "workspace.Map", function(v) ItemDir = v end)
+local ItemDirectPath = ""
+
+CreateTextBox(SecTP, "Diretório da Lista", "workspace.Map", function(v) ItemDir = v end)
 local ItemDropdown = CreateDropdown(SecTP, "Selecionar Item", {}, function(opt) ItemTarget = opt end)
 CreateButton(SecTP, "Atualizar Itens", function()
     local folder = GetPathFromString(ItemDir); local list = {}
@@ -304,19 +321,106 @@ CreateButton(SecTP, "Atualizar Itens", function()
     ItemDropdown.UpdateList(list)
     if #list > 0 then ItemTarget = list[1] end
 end)
+CreateTextBox(SecTP, "Caminho Direto", "Ex: workspace.Map:GetChildren()[6]", function(v) ItemDirectPath = v end)
+
+local function GetTPTarget()
+    if ItemDirectPath ~= "" then
+        return EvaluatePath(ItemDirectPath) -- Avalia o código passado para achar o alvo exato
+    else
+        local folder = GetPathFromString(ItemDir)
+        if folder and ItemTarget ~= "" then return folder:FindFirstChild(ItemTarget) end
+    end
+    return nil
+end
+
 CreateButton(SecTP, "Teleportar (Único)", function()
-    local folder = GetPathFromString(ItemDir)
     local char = LocalPlayer.Character
-    if folder and ItemTarget ~= "" and char then 
-        local targetObj = folder:FindFirstChild(ItemTarget) 
-        if targetObj then 
-            char:PivotTo(targetObj:IsA("Model") and targetObj:GetPivot() or targetObj.CFrame)
-        end 
+    local targetObj = GetTPTarget()
+    if targetObj and char then 
+        char:PivotTo(targetObj:IsA("Model") and targetObj:GetPivot() or targetObj.CFrame)
     end
 end)
 CreateToggle(SecTP, "Loop Teleport Item", false, function(s) ItemLoop = s end)
 
--- COLETA AUTOMÁTICA OTIMIZADA
+-- SISTEMA DE TWEEN MOVE (IR VOANDO ATÉ O ITEM/NPC)
+local SecTween = CreateSection(PageFarm, "Movimentação Suave (Tween)")
+local TweenDir, TweenTarget, TweenSpeed, TweenLoop = "workspace.Map", "", 100, false
+local TweenDirectPath = ""
+local TweenNoclipConn, activeTween, antiFallBody
+local isTweening = false
+
+CreateTextBox(SecTween, "Diretório da Lista", "workspace.Map", function(v) TweenDir = v end)
+local TweenDropdown = CreateDropdown(SecTween, "Selecionar Alvo", {}, function(opt) TweenTarget = opt end)
+CreateButton(SecTween, "Atualizar Lista", function()
+    local folder = GetPathFromString(TweenDir); local list = {}
+    if folder then for _, v in pairs(folder:GetChildren()) do table.insert(list, v.Name) end end
+    TweenDropdown.UpdateList(list)
+    if #list > 0 then TweenTarget = list[1] end
+end)
+CreateTextBox(SecTween, "Caminho Direto", "Ex: workspace.Map:GetChildren()[6]", function(v) TweenDirectPath = v end)
+CreateTextBox(SecTween, "Velocidade do Voo", "Ex: 100", function(v) TweenSpeed = tonumber(v) or 100 end)
+
+local function StopTween()
+    if activeTween then activeTween:Cancel() activeTween = nil end
+    if antiFallBody then antiFallBody:Destroy() antiFallBody = nil end
+    if TweenNoclipConn then TweenNoclipConn:Disconnect() TweenNoclipConn = nil end
+    isTweening = false
+end
+
+local function ExecuteTweenMove(obj)
+    local char = LocalPlayer.Character
+    if not char or not char:FindFirstChild("HumanoidRootPart") then return end
+    local hrp = char.HumanoidRootPart
+    
+    local targetCFrame = obj:IsA("Model") and obj:GetPivot() or obj.CFrame
+    if not targetCFrame then return end
+
+    StopTween()
+    isTweening = true
+
+    local distance = (hrp.Position - targetCFrame.Position).Magnitude
+    local info = TweenInfo.new(distance / TweenSpeed, Enum.EasingStyle.Linear)
+
+    antiFallBody = Instance.new("BodyVelocity", hrp)
+    antiFallBody.Velocity = Vector3.new(0, 0, 0)
+    antiFallBody.MaxForce = Vector3.new(9e9, 9e9, 9e9)
+
+    TweenNoclipConn = RunService.Stepped:Connect(function()
+        for _, v in pairs(char:GetDescendants()) do
+            if v:IsA("BasePart") and v.CanCollide then
+                v.CanCollide = false
+                hrp.Velocity = Vector3.new(0,0,0)
+            end
+        end
+    end)
+
+    activeTween = TweenService:Create(hrp, info, {CFrame = targetCFrame})
+    activeTween:Play()
+
+    activeTween.Completed:Connect(StopTween)
+end
+
+local function GetTweenTarget()
+    if TweenDirectPath ~= "" then 
+        return EvaluatePath(TweenDirectPath) -- Avalia o código passado para achar o alvo exato
+    else
+        local folder = GetPathFromString(TweenDir)
+        if folder and TweenTarget ~= "" then return folder:FindFirstChild(TweenTarget) end
+    end
+    return nil
+end
+
+CreateButton(SecTween, "Voar até o Alvo (Único)", function()
+    local alvo = GetTweenTarget()
+    if alvo then ExecuteTweenMove(alvo) end
+end)
+
+CreateToggle(SecTween, "Loop Voar até o Alvo", false, function(s) 
+    TweenLoop = s 
+    if not s then StopTween() end 
+end)
+
+-- COLETA AUTOMÁTICA
 local SecCol = CreateSection(PageFarm, "Coleta Automática (Touch)")
 local ColetaDir, LoopColeta = "workspace.Drops", false
 CreateTextBox(SecCol, "Diretório de Itens", "Ex: workspace.Drops", function(v) ColetaDir = v end)
@@ -374,18 +478,15 @@ end)
 -- LOOP PRINCIPAL DE FARM E TELEPORT (VELOCIDADE MÁXIMA 0.01s)
 task.spawn(function()
     while true do
-        -- LÓGICA DE FARM NPC (RESGATADA)
         if FarmActive and FarmTarget ~= "" then
             pcall(function()
                 local char = LocalPlayer.Character
                 local root = char and char:FindFirstChild("HumanoidRootPart")
                 if root then
                     local targetNPC = nil
-                    -- 1. Procura no diretório definido (Rápido)
                     local folder = GetPathFromString(FarmDir)
                     if folder then targetNPC = folder:FindFirstChild(FarmTarget) end
                     
-                    -- 2. Se não achou, procura em todo o Workspace (Segurança do script antigo)
                     if not targetNPC then
                         for _, obj in ipairs(workspace:GetDescendants()) do
                             if obj.Name == FarmTarget and obj:FindFirstChild("HumanoidRootPart") then
@@ -398,31 +499,32 @@ task.spawn(function()
                     if targetNPC and targetNPC:FindFirstChild("HumanoidRootPart") then
                         local npcRoot = targetNPC.HumanoidRootPart
                         local targetPos = npcRoot.Position + Vector3.new(0, FarmOffset, 0)
-                        -- Aplica CFrame direto com orientação (Resgatado do script original)
                         root.CFrame = CFrame.new(targetPos, npcRoot.Position)
                     end
                 end
             end)
         end
 
-        -- LÓGICA DE TELEPORT ITEM (LOOP)
-        if ItemLoop and ItemTarget ~= "" then
+        if ItemLoop then
             pcall(function()
-                local folder = GetPathFromString(ItemDir)
+                local targetObj = GetTPTarget()
                 local char = LocalPlayer.Character
-                if folder and char then
-                    local targetObj = folder:FindFirstChild(ItemTarget)
-                    if targetObj then
-                        char:PivotTo(targetObj:IsA("Model") and targetObj:GetPivot() or targetObj.CFrame)
-                    end
+                if targetObj and char then
+                    char:PivotTo(targetObj:IsA("Model") and targetObj:GetPivot() or targetObj.CFrame)
                 end
             end)
         end
 
-        -- LÓGICA DE COLETA (SE ATIVO)
+        if TweenLoop and not isTweening then
+            pcall(function()
+                local alvo = GetTweenTarget()
+                if alvo then ExecuteTweenMove(alvo) end
+            end)
+        end
+
         if LoopColeta then pcall(ExecutarColeta) end
 
-        task.wait(0.01) -- Velocidade máxima resgatada
+        task.wait(0.01)
     end
 end)
 
