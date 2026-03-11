@@ -292,6 +292,67 @@ CreateToggle(SecESP, "Ativar ESP", false, function(s)
     if not s then for _, data in pairs(ESPTags) do if data[2] then data[2]:Destroy() end if data[3] then data[3]:Destroy() end end ESPTags = {} end
 end)
 
+local AntiPurchaseConn
+
+CreateToggle(PageWorld, "Limpar Roletas/Pop-ups", false, function(state)
+    local player = game.Players.LocalPlayer
+    local pGui = player:WaitForChild("PlayerGui")
+
+    -- Função principal de limpeza com trava de segurança para o seu menu
+    local function limparUI(gui)
+        if not state then return end
+        
+        -- SEGURANÇA: Se for o seu próprio menu, ignora e sai da função
+        if gui.Name == "RN_TEAM_ULTIMATE" then return end
+
+        pcall(function()
+            if gui:IsA("ScreenGui") then
+                for _, v in pairs(gui:GetDescendants()) do
+                    -- 1. Esconde fundos gigantes (Pop-ups de compra)
+                    if (v:IsA("Frame") or v:IsA("ImageLabel")) and v.Visible == true then
+                        local size = v.AbsoluteSize
+                        local screen = workspace.CurrentCamera.ViewportSize
+                        if size.X > (screen.X * 0.7) and size.Y > (screen.Y * 0.7) then
+                            v.Visible = false
+                        end
+                    end
+
+                    -- 2. Esconde elementos centrais (Roletas/Bolas)
+                    if v:IsA("ImageLabel") or v:IsA("Frame") then
+                        local pos = v.AbsolutePosition
+                        local screen = workspace.CurrentCamera.ViewportSize
+                        local centroX, centroY = screen.X / 2, screen.Y / 2
+                        if math.abs(pos.X + (v.AbsoluteSize.X/2) - centroX) < 100 and 
+                           math.abs(pos.Y + (v.AbsoluteSize.Y/2) - centroY) < 100 then
+                            v.Visible = false
+                        end
+                    end
+                end
+            end
+        end)
+    end
+
+    if state then
+        -- Limpa o que já existe (pulando o seu menu)
+        for _, gui in pairs(pGui:GetChildren()) do limparUI(gui) end
+        
+        -- Vigia novas roletas (pulando o seu menu)
+        AntiPurchaseConn = pGui.DescendantAdded:Connect(function(obj)
+            task.wait(0.5)
+            if obj:IsA("ScreenGui") then
+                limparUI(obj)
+            elseif obj.Parent and obj.Parent:IsA("ScreenGui") then
+                limparUI(obj.Parent)
+            end
+        end)
+    else
+        if AntiPurchaseConn then
+            AntiPurchaseConn:Disconnect()
+            AntiPurchaseConn = nil
+        end
+    end
+end)
+
 -- [[ PÁGINA: FARM ]]
 
 -- AUTO FARM NPC
