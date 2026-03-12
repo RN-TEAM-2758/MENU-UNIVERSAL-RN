@@ -30,11 +30,9 @@ local function GetPathFromString(str)
     return success and result or nil
 end
 
--- NOVA FUNÇÃO: Avalia strings complexas como código Lua (ex: workspace.Map:GetChildren()[6])
 local function EvaluatePath(pathStr)
     if pathStr == "" then return nil end
     local success, result = pcall(function()
-        -- Usamos loadstring para retornar o resultado da expressão
         local func = loadstring("return " .. pathStr)
         if func then
             return func()
@@ -126,12 +124,6 @@ function CreateSection(parent, text)
     return container
 end
 
-function CreateLabel(parent, text)
-    local label = Instance.new("TextLabel", parent)
-    label.Size = UDim2.new(0.95, 0, 0, 25); label.BackgroundTransparency = 1
-    label.Text = text; label.TextColor3 = Theme.Accent; label.Font = Enum.Font.GothamBold; label.TextSize = 13
-end
-
 local function CreatePage(name)
     local page = Instance.new("ScrollingFrame", Pages)
     page.Name = name; page.Size = UDim2.new(1, 0, 1, 0); page.BackgroundTransparency = 1
@@ -186,7 +178,7 @@ function CreateTextBox(parent, text, placeholder, callback)
     local box = Instance.new("TextBox", base)
     box.Size = UDim2.new(0.55, 0, 0, 28); box.Position = UDim2.new(0.45, 0, 0.5, -14); box.BackgroundColor3 = Theme.Button
     box.Text = ""; box.PlaceholderText = placeholder; box.TextColor3 = Theme.Text; box.Font = Enum.Font.Gotham; box.TextSize = 12
-    box.ClearTextOnFocus = false -- Agora não apaga o que escreves ao clicares!
+    box.ClearTextOnFocus = false
     Instance.new("UICorner", box).CornerRadius = UDim.new(0, 6)
     box.FocusLost:Connect(function(enter) if enter then callback(box.Text) end end)
 end
@@ -232,11 +224,63 @@ local PageCombat = CreatePage("Combat")
 local PageMove = CreatePage("Move")
 local PageWorld = CreatePage("World")
 local PageFarm = CreatePage("Farm")
+local PageExecutor = CreatePage("Executor") -- NOVA ABA
 
 AddTab("⚔️ Combate", PageCombat)
 AddTab("🏃 Movimento", PageMove)
 AddTab("🌍 Mundo", PageWorld)
 AddTab("🚜 Farm/Itens", PageFarm)
+AddTab("💻 Executor", PageExecutor) -- BOTÃO DA NOVA ABA
+
+-- [[ PÁGINA: EXECUTOR (NOVA) ]]
+local SecExec = CreateSection(PageExecutor, "Script Hub")
+
+local ScriptInputText = ""
+
+-- Caixa de texto grande para suportar códigos maiores
+local scriptBoxBase = Instance.new("Frame", SecExec)
+scriptBoxBase.Size = UDim2.new(0.95, 0, 0, 120)
+scriptBoxBase.BackgroundTransparency = 1
+local scriptBox = Instance.new("TextBox", scriptBoxBase)
+scriptBox.Size = UDim2.new(1, 0, 1, 0)
+scriptBox.BackgroundColor3 = Theme.Button
+scriptBox.Text = ""
+scriptBox.PlaceholderText = "-- Cole ou digite seu script Lua aqui...\n-- Ele suporta várias linhas!"
+scriptBox.TextColor3 = Theme.Text
+scriptBox.Font = Enum.Font.Code
+scriptBox.TextSize = 12
+scriptBox.TextXAlignment = Enum.TextXAlignment.Left
+scriptBox.TextYAlignment = Enum.TextYAlignment.Top
+scriptBox.ClearTextOnFocus = false
+scriptBox.MultiLine = true
+Instance.new("UICorner", scriptBox).CornerRadius = UDim.new(0, 6)
+
+scriptBox:GetPropertyChangedSignal("Text"):Connect(function()
+    ScriptInputText = scriptBox.Text
+end)
+
+CreateButton(SecExec, "▶️ Executar", function()
+    if ScriptInputText ~= "" then
+        pcall(function()
+            local func = loadstring(ScriptInputText)
+            if func then func() end
+        end)
+    end
+end)
+
+local SecExecLoop = CreateSection(PageExecutor, "Controle de Loop do Script")
+local LoopExecSpeed = 1
+local LoopExecActive = false
+
+CreateTextBox(SecExecLoop, "Delay (Segundos)", "Ex: 1 ou 0.1", function(val)
+    local num = tonumber(val)
+    if num then LoopExecSpeed = num end
+end)
+
+CreateToggle(SecExecLoop, "🔁 Ativar Loop do Script", false, function(state)
+    LoopExecActive = state
+end)
+
 
 -- [[ PÁGINA: COMBATE ]]
 local SecHitP = CreateSection(PageCombat, "Hitbox Jogadores")
@@ -298,26 +342,20 @@ CreateToggle(PageWorld, "Limpar Roletas/Pop-ups", false, function(state)
     local player = game.Players.LocalPlayer
     local pGui = player:WaitForChild("PlayerGui")
 
-    -- Função principal de limpeza com trava de segurança para o seu menu
     local function limparUI(gui)
         if not state then return end
         
-        -- SEGURANÇA: Se for o seu próprio menu, ignora e sai da função
+        -- SEGURANÇA: Se for o menu RN, ignora!
         if gui.Name == "RN_TEAM_ULTIMATE" then return end
 
         pcall(function()
             if gui:IsA("ScreenGui") then
                 for _, v in pairs(gui:GetDescendants()) do
-                    -- 1. Esconde fundos gigantes (Pop-ups de compra)
                     if (v:IsA("Frame") or v:IsA("ImageLabel")) and v.Visible == true then
                         local size = v.AbsoluteSize
                         local screen = workspace.CurrentCamera.ViewportSize
-                        if size.X > (screen.X * 0.7) and size.Y > (screen.Y * 0.7) then
-                            v.Visible = false
-                        end
+                        if size.X > (screen.X * 0.7) and size.Y > (screen.Y * 0.7) then v.Visible = false end
                     end
-
-                    -- 2. Esconde elementos centrais (Roletas/Bolas)
                     if v:IsA("ImageLabel") or v:IsA("Frame") then
                         local pos = v.AbsolutePosition
                         local screen = workspace.CurrentCamera.ViewportSize
@@ -333,28 +371,17 @@ CreateToggle(PageWorld, "Limpar Roletas/Pop-ups", false, function(state)
     end
 
     if state then
-        -- Limpa o que já existe (pulando o seu menu)
         for _, gui in pairs(pGui:GetChildren()) do limparUI(gui) end
-        
-        -- Vigia novas roletas (pulando o seu menu)
         AntiPurchaseConn = pGui.DescendantAdded:Connect(function(obj)
             task.wait(0.5)
-            if obj:IsA("ScreenGui") then
-                limparUI(obj)
-            elseif obj.Parent and obj.Parent:IsA("ScreenGui") then
-                limparUI(obj.Parent)
-            end
+            if obj:IsA("ScreenGui") then limparUI(obj) elseif obj.Parent and obj.Parent:IsA("ScreenGui") then limparUI(obj.Parent) end
         end)
     else
-        if AntiPurchaseConn then
-            AntiPurchaseConn:Disconnect()
-            AntiPurchaseConn = nil
-        end
+        if AntiPurchaseConn then AntiPurchaseConn:Disconnect() AntiPurchaseConn = nil end
     end
 end)
 
 -- [[ PÁGINA: FARM ]]
-
 -- AUTO FARM NPC
 local SecAF = CreateSection(PageFarm, "Auto Farm NPC")
 local FarmDir, FarmTarget, FarmOffset, FarmActive = "workspace.NPCs", "", -5, false
@@ -369,11 +396,10 @@ end)
 CreateTextBox(SecAF, "Altura Offset", "-5", function(v) FarmOffset = tonumber(v) or -5 end)
 CreateToggle(SecAF, "Ativar Auto Farm NPC", false, function(s) FarmActive = s end)
 
--- TELEPORT DE ITENS (COM CAMINHO DIRETO OU LISTA)
+-- TELEPORT DE ITENS
 local SecTP = CreateSection(PageFarm, "Teleport de Itens")
 local ItemDir, ItemTarget, ItemLoop = "workspace.Map", "", false
 local ItemDirectPath = ""
-
 CreateTextBox(SecTP, "Diretório da Lista", "workspace.Map", function(v) ItemDir = v end)
 local ItemDropdown = CreateDropdown(SecTP, "Selecionar Item", {}, function(opt) ItemTarget = opt end)
 CreateButton(SecTP, "Atualizar Itens", function()
@@ -385,25 +411,20 @@ end)
 CreateTextBox(SecTP, "Caminho Direto", "Ex: workspace.Map:GetChildren()[6]", function(v) ItemDirectPath = v end)
 
 local function GetTPTarget()
-    if ItemDirectPath ~= "" then
-        return EvaluatePath(ItemDirectPath) -- Avalia o código passado para achar o alvo exato
+    if ItemDirectPath ~= "" then return EvaluatePath(ItemDirectPath)
     else
         local folder = GetPathFromString(ItemDir)
         if folder and ItemTarget ~= "" then return folder:FindFirstChild(ItemTarget) end
-    end
-    return nil
+    end return nil
 end
 
 CreateButton(SecTP, "Teleportar (Único)", function()
-    local char = LocalPlayer.Character
-    local targetObj = GetTPTarget()
-    if targetObj and char then 
-        char:PivotTo(targetObj:IsA("Model") and targetObj:GetPivot() or targetObj.CFrame)
-    end
+    local char = LocalPlayer.Character; local targetObj = GetTPTarget()
+    if targetObj and char then char:PivotTo(targetObj:IsA("Model") and targetObj:GetPivot() or targetObj.CFrame) end
 end)
 CreateToggle(SecTP, "Loop Teleport Item", false, function(s) ItemLoop = s end)
 
--- SISTEMA DE TWEEN MOVE (IR VOANDO ATÉ O ITEM/NPC)
+-- SISTEMA DE TWEEN MOVE
 local SecTween = CreateSection(PageFarm, "Movimentação Suave (Tween)")
 local TweenDir, TweenTarget, TweenSpeed, TweenLoop = "workspace.Map", "", 100, false
 local TweenDirectPath = ""
@@ -432,54 +453,36 @@ local function ExecuteTweenMove(obj)
     local char = LocalPlayer.Character
     if not char or not char:FindFirstChild("HumanoidRootPart") then return end
     local hrp = char.HumanoidRootPart
-    
     local targetCFrame = obj:IsA("Model") and obj:GetPivot() or obj.CFrame
     if not targetCFrame then return end
-
     StopTween()
     isTweening = true
-
     local distance = (hrp.Position - targetCFrame.Position).Magnitude
     local info = TweenInfo.new(distance / TweenSpeed, Enum.EasingStyle.Linear)
-
     antiFallBody = Instance.new("BodyVelocity", hrp)
     antiFallBody.Velocity = Vector3.new(0, 0, 0)
     antiFallBody.MaxForce = Vector3.new(9e9, 9e9, 9e9)
-
     TweenNoclipConn = RunService.Stepped:Connect(function()
-        for _, v in pairs(char:GetDescendants()) do
-            if v:IsA("BasePart") and v.CanCollide then
-                v.CanCollide = false
-                hrp.Velocity = Vector3.new(0,0,0)
-            end
-        end
+        for _, v in pairs(char:GetDescendants()) do if v:IsA("BasePart") and v.CanCollide then v.CanCollide = false hrp.Velocity = Vector3.new(0,0,0) end end
     end)
-
     activeTween = TweenService:Create(hrp, info, {CFrame = targetCFrame})
     activeTween:Play()
-
     activeTween.Completed:Connect(StopTween)
 end
 
 local function GetTweenTarget()
-    if TweenDirectPath ~= "" then 
-        return EvaluatePath(TweenDirectPath) -- Avalia o código passado para achar o alvo exato
+    if TweenDirectPath ~= "" then return EvaluatePath(TweenDirectPath)
     else
         local folder = GetPathFromString(TweenDir)
         if folder and TweenTarget ~= "" then return folder:FindFirstChild(TweenTarget) end
-    end
-    return nil
+    end return nil
 end
 
 CreateButton(SecTween, "Voar até o Alvo (Único)", function()
     local alvo = GetTweenTarget()
     if alvo then ExecuteTweenMove(alvo) end
 end)
-
-CreateToggle(SecTween, "Loop Voar até o Alvo", false, function(s) 
-    TweenLoop = s 
-    if not s then StopTween() end 
-end)
+CreateToggle(SecTween, "Loop Voar até o Alvo", false, function(s) TweenLoop = s if not s then StopTween() end end)
 
 -- COLETA AUTOMÁTICA
 local SecCol = CreateSection(PageFarm, "Coleta Automática (Touch)")
@@ -491,10 +494,7 @@ local function ExecutarColeta()
     if not folder or not char or not char:FindFirstChild("HumanoidRootPart") then return end
     local root = char.HumanoidRootPart
     for _, obj in ipairs(folder:GetDescendants()) do
-        if obj:IsA("BasePart") then
-            firetouchinterest(root, obj, 0)
-            firetouchinterest(root, obj, 1)
-        end
+        if obj:IsA("BasePart") then firetouchinterest(root, obj, 0) firetouchinterest(root, obj, 1) end
     end
 end
 CreateButton(SecCol, "Coletar Tudo Agora", function() task.spawn(function() pcall(ExecutarColeta) end) end)
@@ -547,16 +547,11 @@ task.spawn(function()
                     local targetNPC = nil
                     local folder = GetPathFromString(FarmDir)
                     if folder then targetNPC = folder:FindFirstChild(FarmTarget) end
-                    
                     if not targetNPC then
                         for _, obj in ipairs(workspace:GetDescendants()) do
-                            if obj.Name == FarmTarget and obj:FindFirstChild("HumanoidRootPart") then
-                                targetNPC = obj
-                                break
-                            end
+                            if obj.Name == FarmTarget and obj:FindFirstChild("HumanoidRootPart") then targetNPC = obj break end
                         end
                     end
-
                     if targetNPC and targetNPC:FindFirstChild("HumanoidRootPart") then
                         local npcRoot = targetNPC.HumanoidRootPart
                         local targetPos = npcRoot.Position + Vector3.new(0, FarmOffset, 0)
@@ -570,9 +565,7 @@ task.spawn(function()
             pcall(function()
                 local targetObj = GetTPTarget()
                 local char = LocalPlayer.Character
-                if targetObj and char then
-                    char:PivotTo(targetObj:IsA("Model") and targetObj:GetPivot() or targetObj.CFrame)
-                end
+                if targetObj and char then char:PivotTo(targetObj:IsA("Model") and targetObj:GetPivot() or targetObj.CFrame) end
             end)
         end
 
@@ -586,6 +579,21 @@ task.spawn(function()
         if LoopColeta then pcall(ExecutarColeta) end
 
         task.wait(0.01)
+    end
+end)
+
+-- LOOP INDEPENDENTE DO EXECUTOR (Respeita o Delay escolhido)
+task.spawn(function()
+    while true do
+        if LoopExecActive and ScriptInputText ~= "" then
+            pcall(function()
+                local func = loadstring(ScriptInputText)
+                if func then func() end
+            end)
+            task.wait(LoopExecSpeed) -- Espera o tempo configurado na UI
+        else
+            task.wait(0.1) -- Descansa o loop se estiver desligado
+        end
     end
 end)
 
