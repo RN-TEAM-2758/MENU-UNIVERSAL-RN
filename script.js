@@ -222,7 +222,7 @@ local PageExecutor = CreatePage("Executor")
 
 AddTab("⚔️ Combate", PageCombat)
 AddTab("🏃 Movimento", PageMove)
-AddTab("🔍 visual", PageWorld)
+AddTab("🔍 Visual", PageWorld)
 AddTab("😏 Farm/Itens", PageFarm)
 AddTab("💻 Executor", PageExecutor)
 
@@ -264,7 +264,7 @@ local SecExecLoop = CreateSection(PageExecutor, "Controle de Loop do Script")
 local LoopExecSpeed = 1
 local LoopExecActive = false
 
-CreateTextBox(SecExecLoop, "Delay (Segundos)", "Ex: 1 ou 0.1", function(val)
+CreateTextBox(SecExecLoop, "Delay", "Ex: 1", function(val)
     local num = tonumber(val)
     if num then LoopExecSpeed = num end
 end)
@@ -276,8 +276,8 @@ end)
 
 local SecHitP = CreateSection(PageCombat, "Hitbox Jogadores")
 local HitboxPlayer, HitboxRGB, PlayerHitboxSize, transparency, fixedColor = false, false, 10, 0.5, Color3.new(0, 1, 0)
-CreateTextBox(SecHitP, "Tamanho", "Ex: 10", function(v) PlayerHitboxSize = tonumber(v) or 10 end)
-CreateToggle(SecHitP, "Ativar Hitbox Jogadores", false, function(s) 
+CreateTextBox(SecHitP, "Tamanho", "", function(v) PlayerHitboxSize = tonumber(v) or 10 end)
+CreateToggle(SecHitP, "Hitbox Jogadores", false, function(s) 
     HitboxPlayer = s 
     if not s then for _, p in pairs(Players:GetPlayers()) do if p ~= LocalPlayer and p.Character and p.Character:FindFirstChild("HumanoidRootPart") then local hrp = p.Character.HumanoidRootPart hrp.Size = Vector3.new(2, 2, 1) hrp.Transparency = 1 hrp.CanCollide = true end end end
 end)
@@ -286,12 +286,12 @@ CreateToggle(SecHitP, "RGB Hitbox Colorido", false, function(s) HitboxRGB = s en
 local SecHitN = CreateSection(PageCombat, "Hitbox NPCs")
 local NPCHitboxDir, NPCHitboxSize, NPCHitboxLoop = "workspace.NPCs", 20, false
 CreateTextBox(SecHitN, "Diretório NPCs", "workspace.NPCs", function(v) NPCHitboxDir = v end)
-CreateTextBox(SecHitN, "Tamanho NPC", "Ex: 20", function(v) NPCHitboxSize = tonumber(v) or 20 end)
-CreateToggle(SecHitN, "Ativar Hitbox NPCs", false, function(s) NPCHitboxLoop = s end)
+CreateTextBox(SecHitN, "Tamanho NPC", "", function(v) NPCHitboxSize = tonumber(v) or 20 end)
+CreateToggle(SecHitN, "Hitbox NPCs", false, function(s) NPCHitboxLoop = s end)
 
 local SecAtrib = CreateSection(PageMove, "Atributos Base")
-CreateTextBox(SecAtrib, "Velocidade", "Ex: 50", function(val) local v = tonumber(val) if v and LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid") then LocalPlayer.Character.Humanoid.WalkSpeed = v end end)
-CreateTextBox(SecAtrib, "Pulo (Height)", "Ex: 100", function(val) local v = tonumber(val) if v and LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid") then LocalPlayer.Character.Humanoid.JumpHeight = v end end)
+CreateTextBox(SecAtrib, "Velocidade", "50", function(val) local v = tonumber(val) if v and LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid") then LocalPlayer.Character.Humanoid.WalkSpeed = v end end)
+CreateTextBox(SecAtrib, "Pulo", "100", function(val) local v = tonumber(val) if v and LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid") then LocalPlayer.Character.Humanoid.JumpHeight = v end end)
 
 local SecEspecial = CreateSection(PageMove, "Movimento Especial")
 local InfJump = false
@@ -309,12 +309,9 @@ CreateToggle(SecAmb, "Fullbright", false, function(state)
     else Lighting.Ambient = OriginalLighting.Ambient Lighting.OutdoorAmbient = OriginalLighting.OutdoorAmbient Lighting.Brightness = OriginalLighting.Brightness end
 end)
 
-local SecESP = CreateSection(PageWorld, "ESP de Objetos & Players")
+local SecESP = CreateSection(PageWorld, "ESP Objetos & Players")
 local ESPDir, ESPActive, ESPTags = "workspace.Itens", false, {}
-local TracersActive = false
-local Tracers = {}
 
--- Função para aplicar ESP em Objetos (Original do seu script)
 local function AplicarESP(obj)
     if not obj:FindFirstChild("RN_ESP_Tag") then
         local bgui = Instance.new("BillboardGui", obj); bgui.Name = "RN_ESP_Tag"; bgui.AlwaysOnTop = true; bgui.Size = UDim2.new(0, 100, 0, 30); bgui.StudsOffset = Vector3.new(0, 2, 0)
@@ -324,12 +321,24 @@ local function AplicarESP(obj)
     end
 end
 
--- Lógica dos Tracers (Nova integração)
+CreateTextBox(SecESP, "Diretório ESP", "workspace.Itens", function(v) ESPDir = v end)
+CreateToggle(SecESP, "Ativar ESP Objetos", false, function(s)
+    ESPActive = s
+    if not s then for _, data in pairs(ESPTags) do if data[2] then data[2]:Destroy() end if data[3] then data[3]:Destroy() end end ESPTags = {} end
+end)
+
+-- NOVA SEÇÃO: ESP LINHAS (TRACERS) & CHAMS
+local SecTracer = CreateSection(PageWorld, "ESP Jogadores (Linhas & Chams)")
+local TracersActive = false
+local ChamsActive = false
+local Tracers = {}
+local CustomESPColor = Color3.new(1, 1, 1)
+
 local function CreateTracer(player)
     if Tracers[player] then return end
     local Tracer = Drawing.new("Line")
     Tracer.Visible = false
-    Tracer.Color = Color3.new(1, 0, 0)
+    Tracer.Color = CustomESPColor
     Tracer.Thickness = 1
     Tracer.Transparency = 1
     Tracers[player] = Tracer
@@ -342,25 +351,46 @@ local function RemoveTracer(player)
     end
 end
 
--- Interface na aba Mundo
-CreateTextBox(SecESP, "Diretório ESP", "workspace.Itens", function(v) ESPDir = v end)
-CreateToggle(SecESP, "Ativar ESP (Objetos)", false, function(s)
-    ESPActive = s
-    if not s then for _, data in pairs(ESPTags) do if data[2] then data[2]:Destroy() end if data[3] then data[3]:Destroy() end end ESPTags = {} end
+CreateTextBox(SecTracer, "Cor (Color RGB", "Ex: 255 255 255", function(v)
+    local split = string.split(v, " ")
+    if #split == 3 then
+        local r, g, b = tonumber(split[1]), tonumber(split[2]), tonumber(split[3])
+        if r and g and b then
+            if r > 1 or g > 1 or b > 1 then
+                CustomESPColor = Color3.fromRGB(r, g, b)
+            else
+                CustomESPColor = Color3.new(r, g, b)
+            end
+        end
+    end
 end)
 
-CreateToggle(SecESP, "Tracers (Linhas)", false, function(state)
+CreateToggle(SecTracer, "Esp linha (Tracers)", false, function(state)
     TracersActive = state
     if not state then
         for p, t in pairs(Tracers) do t.Visible = false end
     end
 end)
 
--- Loop de atualização dos Tracers e Eventos
-RunService.RenderStepped:Connect(function()
-    if TracersActive then
+CreateToggle(SecTracer, "Esp Chams (Atravessa Parede)", false, function(state)
+    ChamsActive = state
+    if not state then
         for _, player in pairs(Players:GetPlayers()) do
-            if player ~= LocalPlayer then
+            if player.Character and player.Character:FindFirstChild("RN_Chams") then
+                player.Character.RN_Chams:Destroy()
+            end
+        end
+    end
+end)
+
+Players.PlayerRemoving:Connect(RemoveTracer)
+
+-- Loop exclusivo para as Linhas (Tracers) e Chams
+RunService.RenderStepped:Connect(function()
+    for _, player in pairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer then
+            -- Sistema de ESP Linha (Tracers) - Saindo de cima
+            if TracersActive then
                 if not Tracers[player] then CreateTracer(player) end
                 local Tracer = Tracers[player]
                 
@@ -374,8 +404,10 @@ RunService.RenderStepped:Connect(function()
                         end
 
                         if isEnemy then
-                            Tracer.From = Vector2.new(workspace.CurrentCamera.ViewportSize.X / 2, workspace.CurrentCamera.ViewportSize.Y)
+                            -- Origem mudada para o topo da tela (Eixo Y = 0)
+                            Tracer.From = Vector2.new(workspace.CurrentCamera.ViewportSize.X / 2, 0)
                             Tracer.To = Vector2.new(Vector.X, Vector.Y)
+                            Tracer.Color = CustomESPColor
                             Tracer.Visible = true
                         else
                             Tracer.Visible = false
@@ -384,24 +416,44 @@ RunService.RenderStepped:Connect(function()
                         Tracer.Visible = false
                     end
                 else
-                    Tracer.Visible = false
+                    if Tracers[player] then Tracers[player].Visible = false end
                 end
+            else
+                if Tracers[player] then Tracers[player].Visible = false end
+            end
+
+            -- Sistema de ESP Chams
+            if ChamsActive and player.Name ~= "ninja120p999" then
+                if player.Character and player.Character:FindFirstChild("HumanoidRootPart") and player.Character:FindFirstChild("Humanoid") and player.Character.Humanoid.Health > 0 then
+                    local cham = player.Character:FindFirstChild("RN_Chams")
+                    if not cham then
+                        cham = Instance.new("Highlight")
+                        cham.Name = "RN_Chams"
+                        cham.Parent = player.Character
+                        cham.FillTransparency = 0.5
+                        cham.OutlineTransparency = 0.2
+                        cham.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+                    end
+                    cham.FillColor = CustomESPColor
+                    cham.OutlineColor = CustomESPColor
+                elseif player.Character and player.Character:FindFirstChild("RN_Chams") then
+                    player.Character.RN_Chams:Destroy()
+                end
+            elseif player.Character and player.Character:FindFirstChild("RN_Chams") then
+                player.Character.RN_Chams:Destroy()
             end
         end
     end
 end)
 
-Players.PlayerRemoving:Connect(RemoveTracer)
 
 local AntiPurchaseConn
-
-CreateToggle(PageWorld, "Limpar Roletas/Pop-ups", false, function(state)
+CreateToggle(PageWorld, "fechar tela de compras", false, function(state)
     local player = game.Players.LocalPlayer
     local pGui = player:WaitForChild("PlayerGui")
 
     local function limparUI(gui)
         if not state then return end
-        
         if gui.Name == "RN_TEAM" then return end
 
         pcall(function()
@@ -461,7 +513,7 @@ CreateButton(SecTP, "Atualizar Itens", function()
     ItemDropdown.UpdateList(list)
     if #list > 0 then ItemTarget = list[1] end
 end)
-CreateTextBox(SecTP, "Caminho Direto", "Ex: workspace.Map:GetChildren()[6]", function(v) ItemDirectPath = v end)
+CreateTextBox(SecTP, "Caminho Direto", "workspace", function(v) ItemDirectPath = v end)
 
 local function GetTPTarget()
     if ItemDirectPath ~= "" then return EvaluatePath(ItemDirectPath)
@@ -491,8 +543,8 @@ CreateButton(SecTween, "Atualizar Lista", function()
     TweenDropdown.UpdateList(list)
     if #list > 0 then TweenTarget = list[1] end
 end)
-CreateTextBox(SecTween, "Caminho Direto", "Ex: workspace.Map:GetChildren()[6]", function(v) TweenDirectPath = v end)
-CreateTextBox(SecTween, "Velocidade do Voo", "Ex: 100", function(v) TweenSpeed = tonumber(v) or 100 end)
+CreateTextBox(SecTween, "Caminho Direto", "workspace", function(v) TweenDirectPath = v end)
+CreateTextBox(SecTween, "Velocidade do Voo", "workspace", function(v) TweenSpeed = tonumber(v) or 50 end)
 
 local function StopTween()
     if activeTween then activeTween:Cancel() activeTween = nil end
@@ -530,7 +582,7 @@ local function GetTweenTarget()
     end return nil
 end
 
-CreateButton(SecTween, "Voar até o Alvo (Único)", function()
+CreateButton(SecTween, "voar único", function()
     local alvo = GetTweenTarget()
     if alvo then ExecuteTweenMove(alvo) end
 end)
@@ -538,7 +590,7 @@ CreateToggle(SecTween, "Loop Voar até o Alvo", false, function(s) TweenLoop = s
 
 local SecCol = CreateSection(PageFarm, "Coleta Automática (Touch)")
 local ColetaDir, LoopColeta = "workspace.Drops", false
-CreateTextBox(SecCol, "Diretório de Itens", "Ex: workspace.Drops", function(v) ColetaDir = v end)
+CreateTextBox(SecCol, "Diretório de Itens", "", function(v) ColetaDir = v end)
 local function ExecutarColeta()
     local folder = GetPathFromString(ColetaDir)
     local char = LocalPlayer.Character
@@ -548,8 +600,8 @@ local function ExecutarColeta()
         if obj:IsA("BasePart") then firetouchinterest(root, obj, 0) firetouchinterest(root, obj, 1) end
     end
 end
-CreateButton(SecCol, "Coletar Tudo Agora", function() task.spawn(function() pcall(ExecutarColeta) end) end)
-CreateToggle(SecCol, "Loop Coletar Tudo", false, function(s) LoopColeta = s end)
+CreateButton(SecCol, "Coletar Tudo", function() task.spawn(function() pcall(ExecutarColeta) end) end)
+CreateToggle(SecCol, "Loop Coletar", false, function(s) LoopColeta = s end)
 
 local function MakeDraggable(obj, dragPart)
     local dragging, dragStart, startPos
@@ -585,7 +637,6 @@ RunService.RenderStepped:Connect(function()
         if folder then
             for _, npc in pairs(folder:GetChildren()) do
                 if npc:IsA("Model") and npc:FindFirstChild("HumanoidRootPart") then
-                    -- VERIFICAÇÃO AQUI: Garante que o modelo não é um jogador real
                     if not Players:GetPlayerFromCharacter(npc) then
                         local hrp = npc.HumanoidRootPart
                         hrp.Size = Vector3.new(NPCHitboxSize, NPCHitboxSize, NPCHitboxSize)
