@@ -1,4 +1,3 @@
--- [[ SERVIÇOS ]]
 local Players = game:GetService("Players")
 local TweenService = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
@@ -6,7 +5,6 @@ local RunService = game:GetService("RunService")
 local Lighting = game:GetService("Lighting")
 local LocalPlayer = Players.LocalPlayer
 
--- [[ TEMA ]]
 local Theme = {
     Main = Color3.fromRGB(15, 15, 22),
     Secondary = Color3.fromRGB(25, 25, 38),
@@ -16,7 +14,6 @@ local Theme = {
     Hover = Color3.fromRGB(50, 50, 65)
 }
 
--- [[ VARIÁVEIS DE ESTADO E LÓGICA ]]
 local DropdownSignals = {}
 
 local function GetPathFromString(str)
@@ -41,9 +38,8 @@ local function EvaluatePath(pathStr)
     return success and result or nil
 end
 
--- [[ ESTRUTURA DA GUI ]]
 local ScreenGui = Instance.new("ScreenGui", LocalPlayer:WaitForChild("PlayerGui"))
-ScreenGui.Name = "RN_TEAM_ULTIMATE"
+ScreenGui.Name = "RN_TEAM"
 ScreenGui.ResetOnSpawn = false
 
 local MainFrame = Instance.new("Frame", ScreenGui)
@@ -77,7 +73,6 @@ FloatingBtn.Size = UDim2.new(0, 55, 0, 55); FloatingBtn.Position = UDim2.new(0.0
 FloatingBtn.BackgroundColor3 = Theme.Accent; FloatingBtn.Text = "RN"; FloatingBtn.Font = Enum.Font.GothamBold
 FloatingBtn.TextColor3 = Theme.Main; FloatingBtn.TextSize = 20; Instance.new("UICorner", FloatingBtn).CornerRadius = UDim.new(1, 0)
 
--- [[ FUNÇÕES DE UI ]]
 local function CloseAllDropdowns()
     for _, func in pairs(DropdownSignals) do func() end
 end
@@ -219,25 +214,22 @@ function CreateDropdown(parent, text, options, callback)
     return {UpdateList = UpdateOptions}
 end
 
--- [[ MONTAGEM DAS PÁGINAS ]]
 local PageCombat = CreatePage("Combat")
 local PageMove = CreatePage("Move")
 local PageWorld = CreatePage("World")
 local PageFarm = CreatePage("Farm")
-local PageExecutor = CreatePage("Executor") -- NOVA ABA
+local PageExecutor = CreatePage("Executor")
 
 AddTab("⚔️ Combate", PageCombat)
 AddTab("🏃 Movimento", PageMove)
-AddTab("🌍 Mundo", PageWorld)
-AddTab("🚜 Farm/Itens", PageFarm)
-AddTab("💻 Executor", PageExecutor) -- BOTÃO DA NOVA ABA
+AddTab("🔍 visual", PageWorld)
+AddTab("😏 Farm/Itens", PageFarm)
+AddTab("💻 Executor", PageExecutor)
 
--- [[ PÁGINA: EXECUTOR (NOVA) ]]
 local SecExec = CreateSection(PageExecutor, "Script Hub")
 
 local ScriptInputText = ""
 
--- Caixa de texto grande para suportar códigos maiores
 local scriptBoxBase = Instance.new("Frame", SecExec)
 scriptBoxBase.Size = UDim2.new(0.95, 0, 0, 120)
 scriptBoxBase.BackgroundTransparency = 1
@@ -245,7 +237,7 @@ local scriptBox = Instance.new("TextBox", scriptBoxBase)
 scriptBox.Size = UDim2.new(1, 0, 1, 0)
 scriptBox.BackgroundColor3 = Theme.Button
 scriptBox.Text = ""
-scriptBox.PlaceholderText = "-- Cole ou digite seu script Lua aqui...\n-- Ele suporta várias linhas!"
+scriptBox.PlaceholderText = "-- Cole ou digite aqui"
 scriptBox.TextColor3 = Theme.Text
 scriptBox.Font = Enum.Font.Code
 scriptBox.TextSize = 12
@@ -259,7 +251,7 @@ scriptBox:GetPropertyChangedSignal("Text"):Connect(function()
     ScriptInputText = scriptBox.Text
 end)
 
-CreateButton(SecExec, "▶️ Executar", function()
+CreateButton(SecExec, "Executar", function()
     if ScriptInputText ~= "" then
         pcall(function()
             local func = loadstring(ScriptInputText)
@@ -277,12 +269,11 @@ CreateTextBox(SecExecLoop, "Delay (Segundos)", "Ex: 1 ou 0.1", function(val)
     if num then LoopExecSpeed = num end
 end)
 
-CreateToggle(SecExecLoop, "🔁 Ativar Loop do Script", false, function(state)
+CreateToggle(SecExecLoop, "Loop", false, function(state)
     LoopExecActive = state
 end)
 
 
--- [[ PÁGINA: COMBATE ]]
 local SecHitP = CreateSection(PageCombat, "Hitbox Jogadores")
 local HitboxPlayer, HitboxRGB, PlayerHitboxSize, transparency, fixedColor = false, false, 10, 0.5, Color3.new(0, 1, 0)
 CreateTextBox(SecHitP, "Tamanho", "Ex: 10", function(v) PlayerHitboxSize = tonumber(v) or 10 end)
@@ -298,7 +289,6 @@ CreateTextBox(SecHitN, "Diretório NPCs", "workspace.NPCs", function(v) NPCHitbo
 CreateTextBox(SecHitN, "Tamanho NPC", "Ex: 20", function(v) NPCHitboxSize = tonumber(v) or 20 end)
 CreateToggle(SecHitN, "Ativar Hitbox NPCs", false, function(s) NPCHitboxLoop = s end)
 
--- [[ PÁGINA: MOVIMENTO ]]
 local SecAtrib = CreateSection(PageMove, "Atributos Base")
 CreateTextBox(SecAtrib, "Velocidade", "Ex: 50", function(val) local v = tonumber(val) if v and LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid") then LocalPlayer.Character.Humanoid.WalkSpeed = v end end)
 CreateTextBox(SecAtrib, "Pulo (Height)", "Ex: 100", function(val) local v = tonumber(val) if v and LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid") then LocalPlayer.Character.Humanoid.JumpHeight = v end end)
@@ -312,7 +302,6 @@ CreateToggle(SecEspecial, "Noclip", false, function(state)
     else if NoclipConn then NoclipConn:Disconnect() end end
 end)
 
--- [[ PÁGINA: MUNDO ]]
 local SecAmb = CreateSection(PageWorld, "Visual & Ambiente")
 local OriginalLighting = {Ambient = Lighting.Ambient, Brightness = Lighting.Brightness, OutdoorAmbient = Lighting.OutdoorAmbient}
 CreateToggle(SecAmb, "Fullbright", false, function(state)
@@ -320,8 +309,12 @@ CreateToggle(SecAmb, "Fullbright", false, function(state)
     else Lighting.Ambient = OriginalLighting.Ambient Lighting.OutdoorAmbient = OriginalLighting.OutdoorAmbient Lighting.Brightness = OriginalLighting.Brightness end
 end)
 
-local SecESP = CreateSection(PageWorld, "ESP de Objetos")
+local SecESP = CreateSection(PageWorld, "ESP de Objetos & Players")
 local ESPDir, ESPActive, ESPTags = "workspace.Itens", false, {}
+local TracersActive = false
+local Tracers = {}
+
+-- Função para aplicar ESP em Objetos (Original do seu script)
 local function AplicarESP(obj)
     if not obj:FindFirstChild("RN_ESP_Tag") then
         local bgui = Instance.new("BillboardGui", obj); bgui.Name = "RN_ESP_Tag"; bgui.AlwaysOnTop = true; bgui.Size = UDim2.new(0, 100, 0, 30); bgui.StudsOffset = Vector3.new(0, 2, 0)
@@ -330,11 +323,75 @@ local function AplicarESP(obj)
         table.insert(ESPTags, {obj, bgui, hl})
     end
 end
+
+-- Lógica dos Tracers (Nova integração)
+local function CreateTracer(player)
+    if Tracers[player] then return end
+    local Tracer = Drawing.new("Line")
+    Tracer.Visible = false
+    Tracer.Color = Color3.new(1, 0, 0)
+    Tracer.Thickness = 1
+    Tracer.Transparency = 1
+    Tracers[player] = Tracer
+end
+
+local function RemoveTracer(player)
+    if Tracers[player] then
+        Tracers[player]:Remove()
+        Tracers[player] = nil
+    end
+end
+
+-- Interface na aba Mundo
 CreateTextBox(SecESP, "Diretório ESP", "workspace.Itens", function(v) ESPDir = v end)
-CreateToggle(SecESP, "Ativar ESP", false, function(s)
+CreateToggle(SecESP, "Ativar ESP (Objetos)", false, function(s)
     ESPActive = s
     if not s then for _, data in pairs(ESPTags) do if data[2] then data[2]:Destroy() end if data[3] then data[3]:Destroy() end end ESPTags = {} end
 end)
+
+CreateToggle(SecESP, "Tracers (Linhas)", false, function(state)
+    TracersActive = state
+    if not state then
+        for p, t in pairs(Tracers) do t.Visible = false end
+    end
+end)
+
+-- Loop de atualização dos Tracers e Eventos
+RunService.RenderStepped:Connect(function()
+    if TracersActive then
+        for _, player in pairs(Players:GetPlayers()) do
+            if player ~= LocalPlayer then
+                if not Tracers[player] then CreateTracer(player) end
+                local Tracer = Tracers[player]
+                
+                if player.Character and player.Character:FindFirstChild("HumanoidRootPart") and player.Character:FindFirstChild("Humanoid") and player.Character.Humanoid.Health > 0 then
+                    local Vector, OnScreen = workspace.CurrentCamera:WorldToViewportPoint(player.Character.HumanoidRootPart.Position)
+                    
+                    if OnScreen then
+                        local isEnemy = true
+                        if LocalPlayer.Team and player.Team then
+                            isEnemy = (player.Team ~= LocalPlayer.Team)
+                        end
+
+                        if isEnemy then
+                            Tracer.From = Vector2.new(workspace.CurrentCamera.ViewportSize.X / 2, workspace.CurrentCamera.ViewportSize.Y)
+                            Tracer.To = Vector2.new(Vector.X, Vector.Y)
+                            Tracer.Visible = true
+                        else
+                            Tracer.Visible = false
+                        end
+                    else
+                        Tracer.Visible = false
+                    end
+                else
+                    Tracer.Visible = false
+                end
+            end
+        end
+    end
+end)
+
+Players.PlayerRemoving:Connect(RemoveTracer)
 
 local AntiPurchaseConn
 
@@ -345,8 +402,7 @@ CreateToggle(PageWorld, "Limpar Roletas/Pop-ups", false, function(state)
     local function limparUI(gui)
         if not state then return end
         
-        -- SEGURANÇA: Se for o menu RN, ignora!
-        if gui.Name == "RN_TEAM_ULTIMATE" then return end
+        if gui.Name == "RN_TEAM" then return end
 
         pcall(function()
             if gui:IsA("ScreenGui") then
@@ -381,8 +437,6 @@ CreateToggle(PageWorld, "Limpar Roletas/Pop-ups", false, function(state)
     end
 end)
 
--- [[ PÁGINA: FARM ]]
--- AUTO FARM NPC
 local SecAF = CreateSection(PageFarm, "Auto Farm NPC")
 local FarmDir, FarmTarget, FarmOffset, FarmActive = "workspace.NPCs", "", -5, false
 CreateTextBox(SecAF, "Diretório NPCs", "workspace.NPCs", function(v) FarmDir = v end)
@@ -396,7 +450,6 @@ end)
 CreateTextBox(SecAF, "Altura Offset", "-5", function(v) FarmOffset = tonumber(v) or -5 end)
 CreateToggle(SecAF, "Ativar Auto Farm NPC", false, function(s) FarmActive = s end)
 
--- TELEPORT DE ITENS
 local SecTP = CreateSection(PageFarm, "Teleport de Itens")
 local ItemDir, ItemTarget, ItemLoop = "workspace.Map", "", false
 local ItemDirectPath = ""
@@ -424,7 +477,6 @@ CreateButton(SecTP, "Teleportar (Único)", function()
 end)
 CreateToggle(SecTP, "Loop Teleport Item", false, function(s) ItemLoop = s end)
 
--- SISTEMA DE TWEEN MOVE
 local SecTween = CreateSection(PageFarm, "Movimentação Suave (Tween)")
 local TweenDir, TweenTarget, TweenSpeed, TweenLoop = "workspace.Map", "", 100, false
 local TweenDirectPath = ""
@@ -484,7 +536,6 @@ CreateButton(SecTween, "Voar até o Alvo (Único)", function()
 end)
 CreateToggle(SecTween, "Loop Voar até o Alvo", false, function(s) TweenLoop = s if not s then StopTween() end end)
 
--- COLETA AUTOMÁTICA
 local SecCol = CreateSection(PageFarm, "Coleta Automática (Touch)")
 local ColetaDir, LoopColeta = "workspace.Drops", false
 CreateTextBox(SecCol, "Diretório de Itens", "Ex: workspace.Drops", function(v) ColetaDir = v end)
@@ -500,7 +551,6 @@ end
 CreateButton(SecCol, "Coletar Tudo Agora", function() task.spawn(function() pcall(ExecutarColeta) end) end)
 CreateToggle(SecCol, "Loop Coletar Tudo", false, function(s) LoopColeta = s end)
 
--- [[ LÓGICA DE DRAG E LOOPS ]]
 local function MakeDraggable(obj, dragPart)
     local dragging, dragStart, startPos
     dragPart.InputBegan:Connect(function(input) if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then dragging = true; dragStart = input.Position; startPos = obj.Position end end)
@@ -514,18 +564,39 @@ FloatingBtn.MouseButton1Click:Connect(function() CloseAllDropdowns(); MainFrame.
 local hue = 0
 RunService.RenderStepped:Connect(function()
     hue = (hue + 0.01) % 1
+    
+    -- Hitbox de Jogadores
     if HitboxPlayer then
         for _, player in pairs(Players:GetPlayers()) do
-            if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
-                local hrp = player.Character.HumanoidRootPart; hrp.Size = Vector3.new(PlayerHitboxSize, PlayerHitboxSize, PlayerHitboxSize)
-                hrp.Transparency = transparency; hrp.CanCollide = false
+            -- Ignora o LocalPlayer e o ninja120p999 para não bugar a hitbox neles
+            if player ~= LocalPlayer and player.Name ~= "ninja120p999" and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+                local hrp = player.Character.HumanoidRootPart
+                hrp.Size = Vector3.new(PlayerHitboxSize, PlayerHitboxSize, PlayerHitboxSize)
+                hrp.Transparency = transparency
+                hrp.CanCollide = false
                 hrp.Color = HitboxRGB and Color3.fromHSV(hue, 1, 1) or fixedColor
             end
         end
     end
+    
+    -- Hitbox de NPCs
     if NPCHitboxLoop then
         local folder = GetPathFromString(NPCHitboxDir)
-        if folder then for _, npc in pairs(folder:GetChildren()) do if npc:IsA("Model") and npc:FindFirstChild("HumanoidRootPart") then local hrp = npc.HumanoidRootPart hrp.Size = Vector3.new(NPCHitboxSize, NPCHitboxSize, NPCHitboxSize) hrp.Transparency = 0.7 hrp.BrickColor = BrickColor.new("Really blue") hrp.Material = "Neon" hrp.CanCollide = false end end end
+        if folder then
+            for _, npc in pairs(folder:GetChildren()) do
+                if npc:IsA("Model") and npc:FindFirstChild("HumanoidRootPart") then
+                    -- VERIFICAÇÃO AQUI: Garante que o modelo não é um jogador real
+                    if not Players:GetPlayerFromCharacter(npc) then
+                        local hrp = npc.HumanoidRootPart
+                        hrp.Size = Vector3.new(NPCHitboxSize, NPCHitboxSize, NPCHitboxSize)
+                        hrp.Transparency = 0.7
+                        hrp.BrickColor = BrickColor.new("Really blue")
+                        hrp.Material = Enum.Material.Neon
+                        hrp.CanCollide = false
+                    end
+                end
+            end
+        end
     end
 end)
 
@@ -536,7 +607,6 @@ RunService.Heartbeat:Connect(function()
     end
 end)
 
--- LOOP PRINCIPAL DE FARM E TELEPORT (VELOCIDADE MÁXIMA 0.01s)
 task.spawn(function()
     while true do
         if FarmActive and FarmTarget ~= "" then
@@ -582,7 +652,6 @@ task.spawn(function()
     end
 end)
 
--- LOOP INDEPENDENTE DO EXECUTOR (Respeita o Delay escolhido)
 task.spawn(function()
     while true do
         if LoopExecActive and ScriptInputText ~= "" then
@@ -590,9 +659,9 @@ task.spawn(function()
                 local func = loadstring(ScriptInputText)
                 if func then func() end
             end)
-            task.wait(LoopExecSpeed) -- Espera o tempo configurado na UI
+            task.wait(LoopExecSpeed)
         else
-            task.wait(0.1) -- Descansa o loop se estiver desligado
+            task.wait(0.1)
         end
     end
 end)
@@ -600,4 +669,4 @@ end)
 UserInputService.JumpRequest:Connect(function() if InfJump and LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid") then LocalPlayer.Character:FindFirstChildOfClass("Humanoid"):ChangeState("Jumping") end end)
 
 PageCombat.Visible = true
-CreateButton(PageWorld, "❌ Destruir Menu", function() ScreenGui:Destroy() end)
+CreateButton(PageWorld, "fechar Menu", function() ScreenGui:Destroy() end)
