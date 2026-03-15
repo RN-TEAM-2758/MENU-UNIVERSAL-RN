@@ -126,7 +126,6 @@ local function CreatePage(name)
     page.CanvasSize = UDim2.new(0,0,0,0); page.AutomaticCanvasSize = Enum.AutomaticSize.Y
     local layout = Instance.new("UIListLayout", page)
     layout.Padding = UDim.new(0, 10); layout.HorizontalAlignment = Enum.HorizontalAlignment.Center
-    page:GetPropertyChangedSignal("CanvasPosition"):Connect(CloseAllDropdowns)
     return page
 end
 
@@ -327,7 +326,6 @@ CreateToggle(SecESP, "Ativar ESP Objetos", false, function(s)
     if not s then for _, data in pairs(ESPTags) do if data[2] then data[2]:Destroy() end if data[3] then data[3]:Destroy() end end ESPTags = {} end
 end)
 
--- NOVA SEÇÃO: ESP LINHAS (TRACERS) & CHAMS
 local SecTracer = CreateSection(PageWorld, "ESP Jogadores (Linhas & Chams)")
 local TracersActive = false
 local ChamsActive = false
@@ -377,7 +375,7 @@ CreateToggle(SecTracer, "Esp Chams (Atravessa Parede)", false, function(state)
     if not state then
         for _, player in pairs(Players:GetPlayers()) do
             if player.Character and player.Character:FindFirstChild("RN_Chams") then
-                player.Character.RN_Chams:Destroy()
+                player.Character.RN_Chams.Enabled = false
             end
         end
     end
@@ -385,11 +383,9 @@ end)
 
 Players.PlayerRemoving:Connect(RemoveTracer)
 
--- Loop exclusivo para as Linhas (Tracers) e Chams
 RunService.RenderStepped:Connect(function()
     for _, player in pairs(Players:GetPlayers()) do
         if player ~= LocalPlayer then
-            -- Sistema de ESP Linha (Tracers) - Saindo de cima
             if TracersActive then
                 if not Tracers[player] then CreateTracer(player) end
                 local Tracer = Tracers[player]
@@ -399,12 +395,9 @@ RunService.RenderStepped:Connect(function()
                     
                     if OnScreen then
                         local isEnemy = true
-                        if LocalPlayer.Team and player.Team then
-                            isEnemy = (player.Team ~= LocalPlayer.Team)
-                        end
+                        if LocalPlayer.Team and player.Team then isEnemy = (player.Team ~= LocalPlayer.Team) end
 
                         if isEnemy then
-                            -- Origem mudada para o topo da tela (Eixo Y = 0)
                             Tracer.From = Vector2.new(workspace.CurrentCamera.ViewportSize.X / 2, 0)
                             Tracer.To = Vector2.new(Vector.X, Vector.Y)
                             Tracer.Color = CustomESPColor
@@ -422,7 +415,6 @@ RunService.RenderStepped:Connect(function()
                 if Tracers[player] then Tracers[player].Visible = false end
             end
 
-            -- Sistema de ESP Chams
             if ChamsActive and player.Name ~= "ninja120p999" then
                 if player.Character and player.Character:FindFirstChild("HumanoidRootPart") and player.Character:FindFirstChild("Humanoid") and player.Character.Humanoid.Health > 0 then
                     local cham = player.Character:FindFirstChild("RN_Chams")
@@ -433,19 +425,21 @@ RunService.RenderStepped:Connect(function()
                         cham.FillTransparency = 0.5
                         cham.OutlineTransparency = 0.2
                         cham.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+                        cham.Adornee = player.Character
                     end
+                    cham.Enabled = true
                     cham.FillColor = CustomESPColor
                     cham.OutlineColor = CustomESPColor
+                    cham.Adornee = player.Character
                 elseif player.Character and player.Character:FindFirstChild("RN_Chams") then
-                    player.Character.RN_Chams:Destroy()
+                    player.Character.RN_Chams.Enabled = false
                 end
             elseif player.Character and player.Character:FindFirstChild("RN_Chams") then
-                player.Character.RN_Chams:Destroy()
+                player.Character.RN_Chams.Enabled = false
             end
         end
     end
 end)
-
 
 local AntiPurchaseConn
 CreateToggle(PageWorld, "fechar tela de compras", false, function(state)
@@ -491,6 +485,8 @@ end)
 
 local SecAF = CreateSection(PageFarm, "Auto Farm NPC")
 local FarmDir, FarmTarget, FarmOffset, FarmActive = "workspace.NPCs", "", -5, false
+local CurrentFarmTarget = nil
+
 CreateTextBox(SecAF, "Diretório NPCs", "workspace.NPCs", function(v) FarmDir = v end)
 local FarmDropdown = CreateDropdown(SecAF, "Alvo", {}, function(opt) FarmTarget = opt end)
 CreateButton(SecAF, "Atualizar Lista", function()
@@ -500,7 +496,10 @@ CreateButton(SecAF, "Atualizar Lista", function()
     if #list > 0 then FarmTarget = list[1] end
 end)
 CreateTextBox(SecAF, "Altura Offset", "-5", function(v) FarmOffset = tonumber(v) or -5 end)
-CreateToggle(SecAF, "Ativar Auto Farm NPC", false, function(s) FarmActive = s end)
+CreateToggle(SecAF, "Ativar Auto Farm NPC", false, function(s) 
+    FarmActive = s 
+    if not s then CurrentFarmTarget = nil end
+end)
 
 local SecTP = CreateSection(PageFarm, "Teleport de Itens")
 local ItemDir, ItemTarget, ItemLoop = "workspace.Map", "", false
@@ -603,24 +602,168 @@ end
 CreateButton(SecCol, "Coletar Tudo", function() task.spawn(function() pcall(ExecutarColeta) end) end)
 CreateToggle(SecCol, "Loop Coletar", false, function(s) LoopColeta = s end)
 
-local function MakeDraggable(obj, dragPart)
-    local dragging, dragStart, startPos
-    dragPart.InputBegan:Connect(function(input) if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then dragging = true; dragStart = input.Position; startPos = obj.Position end end)
-    UserInputService.InputChanged:Connect(function(input) if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then local delta = input.Position - dragStart obj.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y) end end)
-    dragPart.InputEnded:Connect(function() dragging = false end)
+local SecInteract = CreateSection(PageFarm, "Interação Fire Events")
+local InteractDir = "workspace"
+local InteractTarget = ""
+local InteractDirectPath = ""
+local InteractType = "Touch (firetouchinterest)"
+local InteractLoop = false
+
+CreateTextBox(SecInteract, "Diretório da Lista", "workspace", function(v) InteractDir = v end)
+local InteractDropdown = CreateDropdown(SecInteract, "Selecionar Alvo", {}, function(opt) InteractTarget = opt end)
+
+CreateButton(SecInteract, "Atualizar Lista", function()
+    local folder = GetPathFromString(InteractDir)
+    local list = {}
+    if folder then 
+        for _, v in pairs(folder:GetChildren()) do 
+            table.insert(list, v.Name) 
+        end 
+    end
+    InteractDropdown.UpdateList(list)
+    if #list > 0 then InteractTarget = list[1] end
+end)
+
+CreateTextBox(SecInteract, "Caminho Direto", "Deixe em branco p/ usar lista", function(v) InteractDirectPath = v end)
+
+local InteractOptions = {
+    "Touch (firetouchinterest)", 
+    "ClickDetector (fireclickdetector)", 
+    "ProximityPrompt (Instant bypass)",
+    "UI Button (firesignal/getconnections)"
+}
+CreateDropdown(SecInteract, "Tipo de Evento", InteractOptions, function(opt) InteractType = opt end)
+
+local function ExecuteInteraction()
+    local function FireObj(obj)
+        if not obj then return end
+        
+        if InteractType == "Touch (firetouchinterest)" then
+            if obj:IsA("BasePart") and LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
+                firetouchinterest(LocalPlayer.Character.HumanoidRootPart, obj, 0)
+                firetouchinterest(LocalPlayer.Character.HumanoidRootPart, obj, 1)
+            end
+            
+        elseif InteractType == "ClickDetector (fireclickdetector)" then
+            local cd = obj:FindFirstChildOfClass("ClickDetector")
+            if not cd and obj:IsA("ClickDetector") then cd = obj end
+            if cd then fireclickdetector(cd) end
+            
+        elseif InteractType == "ProximityPrompt (Instant bypass)" then
+            local pp = obj:FindFirstChildOfClass("ProximityPrompt")
+            if not pp and obj:IsA("ProximityPrompt") then pp = obj end
+            if pp then 
+                local originalHold = pp.HoldDuration
+                pp.HoldDuration = 0
+                fireproximityprompt(pp)
+                task.wait(0.01)
+                pp.HoldDuration = originalHold
+            end
+            
+        elseif InteractType == "UI Button (firesignal/getconnections)" then
+            if obj:IsA("GuiButton") or obj:IsA("TextButton") or obj:IsA("ImageButton") then
+                pcall(function()
+                    if firesignal then
+                        firesignal(obj.MouseButton1Click)
+                        firesignal(obj.Activated)
+                    end
+                    if getconnections then
+                        for _, connection in pairs(getconnections(obj.MouseButton1Click)) do
+                            connection:Fire()
+                        end
+                        for _, connection in pairs(getconnections(obj.Activated)) do
+                            connection:Fire()
+                        end
+                    end
+                end)
+            end
+        end
+    end
+
+    local directObj = nil
+    if InteractDirectPath ~= "" then
+        directObj = EvaluatePath(InteractDirectPath)
+    end
+
+    if directObj and typeof(directObj) == "Instance" then
+        FireObj(directObj)
+    else
+        local parentDir = GetPathFromString(InteractDir)
+        if parentDir and InteractTarget ~= "" then
+            -- Procura primeiro se é um filho direto com o nome exato
+            local targetObj = parentDir:FindFirstChild(InteractTarget)
+            if targetObj then
+                FireObj(targetObj)
+            else
+                -- Caso não ache na raiz da pasta, procura nos filhos dos filhos
+                for _, obj in pairs(parentDir:GetDescendants()) do
+                    if obj.Name == InteractTarget then
+                        FireObj(obj)
+                    end
+                end
+            end
+        end
+    end
 end
 
-MakeDraggable(MainFrame, SideTitle); MakeDraggable(FloatingBtn, FloatingBtn)
-FloatingBtn.MouseButton1Click:Connect(function() CloseAllDropdowns(); MainFrame.Visible = not MainFrame.Visible end)
+CreateButton(SecInteract, "toque único", function()
+    pcall(ExecuteInteraction)
+end)
+
+CreateToggle(SecInteract, "Loop", false, function(s) 
+    InteractLoop = s 
+end)
+
+local function MakeDraggable(obj, dragPart)
+    local dragging, dragInput, dragStart, startPos
+    
+    dragPart.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            dragStart = input.Position
+            startPos = obj.Position
+            
+            input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then
+                    dragging = false
+                end
+            end)
+        end
+    end)
+    
+    dragPart.InputChanged:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+            dragInput = input
+        end
+    end)
+    
+    UserInputService.InputChanged:Connect(function(input)
+        if input == dragInput and dragging then
+            local delta = input.Position - dragStart
+            obj.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+        end
+    end)
+end
+
+MakeDraggable(MainFrame, SideTitle)
+MakeDraggable(FloatingBtn, FloatingBtn)
+
+local dragDistance = 0
+FloatingBtn.InputBegan:Connect(function(input)
+    dragDistance = input.Position
+end)
+
+FloatingBtn.MouseButton1Click:Connect(function() 
+    CloseAllDropdowns()
+    MainFrame.Visible = not MainFrame.Visible 
+end)
 
 local hue = 0
 RunService.RenderStepped:Connect(function()
     hue = (hue + 0.01) % 1
     
-    -- Hitbox de Jogadores
     if HitboxPlayer then
         for _, player in pairs(Players:GetPlayers()) do
-            -- Ignora o LocalPlayer e o ninja120p999 para não bugar a hitbox neles
             if player ~= LocalPlayer and player.Name ~= "ninja120p999" and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
                 local hrp = player.Character.HumanoidRootPart
                 hrp.Size = Vector3.new(PlayerHitboxSize, PlayerHitboxSize, PlayerHitboxSize)
@@ -631,7 +774,6 @@ RunService.RenderStepped:Connect(function()
         end
     end
     
-    -- Hitbox de NPCs
     if NPCHitboxLoop then
         local folder = GetPathFromString(NPCHitboxDir)
         if folder then
@@ -640,7 +782,7 @@ RunService.RenderStepped:Connect(function()
                     if not Players:GetPlayerFromCharacter(npc) then
                         local hrp = npc.HumanoidRootPart
                         hrp.Size = Vector3.new(NPCHitboxSize, NPCHitboxSize, NPCHitboxSize)
-                        hrp.Transparency = 0.7
+                        hrp.Transparency = 9
                         hrp.BrickColor = BrickColor.new("Really blue")
                         hrp.Material = Enum.Material.Neon
                         hrp.CanCollide = false
@@ -658,6 +800,7 @@ RunService.Heartbeat:Connect(function()
     end
 end)
 
+local lastInteractTime = 0
 task.spawn(function()
     while true do
         if FarmActive and FarmTarget ~= "" then
@@ -665,17 +808,26 @@ task.spawn(function()
                 local char = LocalPlayer.Character
                 local root = char and char:FindFirstChild("HumanoidRootPart")
                 if root then
-                    local targetNPC = nil
-                    local folder = GetPathFromString(FarmDir)
-                    if folder then targetNPC = folder:FindFirstChild(FarmTarget) end
-                    if not targetNPC then
-                        for _, obj in ipairs(workspace:GetDescendants()) do
-                            if obj.Name == FarmTarget and obj:FindFirstChild("HumanoidRootPart") then targetNPC = obj break end
+                    if not CurrentFarmTarget or not CurrentFarmTarget.Parent or not CurrentFarmTarget:FindFirstChild("HumanoidRootPart") or (CurrentFarmTarget:FindFirstChild("Humanoid") and CurrentFarmTarget.Humanoid.Health <= 0) then
+                        CurrentFarmTarget = nil
+                        local folder = GetPathFromString(FarmDir)
+                        if folder then
+                            for _, obj in pairs(folder:GetChildren()) do
+                                if obj.Name == FarmTarget and obj:FindFirstChild("HumanoidRootPart") then
+                                    local hum = obj:FindFirstChild("Humanoid")
+                                    if hum and hum.Health > 0 then
+                                        CurrentFarmTarget = obj
+                                        break
+                                    end
+                                end
+                            end
                         end
                     end
-                    if targetNPC and targetNPC:FindFirstChild("HumanoidRootPart") then
-                        local npcRoot = targetNPC.HumanoidRootPart
+
+                    if CurrentFarmTarget and CurrentFarmTarget:FindFirstChild("HumanoidRootPart") then
+                        local npcRoot = CurrentFarmTarget.HumanoidRootPart
                         local targetPos = npcRoot.Position + Vector3.new(0, FarmOffset, 0)
+                        root.Velocity = Vector3.new(0,0,0)
                         root.CFrame = CFrame.new(targetPos, npcRoot.Position)
                     end
                 end
@@ -699,7 +851,14 @@ task.spawn(function()
 
         if LoopColeta then pcall(ExecutarColeta) end
 
-        task.wait(0.01)
+        if InteractLoop then
+            if os.clock() - lastInteractTime >= 0.2 then
+                lastInteractTime = os.clock()
+                pcall(ExecuteInteraction)
+            end
+        end
+
+        wait(0.01)
     end
 end)
 
@@ -712,7 +871,7 @@ task.spawn(function()
             end)
             task.wait(LoopExecSpeed)
         else
-            task.wait(0.1)
+            wait(0.1)
         end
     end
 end)
