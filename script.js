@@ -70,7 +70,7 @@ Pages.ClipsDescendants = true
 local FloatingBtn = Instance.new("TextButton", ScreenGui)
 FloatingBtn.Size = UDim2.new(0, 55, 0, 55)
 -- AQUIIII: Se quiser mudar a altura do botão, mude o 0.1 abaixo. Menor = mais alto.
-FloatingBtn.Position = UDim2.new(0.05, 0, 0.1, 0) 
+FloatingBtn.Position = UDim2.new(0.05, 0, 0, 0) 
 FloatingBtn.BackgroundColor3 = Theme.Accent; FloatingBtn.Text = "RN"; FloatingBtn.Font = Enum.Font.GothamBold
 FloatingBtn.TextColor3 = Theme.Main; FloatingBtn.TextSize = 20; Instance.new("UICorner", FloatingBtn).CornerRadius = UDim.new(1, 0)
 
