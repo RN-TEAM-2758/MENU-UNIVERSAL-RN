@@ -12,7 +12,7 @@ local Theme = {
     Text = Color3.fromRGB(240, 240, 240),
     Button = Color3.fromRGB(35, 35, 45),
     Hover = Color3.fromRGB(50, 50, 65),
-    Selected = Color3.fromRGB(0, 180, 100) -- Cor para item selecionado na lista
+    Selected = Color3.fromRGB(0, 180, 100)
 }
 
 local DropdownSignals = {}
@@ -209,9 +209,9 @@ function CreateDropdown(parent, text, options, callback, isMulti)
     local function UpdateOptions(newList)
         for _, v in pairs(listFrame:GetChildren()) do if v:IsA("TextButton") then v:Destroy() end end
         
-        -- Inserir [ ALL ] por padrão nas listas múltiplas
+        -- RN TEAM
         if isMulti then
-            table.insert(newList, 1, "[ ALL ]")
+            table.insert(newList, 1, "ALL")
         end
 
         for _, opt in pairs(newList) do
@@ -224,16 +224,16 @@ function CreateDropdown(parent, text, options, callback, isMulti)
 
             o.MouseButton1Click:Connect(function()
                 if isMulti then
-                    if opt == "[ ALL ]" then
-                        selectedItems = {"[ ALL ]"}
+                    if opt == "ALL" then
+                        selectedItems = {"ALL"}
                         for _, btn in pairs(listFrame:GetChildren()) do
                             if btn:IsA("TextButton") then
-                                btn.BackgroundColor3 = (btn.Text == "[ ALL ]") and Theme.Selected or Theme.Secondary
+                                btn.BackgroundColor3 = (btn.Text == "ALL") and Theme.Selected or Theme.Secondary
                             end
                         end
                     else
-                        -- Remove ALL if it was selected
-                        local allIdx = table.find(selectedItems, "[ ALL ]")
+                        -- RN TEAM
+                        local allIdx = table.find(selectedItems, "ALL")
                         if allIdx then table.remove(selectedItems, allIdx) end
                         
                         local idx = table.find(selectedItems, opt)
@@ -244,9 +244,9 @@ function CreateDropdown(parent, text, options, callback, isMulti)
                             table.insert(selectedItems, opt)
                             o.BackgroundColor3 = Theme.Selected
                         end
-                        -- Reseta visual do botão ALL
+                        -- RN TEAM
                         for _, btn in pairs(listFrame:GetChildren()) do
-                            if btn:IsA("TextButton") and btn.Text == "[ ALL ]" then btn.BackgroundColor3 = Theme.Secondary end
+                            if btn:IsA("TextButton") and btn.Text == "ALL" then btn.BackgroundColor3 = Theme.Secondary end
                         end
                     end
                     dropBtn.Text = text .. " (" .. #selectedItems .. " selec.)"
@@ -277,8 +277,7 @@ AddTab("🔍 Visual", PageWorld)
 AddTab("😏 Farm/Itens", PageFarm)
 AddTab("💻 Executor", PageExecutor)
 
--- ================= ABA EXECUTOR (Sem Sections e com Páginas) =================
-local ScriptsDB = {"", "", "", "", ""} -- 5 slots de scripts
+local ScriptsDB = {"", "", "", "", ""}
 local CurrentSlot = 1
 
 local ExecNav = Instance.new("Frame", PageExecutor)
@@ -490,7 +489,6 @@ CreateToggle(PageWorld, "fechar tela de compras", false, function(state)
     else if AntiPurchaseConn then AntiPurchaseConn:Disconnect() AntiPurchaseConn = nil end end
 end)
 
--- Helper para buscar o próximo alvo das listas múltiplas
 local function GetNextTargetFromMultiList(dirPath, targetList)
     local folder = GetPathFromString(dirPath)
     if not folder or not targetList or #targetList == 0 then return nil end
@@ -624,74 +622,104 @@ local InteractDirectPath = ""
 local InteractType = "Touch (firetouchinterest)"
 local InteractLoop = false
 
-CreateTextBox(SecInteract, "Diretório da Lista", "workspace", function(v) InteractDir = v end)
-local InteractDropdown = CreateDropdown(SecInteract, "Selecionar Alvo", {}, function(opt) InteractTarget = opt end, false)
+-- [[ SEÇÃO INTERACT - RN TEAM MENU (VERSÃO LIMPA) ]] --
 
-CreateButton(SecInteract, "Atualizar Lista", function()
-    local folder = GetPathFromString(InteractDir)
-    local list = {}
-    if folder then for _, v in pairs(folder:GetChildren()) do table.insert(list, v.Name) end end
-    InteractDropdown.UpdateList(list)
+-- Variáveis para armazenar os inputs
+local InteractDir = ""    -- Onde os itens estão (Ex: Workspace.Drops)
+local InteractTarget = "" -- Nome do item (Ex: Coin)
+local InteractDirectPath = "" -- Caminho direto opcional
+
+CreateTextBox(SecInteract, "Diretório da Pasta", "Ex: Workspace.Items", function(v) 
+    InteractDir = v 
 end)
 
-CreateTextBox(SecInteract, "Caminho Direto", "Deixe em branco p/ usar lista", function(v) InteractDirectPath = v end)
+CreateTextBox(SecInteract, "Nome do Item/Alvo", "Ex: Ouro ou qualquer coisa", function(v) 
+    InteractTarget = v 
+end)
 
-local InteractOptions = {"Touch (firetouchinterest)", "ClickDetector (fireclickdetector)", "ProximityPrompt (Instant bypass)", "UI Button (firesignal/getconnections)"}
+CreateTextBox(SecInteract, "Caminho Direto", "Caminho completo do objeto", function(v) 
+    InteractDirectPath = v 
+end)
+
+local InteractOptions = {
+    "Touch (firetouchinterest)", 
+    "ClickDetector (fireclickdetector)", 
+    "ProximityPrompt (Instant bypass)", 
+    "ProximityPrompt (Segurar Real)", 
+    "UI Button (firesignal/getconnections)"
+}
 CreateDropdown(SecInteract, "Tipo de Evento", InteractOptions, function(opt) InteractType = opt end, false)
 
 local function ExecuteInteraction()
     local function FireObj(obj)
         if not obj then return end
+        
+        -- Lógica de Interação (Mantendo a que funcionou)
         if InteractType == "Touch (firetouchinterest)" then
             if obj:IsA("BasePart") and LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
                 firetouchinterest(LocalPlayer.Character.HumanoidRootPart, obj, 0)
                 firetouchinterest(LocalPlayer.Character.HumanoidRootPart, obj, 1)
             end
         elseif InteractType == "ClickDetector (fireclickdetector)" then
-            local cd = obj:FindFirstChildOfClass("ClickDetector")
-            if not cd and obj:IsA("ClickDetector") then cd = obj end
+            local cd = obj:FindFirstChildOfClass("ClickDetector") or (obj:IsA("ClickDetector") and obj)
             if cd then fireclickdetector(cd) end
         elseif InteractType == "ProximityPrompt (Instant bypass)" then
-            local pp = obj:FindFirstChildOfClass("ProximityPrompt")
-            if not pp and obj:IsA("ProximityPrompt") then pp = obj end
+            local pp = obj:FindFirstChildOfClass("ProximityPrompt") or (obj:IsA("ProximityPrompt") and obj)
             if pp then 
-                local originalHold = pp.HoldDuration
+                local oldHold = pp.HoldDuration
                 pp.HoldDuration = 0
                 fireproximityprompt(pp)
-                task.wait(0.01)
-                pp.HoldDuration = originalHold
+                task.wait(0.05)
+                pp.HoldDuration = oldHold
+            end
+        elseif InteractType == "ProximityPrompt (Segurar Real)" then
+            local pp = obj:FindFirstChildOfClass("ProximityPrompt") or (obj:IsA("ProximityPrompt") and obj)
+            if pp then 
+                pp:InputHoldBegin()
+                task.wait(pp.HoldDuration + 0.1)
+                pp:InputHoldEnd()
+                fireproximityprompt(pp)
             end
         elseif InteractType == "UI Button (firesignal/getconnections)" then
-            if obj:IsA("GuiButton") or obj:IsA("TextButton") or obj:IsA("ImageButton") then
+            if obj:IsA("GuiButton") then
                 pcall(function()
                     if firesignal then firesignal(obj.MouseButton1Click); firesignal(obj.Activated) end
                     if getconnections then
                         for _, connection in pairs(getconnections(obj.MouseButton1Click)) do connection:Fire() end
-                        for _, connection in pairs(getconnections(obj.Activated)) do connection:Fire() end
                     end
                 end)
             end
         end
     end
 
-    local directObj = nil
-    if InteractDirectPath ~= "" then directObj = EvaluatePath(InteractDirectPath) end
-
-    if directObj and typeof(directObj) == "Instance" then FireObj(directObj)
-    else
-        local parentDir = GetPathFromString(InteractDir)
-        if parentDir and InteractTarget ~= "" then
-            local targetObj = parentDir:FindFirstChild(InteractTarget)
-            if targetObj then FireObj(targetObj)
-            else
-                for _, obj in pairs(parentDir:GetDescendants()) do if obj.Name == InteractTarget then FireObj(obj) end end
+    -- LÓGICA DE BUSCA PELAS CAIXAS DE TEXTO
+    if InteractDirectPath ~= "" then
+        local directObj = EvaluatePath(InteractDirectPath)
+        if directObj then FireObj(directObj) end
+    elseif InteractDir ~= "" and InteractTarget ~= "" then
+        local folder = EvaluatePath(InteractDir) -- Transforma a string do diretório em Objeto
+        if folder then
+            -- Procura por todos os itens com aquele nome dentro da pasta
+            for _, item in pairs(folder:GetDescendants()) do
+                if item.Name == InteractTarget then
+                    FireObj(item)
+                end
             end
         end
     end
 end
 
-CreateButton(SecInteract, "toque único", function() pcall(ExecuteInteraction) end)
-CreateToggle(SecInteract, "Loop", false, function(s) InteractLoop = s end)
+CreateButton(SecInteract, "Executar", function() pcall(ExecuteInteraction) end)
+
+CreateToggle(SecInteract, "Loop", false, function(s) 
+    InteractLoop = s 
+    task.spawn(function()
+        while InteractLoop do
+            pcall(ExecuteInteraction)
+            task.wait(0)
+        end
+    end)
+end)
 
 local function MakeDraggable(obj, dragPart)
     local dragging, dragInput, dragStart, startPos
@@ -755,7 +783,6 @@ end)
 
 local lastInteractTime = 0
 
--- LOOP OTIMIZADO (sem delay e usando task.wait)
 task.spawn(function()
     while true do
         if FarmActive and #FarmTarget > 0 then
@@ -813,4 +840,4 @@ end)
 UserInputService.JumpRequest:Connect(function() if InfJump and LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid") then LocalPlayer.Character:FindFirstChildOfClass("Humanoid"):ChangeState("Jumping") end end)
 
 PageCombat.Visible = true
-CreateButton(PageWorld, "fechar Menu", function() ScreenGui:Destroy() end)
+CreateButton(PageWorld, "fechar Menu", function() ScreenGui:Destroy() end) end)
