@@ -180,7 +180,7 @@ function CreateTextBox(parent, text, placeholder, callback)
     return box
 end
 
--- Modificado para suportar Multi-Seleção e botão [ ALL ]
+-- Modificado para suportar Multi-Seleção e botão ALL
 function CreateDropdown(parent, text, options, callback, isMulti)
     local dropContainer = Instance.new("Frame", parent)
     dropContainer.Size = UDim2.new(0.95, 0, 0, 35); dropContainer.BackgroundTransparency = 1; dropContainer.ZIndex = 20
@@ -232,7 +232,7 @@ function CreateDropdown(parent, text, options, callback, isMulti)
                             end
                         end
                     else
-                        -- RN TEAM
+                        -- Remove ALL if it was selected
                         local allIdx = table.find(selectedItems, "ALL")
                         if allIdx then table.remove(selectedItems, allIdx) end
                         
@@ -244,7 +244,7 @@ function CreateDropdown(parent, text, options, callback, isMulti)
                             table.insert(selectedItems, opt)
                             o.BackgroundColor3 = Theme.Selected
                         end
-                        -- RN TEAM
+                        -- Reseta visual do botão ALL
                         for _, btn in pairs(listFrame:GetChildren()) do
                             if btn:IsA("TextButton") and btn.Text == "ALL" then btn.BackgroundColor3 = Theme.Secondary end
                         end
@@ -277,7 +277,8 @@ AddTab("🔍 Visual", PageWorld)
 AddTab("😏 Farm/Itens", PageFarm)
 AddTab("💻 Executor", PageExecutor)
 
-local ScriptsDB = {"", "", "", "", ""}
+-- ================= ABA EXECUTOR (Sem Sections e com Páginas) =================
+local ScriptsDB = {"", "", "", "", ""} -- 5 slots de scripts
 local CurrentSlot = 1
 
 local ExecNav = Instance.new("Frame", PageExecutor)
@@ -492,7 +493,7 @@ end)
 local function GetNextTargetFromMultiList(dirPath, targetList)
     local folder = GetPathFromString(dirPath)
     if not folder or not targetList or #targetList == 0 then return nil end
-    local searchAll = table.find(targetList, "[ ALL ]") ~= nil
+    local searchAll = table.find(targetList, "ALL") ~= nil
     
     for _, v in pairs(folder:GetChildren()) do
         if searchAll or table.find(targetList, v.Name) then
@@ -840,4 +841,4 @@ end)
 UserInputService.JumpRequest:Connect(function() if InfJump and LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid") then LocalPlayer.Character:FindFirstChildOfClass("Humanoid"):ChangeState("Jumping") end end)
 
 PageCombat.Visible = true
-CreateButton(PageWorld, "fechar Menu", function() ScreenGui:Destroy() end) end)
+CreateButton(PageWorld, "fechar Menu", function() ScreenGui:Destroy() end)
