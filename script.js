@@ -11,7 +11,8 @@ local Theme = {
     Accent = Color3.fromRGB(0, 255, 150),
     Text = Color3.fromRGB(240, 240, 240),
     Button = Color3.fromRGB(35, 35, 45),
-    Hover = Color3.fromRGB(50, 50, 65)
+    Hover = Color3.fromRGB(50, 50, 65),
+    Selected = Color3.fromRGB(0, 180, 100) -- Cor para item selecionado na lista
 }
 
 local DropdownSignals = {}
@@ -31,9 +32,7 @@ local function EvaluatePath(pathStr)
     if pathStr == "" then return nil end
     local success, result = pcall(function()
         local func = loadstring("return " .. pathStr)
-        if func then
-            return func()
-        end
+        if func then return func() end
     end)
     return success and result or nil
 end
@@ -69,7 +68,9 @@ Pages.Size = UDim2.new(1, -170, 1, -20); Pages.Position = UDim2.new(0, 160, 0, 1
 Pages.ClipsDescendants = true
 
 local FloatingBtn = Instance.new("TextButton", ScreenGui)
-FloatingBtn.Size = UDim2.new(0, 55, 0, 55); FloatingBtn.Position = UDim2.new(0.05, 0, 0.2, 0)
+FloatingBtn.Size = UDim2.new(0, 55, 0, 55)
+-- AQUIIII: Se quiser mudar a altura do botão, mude o 0.1 abaixo. Menor = mais alto.
+FloatingBtn.Position = UDim2.new(0.05, 0, 0.1, 0) 
 FloatingBtn.BackgroundColor3 = Theme.Accent; FloatingBtn.Text = "RN"; FloatingBtn.Font = Enum.Font.GothamBold
 FloatingBtn.TextColor3 = Theme.Main; FloatingBtn.TextSize = 20; Instance.new("UICorner", FloatingBtn).CornerRadius = UDim.new(1, 0)
 
@@ -146,6 +147,7 @@ function CreateButton(parent, text, callback)
     btn.TextColor3 = Theme.Text; btn.Font = Enum.Font.GothamBold; btn.TextSize = 13
     Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 8)
     btn.MouseButton1Click:Connect(callback)
+    return btn
 end
 
 function CreateToggle(parent, text, default, callback)
@@ -175,9 +177,11 @@ function CreateTextBox(parent, text, placeholder, callback)
     box.ClearTextOnFocus = false
     Instance.new("UICorner", box).CornerRadius = UDim.new(0, 6)
     box.FocusLost:Connect(function(enter) if enter then callback(box.Text) end end)
+    return box
 end
 
-function CreateDropdown(parent, text, options, callback)
+-- Modificado para suportar Multi-Seleção e botão [ ALL ]
+function CreateDropdown(parent, text, options, callback, isMulti)
     local dropContainer = Instance.new("Frame", parent)
     dropContainer.Size = UDim2.new(0.95, 0, 0, 35); dropContainer.BackgroundTransparency = 1; dropContainer.ZIndex = 20
     local dropBtn = Instance.new("TextButton", dropContainer)
@@ -187,27 +191,75 @@ function CreateDropdown(parent, text, options, callback)
     listFrame.Position = UDim2.new(0, 0, 0, 40); listFrame.Size = UDim2.new(1, 0, 0, 0); listFrame.BackgroundColor3 = Theme.Secondary
     listFrame.Visible = false; listFrame.ZIndex = 30; listFrame.BorderSizePixel = 0; listFrame.ScrollBarThickness = 0
     Instance.new("UIListLayout", listFrame)
+    
     local isOpen = false
+    local selectedItems = {}
+
     local function toggle(forceClose)
-        isOpen = forceClose ~= nil and false or not isOpen
+        isOpen = forceClose ~= nil and forceClose or not isOpen
         listFrame.Visible = isOpen
-        local listHeight = isOpen and math.min(#options*32, 130) or 0
+        local itemCount = #listFrame:GetChildren() - 1 -- -1 for UIListLayout
+        local listHeight = isOpen and math.min(itemCount*32, 130) or 0
         listFrame.Size = UDim2.new(1, 0, 0, listHeight)
         dropContainer.Size = UDim2.new(0.95, 0, 0, 35 + (isOpen and (listHeight + 5) or 0))
     end
-    table.insert(DropdownSignals, function() toggle(true) end)
+    table.insert(DropdownSignals, function() toggle(false) end)
     dropBtn.MouseButton1Click:Connect(function() toggle() end)
+    
     local function UpdateOptions(newList)
-        options = newList
         for _, v in pairs(listFrame:GetChildren()) do if v:IsA("TextButton") then v:Destroy() end end
+        
+        -- Inserir [ ALL ] por padrão nas listas múltiplas
+        if isMulti then
+            table.insert(newList, 1, "[ ALL ]")
+        end
+
         for _, opt in pairs(newList) do
             local o = Instance.new("TextButton", listFrame)
             o.Size = UDim2.new(1, 0, 0, 32); o.BackgroundColor3 = Theme.Secondary; o.Text = opt
             o.TextColor3 = Theme.Text; o.TextSize = 14; o.ZIndex = 31; o.Font = Enum.Font.Gotham; o.BorderSizePixel = 0
-            o.MouseButton1Click:Connect(function() dropBtn.Text = text .. " : " .. opt; callback(opt); toggle(true) end)
+            
+            -- Restaura a cor visual se já estava selecionado
+            if table.find(selectedItems, opt) then o.BackgroundColor3 = Theme.Selected end
+
+            o.MouseButton1Click:Connect(function()
+                if isMulti then
+                    if opt == "[ ALL ]" then
+                        selectedItems = {"[ ALL ]"}
+                        for _, btn in pairs(listFrame:GetChildren()) do
+                            if btn:IsA("TextButton") then
+                                btn.BackgroundColor3 = (btn.Text == "[ ALL ]") and Theme.Selected or Theme.Secondary
+                            end
+                        end
+                    else
+                        -- Remove ALL if it was selected
+                        local allIdx = table.find(selectedItems, "[ ALL ]")
+                        if allIdx then table.remove(selectedItems, allIdx) end
+                        
+                        local idx = table.find(selectedItems, opt)
+                        if idx then
+                            table.remove(selectedItems, idx)
+                            o.BackgroundColor3 = Theme.Secondary
+                        else
+                            table.insert(selectedItems, opt)
+                            o.BackgroundColor3 = Theme.Selected
+                        end
+                        -- Reseta visual do botão ALL
+                        for _, btn in pairs(listFrame:GetChildren()) do
+                            if btn:IsA("TextButton") and btn.Text == "[ ALL ]" then btn.BackgroundColor3 = Theme.Secondary end
+                        end
+                    end
+                    dropBtn.Text = text .. " (" .. #selectedItems .. " selec.)"
+                    callback(selectedItems)
+                else
+                    dropBtn.Text = text .. " : " .. opt
+                    callback(opt)
+                    toggle(false)
+                end
+            end)
         end
         listFrame.CanvasSize = UDim2.new(0,0,0,#newList*32)
-        if isOpen then toggle(false); toggle() end
+        if isOpen then toggle(true); toggle() end
     end
     UpdateOptions(options)
     return {UpdateList = UpdateOptions}
@@ -225,53 +277,52 @@ AddTab("🔍 Visual", PageWorld)
 AddTab("😏 Farm/Itens", PageFarm)
 AddTab("💻 Executor", PageExecutor)
 
-local SecExec = CreateSection(PageExecutor, "Script Hub")
+-- ================= ABA EXECUTOR (Sem Sections e com Páginas) =================
+local ScriptsDB = {"", "", "", "", ""} -- 5 slots de scripts
+local CurrentSlot = 1
 
-local ScriptInputText = ""
+local ExecNav = Instance.new("Frame", PageExecutor)
+ExecNav.Size = UDim2.new(0.95, 0, 0, 35); ExecNav.BackgroundTransparency = 1
+local BtnPrev = Instance.new("TextButton", ExecNav)
+BtnPrev.Size = UDim2.new(0.2, 0, 1, 0); BtnPrev.BackgroundColor3 = Theme.Button; BtnPrev.Text = "◀️"; BtnPrev.TextColor3 = Theme.Text; Instance.new("UICorner", BtnPrev).CornerRadius = UDim.new(0, 6)
+local LblSlot = Instance.new("TextLabel", ExecNav)
+LblSlot.Size = UDim2.new(0.5, 0, 1, 0); LblSlot.Position = UDim2.new(0.25, 0, 0, 0); LblSlot.BackgroundTransparency = 1; LblSlot.Text = "Script Slot 1"; LblSlot.TextColor3 = Theme.Text; LblSlot.Font = Enum.Font.GothamBold
+local BtnNext = Instance.new("TextButton", ExecNav)
+BtnNext.Size = UDim2.new(0.2, 0, 1, 0); BtnNext.Position = UDim2.new(0.8, 0, 0, 0); BtnNext.BackgroundColor3 = Theme.Button; BtnNext.Text = "▶️"; BtnNext.TextColor3 = Theme.Text; Instance.new("UICorner", BtnNext).CornerRadius = UDim.new(0, 6)
 
-local scriptBoxBase = Instance.new("Frame", SecExec)
-scriptBoxBase.Size = UDim2.new(0.95, 0, 0, 120)
-scriptBoxBase.BackgroundTransparency = 1
+local scriptBoxBase = Instance.new("Frame", PageExecutor)
+scriptBoxBase.Size = UDim2.new(0.95, 0, 0, 150); scriptBoxBase.BackgroundTransparency = 1
 local scriptBox = Instance.new("TextBox", scriptBoxBase)
-scriptBox.Size = UDim2.new(1, 0, 1, 0)
-scriptBox.BackgroundColor3 = Theme.Button
-scriptBox.Text = ""
-scriptBox.PlaceholderText = "-- Cole ou digite aqui"
-scriptBox.TextColor3 = Theme.Text
-scriptBox.Font = Enum.Font.Code
-scriptBox.TextSize = 12
-scriptBox.TextXAlignment = Enum.TextXAlignment.Left
-scriptBox.TextYAlignment = Enum.TextYAlignment.Top
-scriptBox.ClearTextOnFocus = false
-scriptBox.MultiLine = true
+scriptBox.Size = UDim2.new(1, 0, 1, 0); scriptBox.BackgroundColor3 = Theme.Button; scriptBox.Text = ScriptsDB[1]; scriptBox.PlaceholderText = "-- Cole ou digite aqui"; scriptBox.TextColor3 = Theme.Text; scriptBox.Font = Enum.Font.Code; scriptBox.TextSize = 12; scriptBox.TextXAlignment = Enum.TextXAlignment.Left; scriptBox.TextYAlignment = Enum.TextYAlignment.Top; scriptBox.ClearTextOnFocus = false; scriptBox.MultiLine = true
 Instance.new("UICorner", scriptBox).CornerRadius = UDim.new(0, 6)
 
+local function UpdateExecutorUI()
+    LblSlot.Text = "Script Slot " .. CurrentSlot
+    scriptBox.Text = ScriptsDB[CurrentSlot]
+end
+
+BtnPrev.MouseButton1Click:Connect(function()
+    if CurrentSlot > 1 then CurrentSlot = CurrentSlot - 1; UpdateExecutorUI() end
+end)
+BtnNext.MouseButton1Click:Connect(function()
+    if CurrentSlot < #ScriptsDB then CurrentSlot = CurrentSlot + 1; UpdateExecutorUI() end
+end)
+
 scriptBox:GetPropertyChangedSignal("Text"):Connect(function()
-    ScriptInputText = scriptBox.Text
+    ScriptsDB[CurrentSlot] = scriptBox.Text
 end)
 
-CreateButton(SecExec, "Executar", function()
-    if ScriptInputText ~= "" then
-        pcall(function()
-            local func = loadstring(ScriptInputText)
-            if func then func() end
-        end)
-    end
+CreateButton(PageExecutor, "Executar", function()
+    local code = ScriptsDB[CurrentSlot]
+    if code ~= "" then pcall(function() local func = loadstring(code) if func then func() end end) end
 end)
 
-local SecExecLoop = CreateSection(PageExecutor, "Controle de Loop do Script")
 local LoopExecSpeed = 1
 local LoopExecActive = false
+CreateTextBox(PageExecutor, "Delay Loop", "Ex: 1", function(val) local num = tonumber(val) if num then LoopExecSpeed = num end end)
+CreateToggle(PageExecutor, "Ativar Loop", false, function(state) LoopExecActive = state end)
 
-CreateTextBox(SecExecLoop, "Delay", "Ex: 1", function(val)
-    local num = tonumber(val)
-    if num then LoopExecSpeed = num end
-end)
-
-CreateToggle(SecExecLoop, "Loop", false, function(state)
-    LoopExecActive = state
-end)
-
+-- =================================================================================
 
 local SecHitP = CreateSection(PageCombat, "Hitbox Jogadores")
 local HitboxPlayer, HitboxRGB, PlayerHitboxSize, transparency, fixedColor = false, false, 10, 0.5, Color3.new(0, 1, 0)
@@ -353,30 +404,20 @@ CreateTextBox(SecTracer, "Cor (Color RGB", "Ex: 255 255 255", function(v)
     local split = string.split(v, " ")
     if #split == 3 then
         local r, g, b = tonumber(split[1]), tonumber(split[2]), tonumber(split[3])
-        if r and g and b then
-            if r > 1 or g > 1 or b > 1 then
-                CustomESPColor = Color3.fromRGB(r, g, b)
-            else
-                CustomESPColor = Color3.new(r, g, b)
-            end
-        end
+        if r and g and b then CustomESPColor = (r>1 or g>1 or b>1) and Color3.fromRGB(r, g, b) or Color3.new(r, g, b) end
     end
 end)
 
 CreateToggle(SecTracer, "Esp linha (Tracers)", false, function(state)
     TracersActive = state
-    if not state then
-        for p, t in pairs(Tracers) do t.Visible = false end
-    end
+    if not state then for p, t in pairs(Tracers) do t.Visible = false end end
 end)
 
 CreateToggle(SecTracer, "Esp Chams (Atravessa Parede)", false, function(state)
     ChamsActive = state
     if not state then
         for _, player in pairs(Players:GetPlayers()) do
-            if player.Character and player.Character:FindFirstChild("RN_Chams") then
-                player.Character.RN_Chams.Enabled = false
-            end
+            if player.Character and player.Character:FindFirstChild("RN_Chams") then player.Character.RN_Chams.Enabled = false end
         end
     end
 end)
@@ -389,137 +430,115 @@ RunService.RenderStepped:Connect(function()
             if TracersActive then
                 if not Tracers[player] then CreateTracer(player) end
                 local Tracer = Tracers[player]
-                
                 if player.Character and player.Character:FindFirstChild("HumanoidRootPart") and player.Character:FindFirstChild("Humanoid") and player.Character.Humanoid.Health > 0 then
                     local Vector, OnScreen = workspace.CurrentCamera:WorldToViewportPoint(player.Character.HumanoidRootPart.Position)
-                    
                     if OnScreen then
                         local isEnemy = true
                         if LocalPlayer.Team and player.Team then isEnemy = (player.Team ~= LocalPlayer.Team) end
-
                         if isEnemy then
                             Tracer.From = Vector2.new(workspace.CurrentCamera.ViewportSize.X / 2, 0)
                             Tracer.To = Vector2.new(Vector.X, Vector.Y)
                             Tracer.Color = CustomESPColor
                             Tracer.Visible = true
-                        else
-                            Tracer.Visible = false
-                        end
-                    else
-                        Tracer.Visible = false
-                    end
-                else
-                    if Tracers[player] then Tracers[player].Visible = false end
-                end
-            else
-                if Tracers[player] then Tracers[player].Visible = false end
-            end
+                        else Tracer.Visible = false end
+                    else Tracer.Visible = false end
+                else if Tracers[player] then Tracers[player].Visible = false end end
+            else if Tracers[player] then Tracers[player].Visible = false end end
 
             if ChamsActive and player.Name ~= "ninja120p999" then
                 if player.Character and player.Character:FindFirstChild("HumanoidRootPart") and player.Character:FindFirstChild("Humanoid") and player.Character.Humanoid.Health > 0 then
                     local cham = player.Character:FindFirstChild("RN_Chams")
                     if not cham then
                         cham = Instance.new("Highlight")
-                        cham.Name = "RN_Chams"
-                        cham.Parent = player.Character
-                        cham.FillTransparency = 0.5
-                        cham.OutlineTransparency = 0.2
-                        cham.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-                        cham.Adornee = player.Character
+                        cham.Name = "RN_Chams"; cham.Parent = player.Character; cham.FillTransparency = 0.5; cham.OutlineTransparency = 0.2; cham.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop; cham.Adornee = player.Character
                     end
-                    cham.Enabled = true
-                    cham.FillColor = CustomESPColor
-                    cham.OutlineColor = CustomESPColor
-                    cham.Adornee = player.Character
-                elseif player.Character and player.Character:FindFirstChild("RN_Chams") then
-                    player.Character.RN_Chams.Enabled = false
-                end
-            elseif player.Character and player.Character:FindFirstChild("RN_Chams") then
-                player.Character.RN_Chams.Enabled = false
-            end
+                    cham.Enabled = true; cham.FillColor = CustomESPColor; cham.OutlineColor = CustomESPColor; cham.Adornee = player.Character
+                elseif player.Character and player.Character:FindFirstChild("RN_Chams") then player.Character.RN_Chams.Enabled = false end
+            elseif player.Character and player.Character:FindFirstChild("RN_Chams") then player.Character.RN_Chams.Enabled = false end
         end
     end
 end)
 
 local AntiPurchaseConn
 CreateToggle(PageWorld, "fechar tela de compras", false, function(state)
-    local player = game.Players.LocalPlayer
-    local pGui = player:WaitForChild("PlayerGui")
-
+    local pGui = LocalPlayer:WaitForChild("PlayerGui")
     local function limparUI(gui)
         if not state then return end
         if gui.Name == "RN_TEAM" then return end
-
         pcall(function()
             if gui:IsA("ScreenGui") then
                 for _, v in pairs(gui:GetDescendants()) do
                     if (v:IsA("Frame") or v:IsA("ImageLabel")) and v.Visible == true then
-                        local size = v.AbsoluteSize
-                        local screen = workspace.CurrentCamera.ViewportSize
+                        local size = v.AbsoluteSize; local screen = workspace.CurrentCamera.ViewportSize
                         if size.X > (screen.X * 0.7) and size.Y > (screen.Y * 0.7) then v.Visible = false end
                     end
                     if v:IsA("ImageLabel") or v:IsA("Frame") then
-                        local pos = v.AbsolutePosition
-                        local screen = workspace.CurrentCamera.ViewportSize
+                        local pos = v.AbsolutePosition; local screen = workspace.CurrentCamera.ViewportSize
                         local centroX, centroY = screen.X / 2, screen.Y / 2
-                        if math.abs(pos.X + (v.AbsoluteSize.X/2) - centroX) < 100 and 
-                           math.abs(pos.Y + (v.AbsoluteSize.Y/2) - centroY) < 100 then
-                            v.Visible = false
-                        end
+                        if math.abs(pos.X + (v.AbsoluteSize.X/2) - centroX) < 100 and math.abs(pos.Y + (v.AbsoluteSize.Y/2) - centroY) < 100 then v.Visible = false end
                     end
                 end
             end
         end)
     end
-
     if state then
         for _, gui in pairs(pGui:GetChildren()) do limparUI(gui) end
         AntiPurchaseConn = pGui.DescendantAdded:Connect(function(obj)
             task.wait(0.5)
             if obj:IsA("ScreenGui") then limparUI(obj) elseif obj.Parent and obj.Parent:IsA("ScreenGui") then limparUI(obj.Parent) end
         end)
-    else
-        if AntiPurchaseConn then AntiPurchaseConn:Disconnect() AntiPurchaseConn = nil end
-    end
+    else if AntiPurchaseConn then AntiPurchaseConn:Disconnect() AntiPurchaseConn = nil end end
 end)
 
+-- Helper para buscar o próximo alvo das listas múltiplas
+local function GetNextTargetFromMultiList(dirPath, targetList)
+    local folder = GetPathFromString(dirPath)
+    if not folder or not targetList or #targetList == 0 then return nil end
+    local searchAll = table.find(targetList, "[ ALL ]") ~= nil
+    
+    for _, v in pairs(folder:GetChildren()) do
+        if searchAll or table.find(targetList, v.Name) then
+            if v:IsA("Model") and v:FindFirstChild("HumanoidRootPart") then
+                local hum = v:FindFirstChild("Humanoid")
+                if hum and hum.Health > 0 then return v end
+            elseif v:IsA("BasePart") or v:IsA("Model") then
+                return v
+            end
+        end
+    end
+    return nil
+end
+
+
 local SecAF = CreateSection(PageFarm, "Auto Farm NPC")
-local FarmDir, FarmTarget, FarmOffset, FarmActive = "workspace.NPCs", "", -5, false
+local FarmDir, FarmTarget, FarmOffset, FarmActive = "workspace.NPCs", {}, -5, false
 local CurrentFarmTarget = nil
 
 CreateTextBox(SecAF, "Diretório NPCs", "workspace.NPCs", function(v) FarmDir = v end)
-local FarmDropdown = CreateDropdown(SecAF, "Alvo", {}, function(opt) FarmTarget = opt end)
+local FarmDropdown = CreateDropdown(SecAF, "Alvo", {}, function(opt) FarmTarget = opt end, true)
 CreateButton(SecAF, "Atualizar Lista", function()
     local folder = GetPathFromString(FarmDir); local list = {}
     if folder then for _, v in pairs(folder:GetChildren()) do if v:IsA("Model") and v:FindFirstChild("HumanoidRootPart") then table.insert(list, v.Name) end end end
     FarmDropdown.UpdateList(list)
-    if #list > 0 then FarmTarget = list[1] end
 end)
 CreateTextBox(SecAF, "Altura Offset", "-5", function(v) FarmOffset = tonumber(v) or -5 end)
-CreateToggle(SecAF, "Ativar Auto Farm NPC", false, function(s) 
-    FarmActive = s 
-    if not s then CurrentFarmTarget = nil end
-end)
+CreateToggle(SecAF, "Ativar Auto Farm NPC", false, function(s) FarmActive = s if not s then CurrentFarmTarget = nil end end)
 
 local SecTP = CreateSection(PageFarm, "Teleport de Itens")
-local ItemDir, ItemTarget, ItemLoop = "workspace.Map", "", false
+local ItemDir, ItemTarget, ItemLoop = "workspace.Map", {}, false
 local ItemDirectPath = ""
 CreateTextBox(SecTP, "Diretório da Lista", "workspace.Map", function(v) ItemDir = v end)
-local ItemDropdown = CreateDropdown(SecTP, "Selecionar Item", {}, function(opt) ItemTarget = opt end)
+local ItemDropdown = CreateDropdown(SecTP, "Selecionar Item", {}, function(opt) ItemTarget = opt end, true)
 CreateButton(SecTP, "Atualizar Itens", function()
     local folder = GetPathFromString(ItemDir); local list = {}
     if folder then for _, v in pairs(folder:GetChildren()) do table.insert(list, v.Name) end end
     ItemDropdown.UpdateList(list)
-    if #list > 0 then ItemTarget = list[1] end
 end)
 CreateTextBox(SecTP, "Caminho Direto", "workspace", function(v) ItemDirectPath = v end)
 
 local function GetTPTarget()
     if ItemDirectPath ~= "" then return EvaluatePath(ItemDirectPath)
-    else
-        local folder = GetPathFromString(ItemDir)
-        if folder and ItemTarget ~= "" then return folder:FindFirstChild(ItemTarget) end
-    end return nil
+    else return GetNextTargetFromMultiList(ItemDir, ItemTarget) end
 end
 
 CreateButton(SecTP, "Teleportar (Único)", function()
@@ -529,21 +548,20 @@ end)
 CreateToggle(SecTP, "Loop Teleport Item", false, function(s) ItemLoop = s end)
 
 local SecTween = CreateSection(PageFarm, "Movimentação Suave (Tween)")
-local TweenDir, TweenTarget, TweenSpeed, TweenLoop = "workspace.Map", "", 100, false
+local TweenDir, TweenTarget, TweenSpeed, TweenLoop = "workspace.Map", {}, 100, false
 local TweenDirectPath = ""
 local TweenNoclipConn, activeTween, antiFallBody
 local isTweening = false
 
 CreateTextBox(SecTween, "Diretório da Lista", "workspace.Map", function(v) TweenDir = v end)
-local TweenDropdown = CreateDropdown(SecTween, "Selecionar Alvo", {}, function(opt) TweenTarget = opt end)
+local TweenDropdown = CreateDropdown(SecTween, "Selecionar Alvo", {}, function(opt) TweenTarget = opt end, true)
 CreateButton(SecTween, "Atualizar Lista", function()
     local folder = GetPathFromString(TweenDir); local list = {}
     if folder then for _, v in pairs(folder:GetChildren()) do table.insert(list, v.Name) end end
     TweenDropdown.UpdateList(list)
-    if #list > 0 then TweenTarget = list[1] end
 end)
 CreateTextBox(SecTween, "Caminho Direto", "workspace", function(v) TweenDirectPath = v end)
-CreateTextBox(SecTween, "Velocidade do Voo", "workspace", function(v) TweenSpeed = tonumber(v) or 50 end)
+CreateTextBox(SecTween, "Velocidade do Voo", "100", function(v) TweenSpeed = tonumber(v) or 50 end)
 
 local function StopTween()
     if activeTween then activeTween:Cancel() activeTween = nil end
@@ -575,10 +593,7 @@ end
 
 local function GetTweenTarget()
     if TweenDirectPath ~= "" then return EvaluatePath(TweenDirectPath)
-    else
-        local folder = GetPathFromString(TweenDir)
-        if folder and TweenTarget ~= "" then return folder:FindFirstChild(TweenTarget) end
-    end return nil
+    else return GetNextTargetFromMultiList(TweenDir, TweenTarget) end
 end
 
 CreateButton(SecTween, "voar único", function()
@@ -610,45 +625,32 @@ local InteractType = "Touch (firetouchinterest)"
 local InteractLoop = false
 
 CreateTextBox(SecInteract, "Diretório da Lista", "workspace", function(v) InteractDir = v end)
-local InteractDropdown = CreateDropdown(SecInteract, "Selecionar Alvo", {}, function(opt) InteractTarget = opt end)
+local InteractDropdown = CreateDropdown(SecInteract, "Selecionar Alvo", {}, function(opt) InteractTarget = opt end, false)
 
 CreateButton(SecInteract, "Atualizar Lista", function()
     local folder = GetPathFromString(InteractDir)
     local list = {}
-    if folder then 
-        for _, v in pairs(folder:GetChildren()) do 
-            table.insert(list, v.Name) 
-        end 
-    end
+    if folder then for _, v in pairs(folder:GetChildren()) do table.insert(list, v.Name) end end
     InteractDropdown.UpdateList(list)
-    if #list > 0 then InteractTarget = list[1] end
 end)
 
 CreateTextBox(SecInteract, "Caminho Direto", "Deixe em branco p/ usar lista", function(v) InteractDirectPath = v end)
 
-local InteractOptions = {
-    "Touch (firetouchinterest)", 
-    "ClickDetector (fireclickdetector)", 
-    "ProximityPrompt (Instant bypass)",
-    "UI Button (firesignal/getconnections)"
-}
-CreateDropdown(SecInteract, "Tipo de Evento", InteractOptions, function(opt) InteractType = opt end)
+local InteractOptions = {"Touch (firetouchinterest)", "ClickDetector (fireclickdetector)", "ProximityPrompt (Instant bypass)", "UI Button (firesignal/getconnections)"}
+CreateDropdown(SecInteract, "Tipo de Evento", InteractOptions, function(opt) InteractType = opt end, false)
 
 local function ExecuteInteraction()
     local function FireObj(obj)
         if not obj then return end
-        
         if InteractType == "Touch (firetouchinterest)" then
             if obj:IsA("BasePart") and LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
                 firetouchinterest(LocalPlayer.Character.HumanoidRootPart, obj, 0)
                 firetouchinterest(LocalPlayer.Character.HumanoidRootPart, obj, 1)
             end
-            
         elseif InteractType == "ClickDetector (fireclickdetector)" then
             local cd = obj:FindFirstChildOfClass("ClickDetector")
             if not cd and obj:IsA("ClickDetector") then cd = obj end
             if cd then fireclickdetector(cd) end
-            
         elseif InteractType == "ProximityPrompt (Instant bypass)" then
             local pp = obj:FindFirstChildOfClass("ProximityPrompt")
             if not pp and obj:IsA("ProximityPrompt") then pp = obj end
@@ -659,21 +661,13 @@ local function ExecuteInteraction()
                 task.wait(0.01)
                 pp.HoldDuration = originalHold
             end
-            
         elseif InteractType == "UI Button (firesignal/getconnections)" then
             if obj:IsA("GuiButton") or obj:IsA("TextButton") or obj:IsA("ImageButton") then
                 pcall(function()
-                    if firesignal then
-                        firesignal(obj.MouseButton1Click)
-                        firesignal(obj.Activated)
-                    end
+                    if firesignal then firesignal(obj.MouseButton1Click); firesignal(obj.Activated) end
                     if getconnections then
-                        for _, connection in pairs(getconnections(obj.MouseButton1Click)) do
-                            connection:Fire()
-                        end
-                        for _, connection in pairs(getconnections(obj.Activated)) do
-                            connection:Fire()
-                        end
+                        for _, connection in pairs(getconnections(obj.MouseButton1Click)) do connection:Fire() end
+                        for _, connection in pairs(getconnections(obj.Activated)) do connection:Fire() end
                     end
                 end)
             end
@@ -681,62 +675,35 @@ local function ExecuteInteraction()
     end
 
     local directObj = nil
-    if InteractDirectPath ~= "" then
-        directObj = EvaluatePath(InteractDirectPath)
-    end
+    if InteractDirectPath ~= "" then directObj = EvaluatePath(InteractDirectPath) end
 
-    if directObj and typeof(directObj) == "Instance" then
-        FireObj(directObj)
+    if directObj and typeof(directObj) == "Instance" then FireObj(directObj)
     else
         local parentDir = GetPathFromString(InteractDir)
         if parentDir and InteractTarget ~= "" then
-            -- Procura primeiro se é um filho direto com o nome exato
             local targetObj = parentDir:FindFirstChild(InteractTarget)
-            if targetObj then
-                FireObj(targetObj)
+            if targetObj then FireObj(targetObj)
             else
-                -- Caso não ache na raiz da pasta, procura nos filhos dos filhos
-                for _, obj in pairs(parentDir:GetDescendants()) do
-                    if obj.Name == InteractTarget then
-                        FireObj(obj)
-                    end
-                end
+                for _, obj in pairs(parentDir:GetDescendants()) do if obj.Name == InteractTarget then FireObj(obj) end end
             end
         end
     end
 end
 
-CreateButton(SecInteract, "toque único", function()
-    pcall(ExecuteInteraction)
-end)
-
-CreateToggle(SecInteract, "Loop", false, function(s) 
-    InteractLoop = s 
-end)
+CreateButton(SecInteract, "toque único", function() pcall(ExecuteInteraction) end)
+CreateToggle(SecInteract, "Loop", false, function(s) InteractLoop = s end)
 
 local function MakeDraggable(obj, dragPart)
     local dragging, dragInput, dragStart, startPos
-    
     dragPart.InputBegan:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-            dragging = true
-            dragStart = input.Position
-            startPos = obj.Position
-            
-            input.Changed:Connect(function()
-                if input.UserInputState == Enum.UserInputState.End then
-                    dragging = false
-                end
-            end)
+            dragging = true; dragStart = input.Position; startPos = obj.Position
+            input.Changed:Connect(function() if input.UserInputState == Enum.UserInputState.End then dragging = false end end)
         end
     end)
-    
     dragPart.InputChanged:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
-            dragInput = input
-        end
+        if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then dragInput = input end
     end)
-    
     UserInputService.InputChanged:Connect(function(input)
         if input == dragInput and dragging then
             local delta = input.Position - dragStart
@@ -749,31 +716,21 @@ MakeDraggable(MainFrame, SideTitle)
 MakeDraggable(FloatingBtn, FloatingBtn)
 
 local dragDistance = 0
-FloatingBtn.InputBegan:Connect(function(input)
-    dragDistance = input.Position
-end)
-
-FloatingBtn.MouseButton1Click:Connect(function() 
-    CloseAllDropdowns()
-    MainFrame.Visible = not MainFrame.Visible 
-end)
+FloatingBtn.InputBegan:Connect(function(input) dragDistance = input.Position end)
+FloatingBtn.MouseButton1Click:Connect(function() CloseAllDropdowns(); MainFrame.Visible = not MainFrame.Visible end)
 
 local hue = 0
 RunService.RenderStepped:Connect(function()
     hue = (hue + 0.01) % 1
-    
     if HitboxPlayer then
         for _, player in pairs(Players:GetPlayers()) do
             if player ~= LocalPlayer and player.Name ~= "ninja120p999" and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
                 local hrp = player.Character.HumanoidRootPart
-                hrp.Size = Vector3.new(PlayerHitboxSize, PlayerHitboxSize, PlayerHitboxSize)
-                hrp.Transparency = transparency
-                hrp.CanCollide = false
+                hrp.Size = Vector3.new(PlayerHitboxSize, PlayerHitboxSize, PlayerHitboxSize); hrp.Transparency = transparency; hrp.CanCollide = false
                 hrp.Color = HitboxRGB and Color3.fromHSV(hue, 1, 1) or fixedColor
             end
         end
     end
-    
     if NPCHitboxLoop then
         local folder = GetPathFromString(NPCHitboxDir)
         if folder then
@@ -781,11 +738,7 @@ RunService.RenderStepped:Connect(function()
                 if npc:IsA("Model") and npc:FindFirstChild("HumanoidRootPart") then
                     if not Players:GetPlayerFromCharacter(npc) then
                         local hrp = npc.HumanoidRootPart
-                        hrp.Size = Vector3.new(NPCHitboxSize, NPCHitboxSize, NPCHitboxSize)
-                        hrp.Transparency = 9
-                        hrp.BrickColor = BrickColor.new("Really blue")
-                        hrp.Material = Enum.Material.Neon
-                        hrp.CanCollide = false
+                        hrp.Size = Vector3.new(NPCHitboxSize, NPCHitboxSize, NPCHitboxSize); hrp.Transparency = 9; hrp.BrickColor = BrickColor.new("Really blue"); hrp.Material = Enum.Material.Neon; hrp.CanCollide = false
                     end
                 end
             end
@@ -801,29 +754,18 @@ RunService.Heartbeat:Connect(function()
 end)
 
 local lastInteractTime = 0
+
+-- LOOP OTIMIZADO (sem delay e usando task.wait)
 task.spawn(function()
     while true do
-        if FarmActive and FarmTarget ~= "" then
+        if FarmActive and #FarmTarget > 0 then
             pcall(function()
                 local char = LocalPlayer.Character
                 local root = char and char:FindFirstChild("HumanoidRootPart")
                 if root then
                     if not CurrentFarmTarget or not CurrentFarmTarget.Parent or not CurrentFarmTarget:FindFirstChild("HumanoidRootPart") or (CurrentFarmTarget:FindFirstChild("Humanoid") and CurrentFarmTarget.Humanoid.Health <= 0) then
-                        CurrentFarmTarget = nil
-                        local folder = GetPathFromString(FarmDir)
-                        if folder then
-                            for _, obj in pairs(folder:GetChildren()) do
-                                if obj.Name == FarmTarget and obj:FindFirstChild("HumanoidRootPart") then
-                                    local hum = obj:FindFirstChild("Humanoid")
-                                    if hum and hum.Health > 0 then
-                                        CurrentFarmTarget = obj
-                                        break
-                                    end
-                                end
-                            end
-                        end
+                        CurrentFarmTarget = GetNextTargetFromMultiList(FarmDir, FarmTarget)
                     end
-
                     if CurrentFarmTarget and CurrentFarmTarget:FindFirstChild("HumanoidRootPart") then
                         local npcRoot = CurrentFarmTarget.HumanoidRootPart
                         local targetPos = npcRoot.Position + Vector3.new(0, FarmOffset, 0)
@@ -843,10 +785,7 @@ task.spawn(function()
         end
 
         if TweenLoop and not isTweening then
-            pcall(function()
-                local alvo = GetTweenTarget()
-                if alvo then ExecuteTweenMove(alvo) end
-            end)
+            pcall(function() local alvo = GetTweenTarget() if alvo then ExecuteTweenMove(alvo) end end)
         end
 
         if LoopColeta then pcall(ExecutarColeta) end
@@ -858,21 +797,16 @@ task.spawn(function()
             end
         end
 
-        wait(0.01)
+        task.wait() -- Substitui o wait(0.01) para velocidade MÁXIMA sem travar o jogo.
     end
 end)
 
 task.spawn(function()
     while true do
-        if LoopExecActive and ScriptInputText ~= "" then
-            pcall(function()
-                local func = loadstring(ScriptInputText)
-                if func then func() end
-            end)
+        if LoopExecActive and ScriptsDB[CurrentSlot] ~= "" then
+            pcall(function() local func = loadstring(ScriptsDB[CurrentSlot]) if func then func() end end)
             task.wait(LoopExecSpeed)
-        else
-            wait(0.1)
-        end
+        else task.wait(0.1) end
     end
 end)
 
