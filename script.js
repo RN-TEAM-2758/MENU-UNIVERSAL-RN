@@ -278,7 +278,7 @@ AddTab("😏 Farm/Itens", PageFarm)
 AddTab("💻 Executor", PageExecutor)
 
 -- ================= ABA EXECUTOR (Sem Sections e com Páginas) =================
-local ScriptsDB = {"", "", "", "", ""} -- 5 slots de scripts
+local ScriptsDB = {"", "", "", "", "", "", "", "", "", ""}
 local CurrentSlot = 1
 
 local ExecNav = Instance.new("Frame", PageExecutor)
@@ -340,8 +340,29 @@ CreateTextBox(SecHitN, "Tamanho NPC", "", function(v) NPCHitboxSize = tonumber(v
 CreateToggle(SecHitN, "Hitbox NPCs", false, function(s) NPCHitboxLoop = s end)
 
 local SecAtrib = CreateSection(PageMove, "Atributos Base")
-CreateTextBox(SecAtrib, "Velocidade", "50", function(val) local v = tonumber(val) if v and LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid") then LocalPlayer.Character.Humanoid.WalkSpeed = v end end)
-CreateTextBox(SecAtrib, "Pulo", "100", function(val) local v = tonumber(val) if v and LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid") then LocalPlayer.Character.Humanoid.JumpHeight = v end end)
+local DesiredSpeed = 16
+local DesiredJump = 50
+
+-- Função que aplica os atributos no personagem
+local function ApplyStats(character)
+    local humanoid = character:WaitForChild("Humanoid")
+    humanoid.WalkSpeed = DesiredSpeed
+    humanoid.JumpHeight = DesiredJump
+end
+
+-- Conecta para aplicar sempre que você renascer
+LocalPlayer.CharacterAdded:Connect(ApplyStats)
+
+-- Atualiza as suas TextBoxes para salvarem o valor na variável
+CreateTextBox(SecAtrib, "Velocidade", "50", function(val) 
+    DesiredSpeed = tonumber(val) or 16
+    if LocalPlayer.Character then ApplyStats(LocalPlayer.Character) end
+end)
+
+CreateTextBox(SecAtrib, "Pulo", "100", function(val) 
+    DesiredJump = tonumber(val) or 50
+    if LocalPlayer.Character then ApplyStats(LocalPlayer.Character) end
+end)
 
 local SecEspecial = CreateSection(PageMove, "Movimento Especial")
 local InfJump = false
@@ -832,13 +853,27 @@ end)
 task.spawn(function()
     while true do
         if LoopExecActive and ScriptsDB[CurrentSlot] ~= "" then
-            pcall(function() local func = loadstring(ScriptsDB[CurrentSlot]) if func then func() end end)
+            
+            -- pcall para impedir que um erro no script feche ou trave seu executor
+            local success, err = pcall(function() 
+                local func = loadstring(ScriptsDB[CurrentSlot]) 
+                if func then 
+                    func() 
+                end 
+            end)
+            
+            if not success then
+                warn("Erro na execução do Script: ", err)
+            end
+            
             task.wait(LoopExecSpeed)
-        else task.wait(0.1) end
+        else
+            task.wait(0.1)
+        end
     end
 end)
 
 UserInputService.JumpRequest:Connect(function() if InfJump and LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid") then LocalPlayer.Character:FindFirstChildOfClass("Humanoid"):ChangeState("Jumping") end end)
 
 PageCombat.Visible = true
-CreateButton(PageWorld, "fechar Menu", function() ScreenGui:Destroy() end)
+CreateButton(PageWorld, "❌ fechar Menu", function() ScreenGui:Destroy() end)
