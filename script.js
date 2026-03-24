@@ -5,6 +5,7 @@ local RunService = game:GetService("RunService")
 local HttpService = game:GetService("HttpService")
 local Lighting = game:GetService("Lighting")
 local LocalPlayer = Players.LocalPlayer
+local Camera = workspace.CurrentCamera
 
 -- ==========================================
 -- CONFIGURAÇÕES E TEMA (Hacker Style)
@@ -19,8 +20,21 @@ local Theme = {
     Button = Color3.fromRGB(30, 30, 40)
 }
 
+-- [ CONFIGURAÇÕES DO NOVO AIMBOT & ESP ]
+local Config = {
+    Box = false,
+    Line = false,
+    Health = false,
+    Aimbot = false,
+    FOVSize = 50,
+    Smoothness = 0.80,
+    TeamCheck = true,
+    VisibleCheck = true
+}
+local Storage = {}
+
 -- ==========================================
--- FUNÇÕES UTILITÁRIAS (Helpers)
+-- FUNÇÕES UTILITÁRIAS (Helpers & Novo Mover)
 -- ==========================================
 local function GetPathFromString(pathStr)
     local parts = string.split(pathStr, ".")
@@ -46,14 +60,45 @@ local function GetNextTargetFromMultiList(dir, list)
     return nil
 end
 
+-- NOVO MOVER COM NOCLIP E ANTIFALL
+local noclipE = false
+local antifall = false
+
+local function noclip()
+    if not LocalPlayer.Character then return end
+    for i, v in pairs(LocalPlayer.Character:GetDescendants()) do
+        if v:IsA("BasePart") and v.CanCollide == true then
+            v.CanCollide = false
+            if LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
+                LocalPlayer.Character.HumanoidRootPart.Velocity = Vector3.new(0,0,0)
+            end
+        end
+    end
+end
+
 local function moveto(targetCFrame, speed)
     local char = LocalPlayer.Character
     local root = char and char:FindFirstChild("HumanoidRootPart")
     if not root then return end
+    
     local dist = (root.Position - targetCFrame.Position).Magnitude
-    local timeToTravel = dist / speed
-    local tween = TweenService:Create(root, TweenInfo.new(timeToTravel, Enum.EasingStyle.Linear), {CFrame = targetCFrame})
+    local info = TweenInfo.new(dist / speed, Enum.EasingStyle.Linear)
+    local tween = TweenService:Create(root, info, {CFrame = targetCFrame})
+ 
+    if not root:FindFirstChild("BodyVelocity") then
+        antifall = Instance.new("BodyVelocity", root)
+        antifall.Velocity = Vector3.new(0,0,0)
+        noclipE = RunService.Stepped:Connect(noclip)
+    end
+    
     tween:Play()
+ 
+    tween.Completed:Connect(function(playbackState)
+        if playbackState == Enum.PlaybackState.Completed then
+            if antifall then antifall:Destroy() antifall = false end
+            if noclipE then noclipE:Disconnect() noclipE = false end
+        end
+    end)
 end
 
 -- ==========================================
@@ -240,10 +285,9 @@ function CreateTextBox(parent, text, placeholder, callback)
     box.FocusLost:Connect(function() callback(box.Text) end)
 end
 
--- NOVA FUNÇÃO: SEÇÃO EXPANÍVEL (Accordion / Lista que abre)
 function CreateSection(parent, title)
     local sectionFrame = Instance.new("Frame", parent)
-    sectionFrame.Size = UDim2.new(1, 0, 0, 35) -- Tamanho fechado
+    sectionFrame.Size = UDim2.new(1, 0, 0, 35)
     sectionFrame.BackgroundColor3 = Theme.Background
     sectionFrame.ClipsDescendants = true
     Instance.new("UICorner", sectionFrame).CornerRadius = UDim.new(0, 6)
@@ -259,7 +303,6 @@ function CreateSection(parent, title)
     btn.TextXAlignment = Enum.TextXAlignment.Left
     Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 6)
 
-    -- Container onde as opções vão ficar
     local container = Instance.new("Frame", sectionFrame)
     container.Position = UDim2.new(0, 0, 0, 40)
     container.Size = UDim2.new(1, 0, 1, -40)
@@ -270,7 +313,6 @@ function CreateSection(parent, title)
 
     local open = false
     
-    -- Função interna para recalcular tamanho
     local function UpdateSize()
         local totalHeight = 40
         for _, child in pairs(container:GetChildren()) do
@@ -294,7 +336,7 @@ function CreateSection(parent, title)
         end
     end)
 
-    return container -- Retornamos o container para que você coloque as Toggles/Buttons dentro dele!
+    return container 
 end
 
 -- ==========================================
@@ -319,6 +361,18 @@ CreateTextBox(SecHitP, "Tamanho", "10", function(v) PlayerHitboxSize = tonumber(
 CreateToggle(SecHitP, "Ativar Hitbox", function(s) HitboxPlayer = s 
     if not s then for _, p in pairs(Players:GetPlayers()) do if p ~= LocalPlayer and p.Character and p.Character:FindFirstChild("HumanoidRootPart") then local hrp = p.Character.HumanoidRootPart hrp.Size = Vector3.new(2, 2, 1) hrp.Transparency = 1 hrp.CanCollide = true end end end
 end)
+
+-- NOVO: Toggles do Aimbot e ESP que você pediu
+local SecNovoAim = CreateSection(C_L, "Aimbot & ESP (Novo)")
+CreateToggle(SecNovoAim, "Ativar Aimbot", function(s) Config.Aimbot = s end)
+CreateTextBox(SecNovoAim, "Tamanho FOV", "50", function(v) Config.FOVSize = tonumber(v) or 50 end)
+CreateToggle(SecNovoAim, "Team Check", function(s) Config.TeamCheck = s end)
+CreateToggle(SecNovoAim, "Visible Check", function(s) Config.VisibleCheck = s end)
+
+local SecNovoEsp = CreateSection(C_R, "Drawings ESP (Novo)")
+CreateToggle(SecNovoEsp, "ESP Box", function(s) Config.Box = s end)
+CreateToggle(SecNovoEsp, "ESP Linha", function(s) Config.Line = s end)
+CreateToggle(SecNovoEsp, "ESP Vida", function(s) Config.Health = s end)
 
 local SecHitN = CreateSection(C_R, "Hitbox NPCs")
 local NPCHitboxDir, NPCHitboxSize, NPCHitboxLoop, npcFixedColor = "workspace.NPCs", 20, false, Color3.new(0, 0, 1)
@@ -424,7 +478,6 @@ local function CreateTracer(player)
 end
 CreateToggle(SecESP, "Esp Linha (Tracers)", function(state) TracersActive = state if not state then for _, t in pairs(Tracers) do t.Visible = false end end end)
 CreateToggle(SecESP, "Esp Parede (Chams)", function(state) ChamsActive = state if not state then for _, player in pairs(Players:GetPlayers()) do if player.Character and player.Character:FindFirstChild("RN_Chams") then player.Character.RN_Chams.Enabled = false end end end end)
-Players.PlayerRemoving:Connect(function(player) if Tracers[player] then Tracers[player]:Remove() Tracers[player] = nil end end)
 
 -- --- ABA MOVIMENTO ---
 local SecMoveB = CreateSection(M_L, "Atributos do Player")
@@ -449,30 +502,230 @@ CreateTextBox(SecMoveT, "Velocidade Tween", "100", function(v) TweenSpeed = tonu
 CreateToggle(SecMoveT, "Ignorar Aliados", function(s) IrJogadorTeamCheck = s end)
 CreateToggle(SecMoveT, "Ativar Perseguição", function(s) IrJogadorAtivo = s end)
 
--- --- ABA EXECUTOR ---
--- Sem seções no lado direito para a caixa de texto não bugar a rolagem!
-local SecExecControl = CreateSection(E_L, "Controles")
 local ScriptsDB, CurrentSlot = {"", "", "", "", "", "", "", "", "", ""}, 1
-local ExecNav = Instance.new("Frame", SecExecControl); ExecNav.Size = UDim2.new(1, 0, 0, 35); ExecNav.BackgroundTransparency = 1
-local BtnPrev = Instance.new("TextButton", ExecNav); BtnPrev.Size = UDim2.new(0.2, 0, 1, 0); BtnPrev.BackgroundColor3 = Theme.Button; BtnPrev.Text = "◀️"; BtnPrev.TextColor3 = Theme.Text; BtnPrev.TextSize = 10; Instance.new("UICorner", BtnPrev).CornerRadius = UDim.new(0, 6)
-local LblSlot = Instance.new("TextLabel", ExecNav); LblSlot.Size = UDim2.new(0.5, 0, 1, 0); LblSlot.Position = UDim2.new(0.25, 0, 0, 0); LblSlot.BackgroundTransparency = 1; LblSlot.Text = "Script Slot 1"; LblSlot.TextColor3 = Theme.Text; LblSlot.Font = Enum.Font.GothamBold; LblSlot.TextSize = 10
-local BtnNext = Instance.new("TextButton", ExecNav); BtnNext.Size = UDim2.new(0.2, 0, 1, 0); BtnNext.Position = UDim2.new(0.8, 0, 0, 0); BtnNext.BackgroundColor3 = Theme.Button; BtnNext.Text = "▶️"; BtnNext.TextColor3 = Theme.Text; BtnNext.TextSize = 10; Instance.new("UICorner", BtnNext).CornerRadius = UDim.new(0, 6)
 
-CreateButton(SecExecControl, "▶ Executar Código", function() local code = ScriptsDB[CurrentSlot] if code ~= "" then pcall(function() local func = loadstring(code) if func then func() end end) end end)
-CreateButton(SecExecControl, "🗑️ Limpar Caixa", function() ScriptsDB[CurrentSlot] = "" scriptBox.Text = "" end) -- Removi a dependência cíclica
+-- --- NAVEGAÇÃO DE SLOTS (Topo) ---
+local ExecNav = Instance.new("Frame", PageExecutor)
+ExecNav.Size = UDim2.new(1, 0, 0, 35)
+ExecNav.BackgroundTransparency = 1
 
-local scriptBoxBase = Instance.new("Frame", E_R); scriptBoxBase.Size = UDim2.new(1, 0, 0, 260); scriptBoxBase.BackgroundTransparency = 1
-local scriptBox = Instance.new("TextBox", scriptBoxBase); scriptBox.Size = UDim2.new(1, 0, 1, 0); scriptBox.BackgroundColor3 = Theme.Panel; scriptBox.Text = ScriptsDB[1]; scriptBox.PlaceholderText = "-- Cole seu script aqui\n-- \n-- A aba executor agora parece um editor\n-- de verdade."; scriptBox.TextColor3 = Theme.Text; scriptBox.Font = Enum.Font.Code; scriptBox.TextSize = 10; scriptBox.TextXAlignment = Enum.TextXAlignment.Left; scriptBox.TextYAlignment = Enum.TextYAlignment.Top; scriptBox.ClearTextOnFocus = false; scriptBox.MultiLine = true; Instance.new("UICorner", scriptBox).CornerRadius = UDim.new(0, 6); Instance.new("UIStroke", scriptBox).Color = Theme.Outline
+local BtnPrev = Instance.new("TextButton", ExecNav)
+BtnPrev.Size = UDim2.new(0.2, 0, 1, 0)
+BtnPrev.BackgroundColor3 = Theme.Button
+BtnPrev.Text = "◀️"
+BtnPrev.TextColor3 = Theme.Text
+BtnPrev.TextSize = 10
+Instance.new("UICorner", BtnPrev).CornerRadius = UDim.new(0, 6)
 
-local function UpdateExecutorUI() LblSlot.Text = "Script Slot " .. CurrentSlot; scriptBox.Text = ScriptsDB[CurrentSlot] end
-BtnPrev.MouseButton1Click:Connect(function() if CurrentSlot > 1 then CurrentSlot = CurrentSlot - 1 UpdateExecutorUI() end end)
-BtnNext.MouseButton1Click:Connect(function() if CurrentSlot < #ScriptsDB then CurrentSlot = CurrentSlot + 1 UpdateExecutorUI() end end)
-scriptBox:GetPropertyChangedSignal("Text"):Connect(function() ScriptsDB[CurrentSlot] = scriptBox.Text end)
+local LblSlot = Instance.new("TextLabel", ExecNav)
+LblSlot.Size = UDim2.new(0.5, 0, 1, 0)
+LblSlot.Position = UDim2.new(0.25, 0, 0, 0)
+LblSlot.BackgroundTransparency = 1
+LblSlot.Text = "Script Slot 1"
+LblSlot.TextColor3 = Theme.Text
+LblSlot.Font = Enum.Font.GothamBold
+LblSlot.TextSize = 10
+
+local BtnNext = Instance.new("TextButton", ExecNav)
+BtnNext.Size = UDim2.new(0.2, 0, 1, 0)
+BtnNext.Position = UDim2.new(0.8, 0, 0, 0)
+BtnNext.BackgroundColor3 = Theme.Button
+BtnNext.Text = "▶️"
+BtnNext.TextColor3 = Theme.Text
+BtnNext.TextSize = 10
+Instance.new("UICorner", BtnNext).CornerRadius = UDim.new(0, 6)
+
+-- --- CAIXA DE TEXTO (Altura Reduzida) ---
+-- --- CAIXA DE TEXTO COM SCROLL (Para o texto não sair pra fora) ---
+local scriptBoxBase = Instance.new("Frame", PageExecutor)
+scriptBoxBase.Size = UDim2.new(1, -10, 0, 250) -- Mantive a altura menor que você pediu
+scriptBoxBase.Position = UDim2.new(0, 5, 0, 45)
+scriptBoxBase.BackgroundTransparency = 1
+
+-- Criando o Scroll para o texto não vazar
+local scrollEditor = Instance.new("ScrollingFrame", scriptBoxBase)
+scrollEditor.Size = UDim2.new(1, 0, 1, 0)
+scrollEditor.BackgroundTransparency = 1
+scrollEditor.CanvasSize = UDim2.new(0, 0, 0, 0) -- Começa zerado
+scrollEditor.AutomaticCanvasSize = Enum.AutomaticSize.Y -- Cresce conforme você escreve
+scrollEditor.ScrollBarThickness = 4
+scrollEditor.ScrollBarImageColor3 = Theme.Outline
+
+local scriptBox = Instance.new("TextBox", scrollEditor)
+scriptBox.Size = UDim2.new(1, -5, 1, 0) -- Um pouco menor na largura para a barra de scroll aparecer
+scriptBox.BackgroundColor3 = Theme.Panel
+scriptBox.Text = ScriptsDB[1]
+scriptBox.PlaceholderText = "-- Cole seu script aqui..."
+scriptBox.TextColor3 = Theme.Text
+scriptBox.Font = Enum.Font.Code
+scriptBox.TextSize = 10
+scriptBox.TextXAlignment = Enum.TextXAlignment.Left
+scriptBox.TextYAlignment = Enum.TextYAlignment.Top
+scriptBox.ClearTextOnFocus = false
+scriptBox.MultiLine = true
+scriptBox.ClipsDescendants = true -- Isso garante que o texto suma ao sair da borda
+Instance.new("UICorner", scriptBox).CornerRadius = UDim.new(0, 6)
+Instance.new("UIStroke", scriptBox).Color = Theme.Outline
+
+-- --- BOTÕES (Sem Seção e Posicionados abaixo) ---
+
+-- Botão de Limpar (Logo abaixo da caixa)
+local btnClear = CreateButton(PageExecutor, "🗑️ Limpar Caixa", function() 
+    ScriptsDB[CurrentSlot] = "" 
+    scriptBox.Text = "" 
+end)
+-- Se sua função CreateButton não aceitar posicionamento automático, 
+-- você pode ajustar a posição dele aqui se necessário.
+
+-- Botão de Executar (No final de tudo)
+local btnExecute = CreateButton(PageExecutor, "▶ Executar Código", function() 
+    local code = ScriptsDB[CurrentSlot] 
+    if code ~= "" then 
+        pcall(function() 
+            local func = loadstring(code) 
+            if func then func() end 
+        end) 
+    end 
+end)
+
+-- --- LÓGICA DE ATUALIZAÇÃO ---
+local function UpdateExecutorUI() 
+    LblSlot.Text = "Script Slot " .. CurrentSlot
+    scriptBox.Text = ScriptsDB[CurrentSlot] 
+end
+
+BtnPrev.MouseButton1Click:Connect(function() 
+    if CurrentSlot > 1 then 
+        CurrentSlot = CurrentSlot - 1 
+        UpdateExecutorUI() 
+    end 
+end)
+
+BtnNext.MouseButton1Click:Connect(function() 
+    if CurrentSlot < #ScriptsDB then 
+        CurrentSlot = CurrentSlot + 1 
+        UpdateExecutorUI() 
+    end 
+end)
+
+scriptBox:GetPropertyChangedSignal("Text"):Connect(function() 
+    ScriptsDB[CurrentSlot] = scriptBox.Text 
+end)
 
 PageCombat.Visible = true
 
 -- ==========================================
--- LÓGICA DE FUNDO (Loops e Eventos)
+-- LÓGICA DE FUNDO NOVO AIMBOT E ESP DRAWING
+-- ==========================================
+local function CreateDrawings(Player)
+    local d = {}
+    local success = pcall(function()
+        d.Box = Drawing.new("Square")
+        d.Box.Thickness = 1
+        d.Box.Filled = false
+        d.Box.Color = Color3.new(1, 1, 1)
+        
+        d.Line = Drawing.new("Line")
+        d.Line.Thickness = 1
+        d.Line.Color = Color3.new(1, 1, 1)
+        
+        d.Health = Drawing.new("Line")
+        d.Health.Thickness = 2
+        d.Health.Color = Color3.new(0, 1, 0)
+    end)
+    if success then Storage[Player] = d end
+end
+
+local function IsEnemy(Player)
+    if not Config.TeamCheck then return true end
+    if LocalPlayer.Team == nil then return true end
+    return Player.Team ~= LocalPlayer.Team
+end
+
+local function IsVisible(TargetPart)
+    if not LocalPlayer.Character or not LocalPlayer.Character:FindFirstChild("Head") then return false end
+    local rayOrigin = Camera.CFrame.Position
+    local rayDirection = TargetPart.Position - rayOrigin
+    local raycastParams = RaycastParams.new()
+    raycastParams.FilterDescendantsInstances = {LocalPlayer.Character}
+    raycastParams.FilterType = Enum.RaycastFilterType.Exclude
+    raycastParams.IgnoreWater = true
+    local result = workspace:Raycast(rayOrigin, rayDirection, raycastParams)
+    if result then
+        if result.Instance:IsDescendantOf(TargetPart.Parent) then return true
+        else return false end
+    end
+    return true
+end
+
+RunService.RenderStepped:Connect(function()
+    Camera = workspace.CurrentCamera
+    local Center = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+
+    -- [ ESP ]
+    for Player, ESP in pairs(Storage) do
+        local Char = Player.Character
+        if Char and Char:FindFirstChild("HumanoidRootPart") and Char:FindFirstChild("Humanoid") and IsEnemy(Player) then
+            local Root = Char.HumanoidRootPart
+            local Hum = Char.Humanoid
+            local Pos, OnScreen = Camera:WorldToViewportPoint(Root.Position)
+            
+            if OnScreen and Hum.Health > 0 then
+                local Scale = 1 / (Pos.Z * math.tan(math.rad(Camera.FieldOfView * 0.5)) * 2) * 1000
+                local W, H = 3 * Scale, 4.5 * Scale
+                
+                ESP.Box.Visible = Config.Box
+                ESP.Box.Size = Vector2.new(W, H)
+                ESP.Box.Position = Vector2.new(Pos.X - W/2, Pos.Y - H/2)
+                
+                ESP.Line.Visible = Config.Line
+                ESP.Line.From = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y)
+                ESP.Line.To = Vector2.new(Pos.X, Pos.Y + H/2)
+                
+                ESP.Health.Visible = Config.Health
+                local HealthH = (H * (Hum.Health / Hum.MaxHealth))
+                ESP.Health.From = Vector2.new(Pos.X - W/2 - 5, Pos.Y + H/2)
+                ESP.Health.To = Vector2.new(Pos.X - W/2 - 5, (Pos.Y + H/2) - HealthH)
+            else
+                for _, v in pairs(ESP) do v.Visible = false end
+            end
+        else
+            for _, v in pairs(ESP) do v.Visible = false end
+        end
+    end
+    
+    -- [ AIMBOT ]
+    if Config.Aimbot then
+        local target = nil
+        local dist = Config.FOVSize
+        
+        for _, p in pairs(Players:GetPlayers()) do
+            if p ~= LocalPlayer and p.Character and p.Character:FindFirstChild("Head") and IsEnemy(p) then
+                local headPart = p.Character.Head
+                local headPos, onScreen = Camera:WorldToViewportPoint(headPart.Position)
+                
+                if onScreen then
+                    if Config.VisibleCheck and not IsVisible(headPart) then continue end
+                    local mag = (Vector2.new(headPos.X, headPos.Y) - Center).Magnitude
+                    if mag < dist then dist = mag target = headPart end
+                end
+            end
+        end
+        if target then
+            Camera.CFrame = Camera.CFrame:Lerp(CFrame.new(Camera.CFrame.Position, target.Position), Config.Smoothness)
+        end
+    end
+end)
+
+Players.PlayerRemoving:Connect(function(Player)
+    if Storage[Player] then for _, v in pairs(Storage[Player]) do v:Remove() end Storage[Player] = nil end
+    if Tracers[Player] then Tracers[Player]:Remove() Tracers[Player] = nil end
+end)
+for _, p in pairs(Players:GetPlayers()) do if p ~= LocalPlayer then CreateDrawings(p) end end
+Players.PlayerAdded:Connect(CreateDrawings)
+
+-- ==========================================
+-- LÓGICA DE FUNDO ORIGINAL (Loops e Eventos)
 -- ==========================================
 RunService.RenderStepped:Connect(function()
     if HitboxPlayer then
