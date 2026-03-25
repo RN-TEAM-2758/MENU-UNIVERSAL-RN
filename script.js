@@ -7,20 +7,45 @@ local Lighting = game:GetService("Lighting")
 local LocalPlayer = Players.LocalPlayer
 local Camera = workspace.CurrentCamera
 
--- ==========================================
--- CONFIGURAÇÕES E TEMA (Hacker Style)
--- ==========================================
+local SaveFileName = "RN_TEAM_V4_SAVE.json"
+local RN_Data = {
+    ScriptsDB = {"", "", "", "", "", "", "", "", "", ""},
+    Speed = 16,
+    Jump = 50,
+    AccentColor = {0, 180, 100}
+}
+
+local function SaveConfigs()
+    pcall(function()
+        writefile(SaveFileName, HttpService:JSONEncode(RN_Data))
+    end)
+end
+
+local function LoadConfigs()
+    pcall(function()
+        if isfile and isfile(SaveFileName) then
+            local data = HttpService:JSONDecode(readfile(SaveFileName))
+            if data then
+                if data.ScriptsDB then RN_Data.ScriptsDB = data.ScriptsDB end
+                if data.Speed then RN_Data.Speed = data.Speed end
+                if data.Jump then RN_Data.Jump = data.Jump end
+                if data.AccentColor then RN_Data.AccentColor = data.AccentColor end
+            end
+        end
+    end)
+end
+LoadConfigs()
+
 local Theme = {
     Background = Color3.fromRGB(12, 12, 16),
     Panel = Color3.fromRGB(20, 20, 28),
     Outline = Color3.fromRGB(45, 45, 60),
-    Accent = Color3.fromRGB(0, 180, 100),
+    Accent = Color3.fromRGB(RN_Data.AccentColor[1], RN_Data.AccentColor[2], RN_Data.AccentColor[3]),
     Text = Color3.fromRGB(240, 240, 240),
     DarkText = Color3.fromRGB(140, 140, 150),
     Button = Color3.fromRGB(30, 30, 40)
 }
 
--- [ CONFIGURAÇÕES DO NOVO AIMBOT & ESP ]
 local Config = {
     Box = false,
     Line = false,
@@ -33,9 +58,6 @@ local Config = {
 }
 local Storage = {}
 
--- ==========================================
--- FUNÇÕES UTILITÁRIAS (Helpers & Novo Mover)
--- ==========================================
 local function GetPathFromString(pathStr)
     local parts = string.split(pathStr, ".")
     local current = game
@@ -60,7 +82,6 @@ local function GetNextTargetFromMultiList(dir, list)
     return nil
 end
 
--- NOVO MOVER COM NOCLIP E ANTIFALL
 local noclipE = false
 local antifall = false
 
@@ -101,9 +122,6 @@ local function moveto(targetCFrame, speed)
     end)
 end
 
--- ==========================================
--- INTERFACE PRINCIPAL (GUI)
--- ==========================================
 local ScreenGui = Instance.new("ScreenGui", LocalPlayer:WaitForChild("PlayerGui"))
 ScreenGui.Name = "RN_HACKER_V4"
 ScreenGui.ResetOnSpawn = false
@@ -131,7 +149,7 @@ CloseBtn.MouseButton1Click:Connect(function() ScreenGui:Destroy() end)
 
 local Title = Instance.new("TextLabel", TopBar)
 Title.Size = UDim2.new(0, 200, 1, 0); Title.Position = UDim2.new(0, 15, 0, 0)
-Title.BackgroundTransparency = 1; Title.Text = "RN TEAM // V4 PRO"; Title.Font = Enum.Font.Code
+Title.BackgroundTransparency = 1; Title.Text = "RN TEAM"; Title.Font = Enum.Font.Code
 Title.TextColor3 = Theme.Accent; Title.TextSize = 18; Title.TextXAlignment = Enum.TextXAlignment.Left
 
 local TabContainer = Instance.new("Frame", MainFrame)
@@ -172,9 +190,6 @@ end
 MakeDraggable(MainFrame, TopBar); 
 MakeDraggable(FloatingBtn, FloatClick)
 
--- ==========================================
--- COMPONENTES DO PAINEL
--- ==========================================
 function CreatePage()
     local page = Instance.new("Frame", PagesFolder)
     page.Size = UDim2.new(1, 0, 1, 0); page.BackgroundTransparency = 1; page.Visible = false
@@ -191,8 +206,12 @@ function AddTab(name, pageObj)
     local btnStroke = Instance.new("UIStroke", btn); btnStroke.Color = Theme.Outline
     btn.MouseButton1Click:Connect(function()
         for _, p in pairs(PagesFolder:GetChildren()) do p.Visible = false end
-        for _, b in pairs(TabContainer:GetChildren()) do if b:IsA("TextButton") then b.TextColor3 = Theme.DarkText; b.UIStroke.Color = Theme.Outline end end
-        pageObj.Visible = true; btn.TextColor3 = Theme.Text; btnStroke.Color = Theme.Accent
+        for _, b in pairs(TabContainer:GetChildren()) do 
+            if b:IsA("TextButton") then 
+                b.TextColor3 = Theme.DarkText
+            end 
+        end
+        pageObj.Visible = true; btn.TextColor3 = Theme.Accent
     end)
 end
 
@@ -203,8 +222,10 @@ function CreateButton(parent, text, callback)
     Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 6)
     Instance.new("UIStroke", btn).Color = Theme.Outline
     btn.MouseButton1Click:Connect(callback)
+    return btn
 end
 
+local ToggleElements = {}
 function CreateToggle(parent, text, callback)
     local btn = Instance.new("TextButton", parent)
     btn.Size = UDim2.new(1, 0, 0, 38); btn.BackgroundColor3 = Theme.Panel; btn.Text = "  " .. text
@@ -220,6 +241,8 @@ function CreateToggle(parent, text, callback)
     ball.BackgroundColor3 = Color3.fromRGB(200, 200, 200); Instance.new("UICorner", ball).CornerRadius = UDim.new(1, 0)
     
     local state = false
+    table.insert(ToggleElements, {bg = toggleBg, getState = function() return state end})
+
     btn.MouseButton1Click:Connect(function()
         state = not state
         local targetPos = state and UDim2.new(1, -16, 0.5, -7) or UDim2.new(0, 2, 0.5, -7)
@@ -297,7 +320,7 @@ function CreateSection(parent, title)
     btn.Size = UDim2.new(1, 0, 0, 35)
     btn.BackgroundColor3 = Theme.Panel
     btn.Text = "  ▶ " .. title
-    btn.TextColor3 = Theme.Accent
+    btn.TextColor3 = Theme.Text
     btn.Font = Enum.Font.GothamBold
     btn.TextSize = 12
     btn.TextXAlignment = Enum.TextXAlignment.Left
@@ -339,22 +362,57 @@ function CreateSection(parent, title)
     return container 
 end
 
--- ==========================================
--- MONTAGEM DAS ABAS E SEÇÕES
--- ==========================================
 local PageCombat, C_L, C_R = CreatePage()
 local PageFarm, F_L, F_R = CreatePage()
 local PageWorld, W_L, W_R = CreatePage()
 local PageMove, M_L, M_R = CreatePage()
-local PageExecutor, E_L, E_R = CreatePage()
+local PageExecutor = Instance.new("Frame", PagesFolder)
+local PageConfig, Cfg_L, Cfg_R = CreatePage()
+
+PageExecutor.Size = UDim2.new(1, 0, 1, 0); PageExecutor.BackgroundTransparency = 1; PageExecutor.Visible = false
 
 AddTab("⚔️ Combate", PageCombat)
 AddTab("😏 Farm", PageFarm)
 AddTab("🔍 Visual", PageWorld)
 AddTab("🏃 Movimento", PageMove)
 AddTab("💻 Executor", PageExecutor)
+AddTab("⚙️ Config", PageConfig)
 
--- --- ABA COMBATE ---
+local SecTheme = CreateSection(Cfg_L, "Tema Customizado")
+CreateTextBox(SecTheme, "Cor RGB", RN_Data.AccentColor[1].." "..RN_Data.AccentColor[2].." "..RN_Data.AccentColor[3], function(val)
+    local r, g, b = val:match("(%d+)%D+(%d+)%D+(%d+)")
+    if r and g and b then
+        Theme.Accent = Color3.fromRGB(tonumber(r), tonumber(g), tonumber(b))
+        RN_Data.AccentColor = {tonumber(r), tonumber(g), tonumber(b)}
+        SaveConfigs()
+        
+        Title.TextColor3 = Theme.Accent
+        MainStroke.Color = Theme.Accent
+        FloatStroke.Color = Theme.Accent
+        FloatClick.TextColor3 = Theme.Accent
+        
+        for _, btn in pairs(TabContainer:GetChildren()) do
+            if btn:IsA("TextButton") and btn.TextColor3 ~= Theme.DarkText then
+                btn.TextColor3 = Theme.Accent
+            end
+        end
+        
+        for _, tData in pairs(ToggleElements) do
+            if tData.getState() then
+                tData.bg.BackgroundColor3 = Theme.Accent
+            end
+        end
+    end
+end)
+
+local SecSys = CreateSection(Cfg_R, "Sistema")
+CreateButton(SecSys, "🔄 Reentrar no Servidor", function()
+    game:GetService("TeleportService"):TeleportToPlaceInstance(game.PlaceId, game.JobId, LocalPlayer)
+end)
+CreateButton(SecSys, "🗑️ Destruir Menu (Panic)", function()
+    ScreenGui:Destroy()
+end)
+
 local SecHitP = CreateSection(C_L, "Hitbox Jogadores")
 local HitboxPlayer, PlayerHitboxSize, transparency, playerFixedColor = false, 10, 0.5, Color3.new(0, 1, 0)
 CreateTextBox(SecHitP, "Tamanho", "10", function(v) PlayerHitboxSize = tonumber(v) or 10 end)
@@ -362,7 +420,6 @@ CreateToggle(SecHitP, "Ativar Hitbox", function(s) HitboxPlayer = s
     if not s then for _, p in pairs(Players:GetPlayers()) do if p ~= LocalPlayer and p.Character and p.Character:FindFirstChild("HumanoidRootPart") then local hrp = p.Character.HumanoidRootPart hrp.Size = Vector3.new(2, 2, 1) hrp.Transparency = 1 hrp.CanCollide = true end end end
 end)
 
--- NOVO: Toggles do Aimbot e ESP que você pediu
 local SecNovoAim = CreateSection(C_L, "Aimbot & ESP (Novo)")
 CreateToggle(SecNovoAim, "Ativar Aimbot", function(s) Config.Aimbot = s end)
 CreateTextBox(SecNovoAim, "Tamanho FOV", "50", function(v) Config.FOVSize = tonumber(v) or 50 end)
@@ -380,7 +437,6 @@ CreateTextBox(SecHitN, "Diretório NPCs", "workspace.NPCs", function(v) NPCHitbo
 CreateTextBox(SecHitN, "Tamanho NPC", "20", function(v) NPCHitboxSize = tonumber(v) or 20 end)
 CreateToggle(SecHitN, "Ativar Hitbox NPC", function(s) NPCHitboxLoop = s end)
 
--- --- ABA FARM ---
 local SecFarmP = CreateSection(F_L, "Auto Farm Jogadores")
 local FarmPlayerActive, FarmPlayerTeamCheck, FarmPlayerOffset = false, true, -5
 CreateTextBox(SecFarmP, "Altura Offset", "-5", function(v) FarmPlayerOffset = tonumber(v) or -5 end)
@@ -427,7 +483,6 @@ local function ExecutarColeta()
 end
 CreateToggle(SecTeleport, "Loop Coletar Area", function(s) LoopColeta = s end)
 
--- --- ABA VISUAL & ESP ---
 local SecVis = CreateSection(W_L, "Visual & Ambiente")
 local OriginalLighting = {Ambient = Lighting.Ambient, Brightness = Lighting.Brightness, OutdoorAmbient = Lighting.OutdoorAmbient}
 CreateToggle(SecVis, "Fullbright", function(state)
@@ -479,13 +534,61 @@ end
 CreateToggle(SecESP, "Esp Linha (Tracers)", function(state) TracersActive = state if not state then for _, t in pairs(Tracers) do t.Visible = false end end end)
 CreateToggle(SecESP, "Esp Parede (Chams)", function(state) ChamsActive = state if not state then for _, player in pairs(Players:GetPlayers()) do if player.Character and player.Character:FindFirstChild("RN_Chams") then player.Character.RN_Chams.Enabled = false end end end end)
 
--- --- ABA MOVIMENTO ---
 local SecMoveB = CreateSection(M_L, "Atributos do Player")
-local DesiredSpeed, DesiredJump = 16, 7.2
-local function ApplyStats(character) local humanoid = character:WaitForChild("Humanoid") humanoid.WalkSpeed = DesiredSpeed humanoid.JumpHeight = DesiredJump end
+local DesiredSpeed, DesiredJump = RN_Data.Speed, RN_Data.Jump
+local SpeedAtivo, JumpAtivo = false, false
+
+local function ApplyStats(character) 
+    local humanoid = character:WaitForChild("Humanoid") 
+    humanoid.WalkSpeed = DesiredSpeed 
+    humanoid.JumpHeight = DesiredJump 
+end
 LocalPlayer.CharacterAdded:Connect(ApplyStats)
-CreateTextBox(SecMoveB, "Velocidade", "Ex: 16", function(val) DesiredSpeed = tonumber(val) or 16 if LocalPlayer.Character then ApplyStats(LocalPlayer.Character) end end)
-CreateTextBox(SecMoveB, "Pulo", "Ex: 100", function(val) DesiredJump = tonumber(val) or 7.2 if LocalPlayer.Character then ApplyStats(LocalPlayer.Character) end end)
+
+CreateTextBox(SecMoveB, "Velocidade", tostring(DesiredSpeed), function(val) 
+    DesiredSpeed = tonumber(val) or 16 
+    RN_Data.Speed = DesiredSpeed
+    SaveConfigs()
+    if LocalPlayer.Character then ApplyStats(LocalPlayer.Character) end 
+end)
+
+CreateToggle(SecMoveB, "Ativar Speed", function(state)
+    SpeedAtivo = state
+    if not state and LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid") then
+        LocalPlayer.Character.Humanoid.WalkSpeed = 16
+    end
+end)
+
+CreateTextBox(SecMoveB, "Pulo", tostring(DesiredJump), function(val) 
+    DesiredJump = tonumber(val) or 50 
+    RN_Data.Jump = DesiredJump
+    SaveConfigs()
+    if LocalPlayer.Character then ApplyStats(LocalPlayer.Character) end 
+end)
+
+CreateToggle(SecMoveB, "Ativar Super Pulo", function(state)
+    JumpAtivo = state
+    if not state and LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid") then
+        LocalPlayer.Character.Humanoid.UseJumpPower = true
+        LocalPlayer.Character.Humanoid.JumpPower = 50
+    end
+end)
+
+RunService.Heartbeat:Connect(function()
+    local char = LocalPlayer.Character
+    if char then
+        local hum = char:FindFirstChild("Humanoid")
+        if hum then
+            if SpeedAtivo then
+                hum.WalkSpeed = DesiredSpeed
+            end
+            if JumpAtivo then
+                hum.UseJumpPower = true
+                hum.JumpPower = DesiredJump
+            end
+        end
+    end
+end)
 
 local SecMoveE = CreateSection(M_L, "Poderes de Movimento")
 local InfJump, NoclipConn = false, nil
@@ -502,9 +605,9 @@ CreateTextBox(SecMoveT, "Velocidade Tween", "100", function(v) TweenSpeed = tonu
 CreateToggle(SecMoveT, "Ignorar Aliados", function(s) IrJogadorTeamCheck = s end)
 CreateToggle(SecMoveT, "Ativar Perseguição", function(s) IrJogadorAtivo = s end)
 
-local ScriptsDB, CurrentSlot = {"", "", "", "", "", "", "", "", "", ""}, 1
 
--- --- NAVEGAÇÃO DE SLOTS (Topo) ---
+local CurrentSlot = 1
+
 local ExecNav = Instance.new("Frame", PageExecutor)
 ExecNav.Size = UDim2.new(1, 0, 0, 35)
 ExecNav.BackgroundTransparency = 1
@@ -535,26 +638,23 @@ BtnNext.TextColor3 = Theme.Text
 BtnNext.TextSize = 10
 Instance.new("UICorner", BtnNext).CornerRadius = UDim.new(0, 6)
 
--- --- CAIXA DE TEXTO (Altura Reduzida) ---
--- --- CAIXA DE TEXTO COM SCROLL (Para o texto não sair pra fora) ---
 local scriptBoxBase = Instance.new("Frame", PageExecutor)
-scriptBoxBase.Size = UDim2.new(1, -10, 0, 250) -- Mantive a altura menor que você pediu
+scriptBoxBase.Size = UDim2.new(1, -10, 1, -95)
 scriptBoxBase.Position = UDim2.new(0, 5, 0, 45)
 scriptBoxBase.BackgroundTransparency = 1
 
--- Criando o Scroll para o texto não vazar
 local scrollEditor = Instance.new("ScrollingFrame", scriptBoxBase)
 scrollEditor.Size = UDim2.new(1, 0, 1, 0)
 scrollEditor.BackgroundTransparency = 1
-scrollEditor.CanvasSize = UDim2.new(0, 0, 0, 0) -- Começa zerado
-scrollEditor.AutomaticCanvasSize = Enum.AutomaticSize.Y -- Cresce conforme você escreve
+scrollEditor.CanvasSize = UDim2.new(0, 0, 0, 0)
+scrollEditor.AutomaticCanvasSize = Enum.AutomaticSize.Y
 scrollEditor.ScrollBarThickness = 4
 scrollEditor.ScrollBarImageColor3 = Theme.Outline
 
 local scriptBox = Instance.new("TextBox", scrollEditor)
-scriptBox.Size = UDim2.new(1, -5, 1, 0) -- Um pouco menor na largura para a barra de scroll aparecer
+scriptBox.Size = UDim2.new(1, -5, 1, 0)
 scriptBox.BackgroundColor3 = Theme.Panel
-scriptBox.Text = ScriptsDB[1]
+scriptBox.Text = RN_Data.ScriptsDB[CurrentSlot]
 scriptBox.PlaceholderText = "-- Cole seu script aqui..."
 scriptBox.TextColor3 = Theme.Text
 scriptBox.Font = Enum.Font.Code
@@ -563,23 +663,55 @@ scriptBox.TextXAlignment = Enum.TextXAlignment.Left
 scriptBox.TextYAlignment = Enum.TextYAlignment.Top
 scriptBox.ClearTextOnFocus = false
 scriptBox.MultiLine = true
-scriptBox.ClipsDescendants = true -- Isso garante que o texto suma ao sair da borda
+scriptBox.ClipsDescendants = true
 Instance.new("UICorner", scriptBox).CornerRadius = UDim.new(0, 6)
 Instance.new("UIStroke", scriptBox).Color = Theme.Outline
 
--- --- BOTÕES (Sem Seção e Posicionados abaixo) ---
+local BtnClear = Instance.new("TextButton", PageExecutor)
+BtnClear.Size = UDim2.new(0.48, 0, 0, 38)
+BtnClear.Position = UDim2.new(0, 5, 1, -45)
+BtnClear.BackgroundColor3 = Theme.Panel
+BtnClear.Text = "🗑️ Limpar Caixa"
+BtnClear.TextColor3 = Theme.Text
+BtnClear.Font = Enum.Font.GothamBold
+BtnClear.TextSize = 12
+Instance.new("UICorner", BtnClear).CornerRadius = UDim.new(0, 6)
+Instance.new("UIStroke", BtnClear).Color = Theme.Outline
 
--- Botão de Limpar (Logo abaixo da caixa)
-local btnClear = CreateButton(PageExecutor, "🗑️ Limpar Caixa", function() 
-    ScriptsDB[CurrentSlot] = "" 
-    scriptBox.Text = "" 
+local BtnExec = Instance.new("TextButton", PageExecutor)
+BtnExec.Size = UDim2.new(0.48, 0, 0, 38)
+BtnExec.Position = UDim2.new(0.52, -5, 1, -45)
+BtnExec.BackgroundColor3 = Theme.Panel
+BtnExec.Text = "Executar"
+BtnExec.TextColor3 = Theme.Text
+BtnExec.Font = Enum.Font.GothamBold
+BtnExec.TextSize = 12
+Instance.new("UICorner", BtnExec).CornerRadius = UDim.new(0, 6)
+Instance.new("UIStroke", BtnExec).Color = Theme.Outline
+
+local function UpdateExecutorUI() 
+    LblSlot.Text = "Script Slot " .. CurrentSlot
+    scriptBox.Text = RN_Data.ScriptsDB[CurrentSlot] 
+end
+
+BtnPrev.MouseButton1Click:Connect(function() 
+    if CurrentSlot > 1 then CurrentSlot = CurrentSlot - 1 else CurrentSlot = 10 end
+    UpdateExecutorUI() 
 end)
--- Se sua função CreateButton não aceitar posicionamento automático, 
--- você pode ajustar a posição dele aqui se necessário.
 
--- Botão de Executar (No final de tudo)
-local btnExecute = CreateButton(PageExecutor, "▶ Executar Código", function() 
-    local code = ScriptsDB[CurrentSlot] 
+BtnNext.MouseButton1Click:Connect(function() 
+    if CurrentSlot < 10 then CurrentSlot = CurrentSlot + 1 else CurrentSlot = 1 end
+    UpdateExecutorUI() 
+end)
+
+BtnClear.MouseButton1Click:Connect(function() 
+    RN_Data.ScriptsDB[CurrentSlot] = "" 
+    scriptBox.Text = "" 
+    SaveConfigs()
+end)
+
+BtnExec.MouseButton1Click:Connect(function() 
+    local code = RN_Data.ScriptsDB[CurrentSlot] 
     if code ~= "" then 
         pcall(function() 
             local func = loadstring(code) 
@@ -588,35 +720,13 @@ local btnExecute = CreateButton(PageExecutor, "▶ Executar Código", function()
     end 
 end)
 
--- --- LÓGICA DE ATUALIZAÇÃO ---
-local function UpdateExecutorUI() 
-    LblSlot.Text = "Script Slot " .. CurrentSlot
-    scriptBox.Text = ScriptsDB[CurrentSlot] 
-end
-
-BtnPrev.MouseButton1Click:Connect(function() 
-    if CurrentSlot > 1 then 
-        CurrentSlot = CurrentSlot - 1 
-        UpdateExecutorUI() 
-    end 
-end)
-
-BtnNext.MouseButton1Click:Connect(function() 
-    if CurrentSlot < #ScriptsDB then 
-        CurrentSlot = CurrentSlot + 1 
-        UpdateExecutorUI() 
-    end 
-end)
-
 scriptBox:GetPropertyChangedSignal("Text"):Connect(function() 
-    ScriptsDB[CurrentSlot] = scriptBox.Text 
+    RN_Data.ScriptsDB[CurrentSlot] = scriptBox.Text 
+    SaveConfigs()
 end)
 
-PageCombat.Visible = true
+PageConfig.Visible = true
 
--- ==========================================
--- LÓGICA DE FUNDO NOVO AIMBOT E ESP DRAWING
--- ==========================================
 local function CreateDrawings(Player)
     local d = {}
     local success = pcall(function()
@@ -662,7 +772,6 @@ RunService.RenderStepped:Connect(function()
     Camera = workspace.CurrentCamera
     local Center = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
 
-    -- [ ESP ]
     for Player, ESP in pairs(Storage) do
         local Char = Player.Character
         if Char and Char:FindFirstChild("HumanoidRootPart") and Char:FindFirstChild("Humanoid") and IsEnemy(Player) then
@@ -694,7 +803,6 @@ RunService.RenderStepped:Connect(function()
         end
     end
     
-    -- [ AIMBOT ]
     if Config.Aimbot then
         local target = nil
         local dist = Config.FOVSize
@@ -724,9 +832,6 @@ end)
 for _, p in pairs(Players:GetPlayers()) do if p ~= LocalPlayer then CreateDrawings(p) end end
 Players.PlayerAdded:Connect(CreateDrawings)
 
--- ==========================================
--- LÓGICA DE FUNDO ORIGINAL (Loops e Eventos)
--- ==========================================
 RunService.RenderStepped:Connect(function()
     if HitboxPlayer then
         for _, player in pairs(Players:GetPlayers()) do
