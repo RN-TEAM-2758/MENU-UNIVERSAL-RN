@@ -120,8 +120,8 @@ local Config = {
 
     NPCDir          = RN_Data.FarmNPCDir,
     ItemFarmDir     = RN_Data.FarmItemDir,
-    CollectDir      = "workspace.Drops",
-    TeleportDir     = "workspace.Map",
+    CollectDir      = "",
+    TeleportDir     = "",
     ESPObjDir       = RN_Data.ESPDir,
 
     FarmNPCTargets  = {},
@@ -445,6 +445,11 @@ RunService.RenderStepped:Connect(function()
 
     for _, player in pairs(Players:GetPlayers()) do
         if player == LocalPlayer then continue end
+        
+        -- CHECAGEM PARA NOVOS JOGADORES NÃO BUGAREM
+        if not Storage[player] then CreateDrawings(player) end
+        if not Tracers[player] then CreateTracer(player) end
+
         local char = player.Character
         local ESP = Storage[player]
         local Tracer = Tracers[player]
@@ -757,16 +762,6 @@ MinBtn.Font = Enum.Font.GothamBold
 MinBtn.TextSize = 18
 Instance.new("UICorner", MinBtn).CornerRadius = UDim.new(0, 6)
 
-local minimized = false
-MinBtn.MouseButton1Click:Connect(function()
-    minimized = not minimized
-    if minimized then
-        TweenService:Create(MainFrame, TweenInfo.new(0.3), {Size = UDim2.new(0, 720, 0, 48)}):Play()
-    else
-        TweenService:Create(MainFrame, TweenInfo.new(0.3), {Size = UDim2.new(0, 720, 0, 490)}):Play()
-    end
-end)
-
 local TabContainer = Instance.new("Frame", MainFrame)
 TabContainer.Name = "TabContainer"
 TabContainer.Size = UDim2.new(0, 155, 1, -58)
@@ -780,6 +775,20 @@ PagesFolder.Name = "PagesContainer"
 PagesFolder.Size = UDim2.new(1, -178, 1, -62)
 PagesFolder.Position = UDim2.new(0, 168, 0, 57)
 PagesFolder.BackgroundTransparency = 1
+
+local minimized = false
+MinBtn.MouseButton1Click:Connect(function()
+    minimized = not minimized
+    if minimized then
+        TabContainer.Visible = false
+        PagesFolder.Visible = false
+        TweenService:Create(MainFrame, TweenInfo.new(0.3), {Size = UDim2.new(0, 720, 0, 48)}):Play()
+    else
+        TabContainer.Visible = true
+        PagesFolder.Visible = true
+        TweenService:Create(MainFrame, TweenInfo.new(0.3), {Size = UDim2.new(0, 720, 0, 490)}):Play()
+    end
+end)
 
 local FloatingBtn = Instance.new("Frame", ScreenGui)
 FloatingBtn.Size = UDim2.new(0, 64, 0, 64)
@@ -821,6 +830,49 @@ local function MakeDraggable(obj, handle)
 end
 MakeDraggable(MainFrame, TopBar)
 MakeDraggable(FloatingBtn, FloatClick)
+
+-- SISTEMA DE BOTÕES FLUTUANTES EXTRAS (MAX 10)
+local FloatingButtonsCount = 0
+local function CreateFloatingActionButton(titleText, callback)
+    if FloatingButtonsCount >= 10 then return end
+    FloatingButtonsCount = FloatingButtonsCount + 1
+
+    local FloatFrame = Instance.new("Frame", ScreenGui)
+    FloatFrame.Size = UDim2.new(0, 140, 0, 36)
+    FloatFrame.Position = UDim2.new(0.5, -70, 0.5, (FloatingButtonsCount * 45) - 150)
+    FloatFrame.BackgroundColor3 = Theme.Background
+    FloatFrame.Active = true
+    Instance.new("UICorner", FloatFrame).CornerRadius = UDim.new(0, 8)
+    local fStroke = Instance.new("UIStroke", FloatFrame)
+    fStroke.Color = Theme.Accent
+    fStroke.Thickness = 1.5
+
+    local ActionBtn = Instance.new("TextButton", FloatFrame)
+    ActionBtn.Size = UDim2.new(1, -36, 1, 0)
+    ActionBtn.BackgroundTransparency = 1
+    ActionBtn.Text = titleText
+    ActionBtn.TextColor3 = Theme.Text
+    ActionBtn.Font = Enum.Font.GothamBold
+    ActionBtn.TextSize = 12
+    ActionBtn.MouseButton1Click:Connect(callback)
+
+    local CloseB = Instance.new("TextButton", FloatFrame)
+    CloseB.Size = UDim2.new(0, 36, 1, 0)
+    CloseB.Position = UDim2.new(1, -36, 0, 0)
+    CloseB.BackgroundTransparency = 1
+    CloseB.Text = "X"
+    CloseB.TextColor3 = Theme.Red
+    CloseB.Font = Enum.Font.GothamBold
+    CloseB.TextSize = 14
+    CloseB.MouseButton1Click:Connect(function()
+        FloatFrame:Destroy()
+        FloatingButtonsCount = FloatingButtonsCount - 1
+    end)
+
+    -- AQUI ESTÁ A CORREÇÃO PARA O MOBILE ARRASTAR
+    MakeDraggable(FloatFrame, FloatFrame) 
+    MakeDraggable(FloatFrame, ActionBtn) 
+end
 
 local function CreatePage()
     local page = Instance.new("Frame", PagesFolder)
@@ -1178,6 +1230,7 @@ CreateToggle(SecESPP, "ESP Vida", false, function(s) Config.HealthESP = s end)
 CreateToggle(SecESPP, "ESP Nome", false, function(s) Config.NameESP = s end)
 CreateToggle(SecESPP, "ESP Distância", false, function(s) Config.DistanceESP = s end)
 CreateToggle(SecESPP, "XRay Colorido", false, function(s) Config.XRay = s end)
+CreateToggle(SecESPP, "Team Check (Aliados)", true, function(s) Config.TeamCheck = s end)
 
 local SecHitP, _ = CreateSection(C_L, "💥 Hitbox Jogadores")
 CreateSlider(SecHitP, "Tamanho Hitbox", 2, 60, Config.PlayerHitboxSz, function(v) Config.PlayerHitboxSz = v; RN_Data.HitboxSize = v; SaveConfigs() end)
@@ -1195,8 +1248,8 @@ CreateToggle(SecHitP, "Ativar Hitbox Jogadores", false, function(s)
     end
 end)
 
-local SecHitN, _ = CreateSection(C_R, "🤖 Hitbox NPCs")
-CreateTextBox(SecHitN, "Diretório NPCs", "workspace.NPCs", Config.NPCDir, function(v) Config.NPCDir = v; RN_Data.FarmNPCDir = v; SaveConfigs() end)
+local SecHitN, _ = CreateSection(C_R, "Hitbox NPCs")
+CreateTextBox(SecHitN, "Diretório NPCs", "", Config.NPCDir, function(v) Config.NPCDir = v; RN_Data.FarmNPCDir = v; SaveConfigs() end)
 CreateSlider(SecHitN, "Tamanho Hitbox NPC", 2, 100, Config.NPCHitboxSz, function(v) Config.NPCHitboxSz = v; RN_Data.NPCHitboxSize = v; SaveConfigs() end)
 CreateToggle(SecHitN, "Ativar Hitbox NPCs", false, function(s) Config.HitboxNPC = s end)
 
@@ -1207,7 +1260,7 @@ CreateToggle(SecFarmP, "Ignorar Aliados", true, function(s) Config.FarmPlayerTea
 CreateToggle(SecFarmP, "Ativar Farm Jogadores", false, function(s) Config.FarmPlayer = s end)
 
 local SecFarmN, _ = CreateSection(F_L, "🧟 Farm NPCs")
-CreateTextBox(SecFarmN, "Diretório NPCs", "workspace.NPCs", Config.NPCDir, function(v) Config.NPCDir = v end)
+CreateTextBox(SecFarmN, "Diretório NPCs", "", Config.NPCDir, function(v) Config.NPCDir = v end)
 local NpcDropdown = CreateDropdown(SecFarmN, "Alvo NPC", {}, function(v) Config.FarmNPCTargets = {v} end)
 CreateButton(SecFarmN, "🔄 Atualizar Lista NPCs", function()
     local folder = GetPathFromString(Config.NPCDir)
@@ -1224,7 +1277,7 @@ CreateToggle(SecFarmN, "Ativar Farm NPC", false, function(s) Config.FarmNPC = s;
 
 local SecFarmI, _ = CreateSection(F_R, "💎 Farm Itens (Tween)")
 CreateLabel(SecFarmI, "Vai andando até cada item")
-CreateTextBox(SecFarmI, "Diretório Itens", "workspace.Drops", Config.ItemFarmDir, function(v) Config.ItemFarmDir = v; RN_Data.FarmItemDir = v; SaveConfigs() end)
+CreateTextBox(SecFarmI, "Diretório Itens", "", Config.ItemFarmDir, function(v) Config.ItemFarmDir = v; RN_Data.FarmItemDir = v; SaveConfigs() end)
 CreateSlider(SecFarmI, "Velocidade Tween", 10, 500, Config.FarmItemSpeed, function(v) Config.FarmItemSpeed = v; RN_Data.FarmItemSpeed = v; SaveConfigs() end)
 CreateToggle(SecFarmI, "Ativar Farm Itens", false, function(s) Config.FarmItem = s; if not s then CurrentFarmItem = nil end end)
 
@@ -1235,7 +1288,7 @@ CreateToggle(SecChase, "Ignorar Aliados", true, function(s) Config.FarmChaseTeam
 CreateToggle(SecChase, "Ativar Perseguição", false, function(s) Config.FarmChase = s end)
 
 local SecTp, _ = CreateSection(F_L, "🌀 Teleport & Coleta")
-CreateTextBox(SecTp, "Diretório Teleport", "workspace.Map", Config.TeleportDir, function(v) Config.TeleportDir = v end)
+CreateTextBox(SecTp, "Diretório Teleport", "", Config.TeleportDir, function(v) Config.TeleportDir = v end)
 local TpDropdown = CreateDropdown(SecTp, "Selecionar Item", {}, function(v) Config.TeleportTargets = {v} end)
 CreateButton(SecTp, "🔄 Atualizar Itens", function()
     local folder = GetPathFromString(Config.TeleportDir)
@@ -1246,7 +1299,7 @@ end)
 CreateToggle(SecTp, "Loop Teleport", false, function(s) Config.LoopTeleport = s end)
 
 local SecCollect, _ = CreateSection(F_R, "🧲 Coletar Área")
-CreateTextBox(SecCollect, "Diretório Coleta", "workspace.Drops", Config.CollectDir, function(v) Config.CollectDir = v end)
+CreateTextBox(SecCollect, "Diretório Coleta", "", Config.CollectDir, function(v) Config.CollectDir = v end)
 CreateButton(SecCollect, "⚡ Coletar Agora", function()
     local folder = GetPathFromString(Config.CollectDir)
     local char = LocalPlayer.Character
@@ -1275,7 +1328,7 @@ CreateButton(SecFullbright, "☀️ Dia", function() Lighting.ClockTime = 14 end
 CreateButton(SecFullbright, "🌅 Entardecer", function() Lighting.ClockTime = 19 end)
 
 local SecObjESP, _ = CreateSection(V_L, "🔍 ESP Objetos/Itens")
-CreateTextBox(SecObjESP, "Diretório ESP", "workspace.Items", Config.ESPObjDir, function(v) Config.ESPObjDir = v; RN_Data.ESPDir = v; SaveConfigs() end)
+CreateTextBox(SecObjESP, "Diretório ESP", "", Config.ESPObjDir, function(v) Config.ESPObjDir = v; RN_Data.ESPDir = v; SaveConfigs() end)
 CreateToggle(SecObjESP, "ESP Objetos Ativo", false, function(s)
     Config.ObjESP = s
     if not s then
@@ -1355,14 +1408,21 @@ CreateToggle(SecNoclip, "Spin (Girar)", false, function(s) Config.SpinEnabled = 
 CreateToggle(SecNoclip, "Anti-Void (Salva de Quedas)", Config.AntiVoid, function(s) Config.AntiVoid = s; RN_Data.AntiVoid = s; SaveConfigs() end)
 
 local SecTeleportP, _ = CreateSection(M_R, "⚡ Teleportes Rápidos")
-CreateButton(SecTeleportP, "🔵 Ir para Spawn", function() pcall(function() LocalPlayer:LoadCharacter() end) end)
+CreateButton(SecTeleportP, "📋 Copiar Coordenadas", function()
+    local char = LocalPlayer.Character
+    local root = char and char:FindFirstChild("HumanoidRootPart")
+    if root then
+        local pos = root.Position
+        pcall(function() setclipboard(tostring(pos.X) .. ", " .. tostring(pos.Y) .. ", " .. tostring(pos.Z)) end)
+    end
+end)
 CreateButton(SecTeleportP, "🔄 Reentrar no Servidor", function() game:GetService("TeleportService"):TeleportToPlaceInstance(game.PlaceId, game.JobId, LocalPlayer) end)
 CreateButton(SecTeleportP, "📍 Salvar Posição Atual", function()
     local char = LocalPlayer.Character
     local root = char and char:FindFirstChild("HumanoidRootPart")
     if root then
         local saved = root.CFrame
-        local btn2 = CreateButton(SecTeleportP, "↩️ Voltar para Posição Salva", function()
+        CreateFloatingActionButton("Voltar TP", function()
             local r2 = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
             if r2 then r2.CFrame = saved end
         end)
@@ -1454,7 +1514,7 @@ BtnBar.Position = UDim2.new(0, 4, 1, -46)
 BtnBar.BackgroundTransparency = 1
 
 local BtnSave = Instance.new("TextButton", BtnBar)
-BtnSave.Size = UDim2.new(0.48, 0, 1, 0)
+BtnSave.Size = UDim2.new(0.32, 0, 1, 0)
 BtnSave.Position = UDim2.new(0, 0, 0, 0)
 BtnSave.BackgroundColor3 = Color3.fromRGB(20, 40, 20)
 BtnSave.Text = "💾 Salvar Slot"
@@ -1464,14 +1524,24 @@ BtnSave.TextSize = 12
 Instance.new("UICorner", BtnSave).CornerRadius = UDim.new(0, 6)
 
 local BtnExec = Instance.new("TextButton", BtnBar)
-BtnExec.Size = UDim2.new(0.48, 0, 1, 0)
-BtnExec.Position = UDim2.new(0.52, 0, 0, 0)
+BtnExec.Size = UDim2.new(0.32, 0, 1, 0)
+BtnExec.Position = UDim2.new(0.34, 0, 0, 0)
 BtnExec.BackgroundColor3 = Color3.fromRGB(20, 40, 60)
 BtnExec.Text = "▶ Executar"
 BtnExec.TextColor3 = Theme.Blue
 BtnExec.Font = Enum.Font.GothamBold
 BtnExec.TextSize = 12
 Instance.new("UICorner", BtnExec).CornerRadius = UDim.new(0, 6)
+
+local BtnFloat = Instance.new("TextButton", BtnBar)
+BtnFloat.Size = UDim2.new(0.32, 0, 1, 0)
+BtnFloat.Position = UDim2.new(0.68, 0, 0, 0)
+BtnFloat.BackgroundColor3 = Color3.fromRGB(60, 40, 20)
+BtnFloat.Text = "📌 Flutuante"
+BtnFloat.TextColor3 = Theme.Yellow
+BtnFloat.Font = Enum.Font.GothamBold
+BtnFloat.TextSize = 12
+Instance.new("UICorner", BtnFloat).CornerRadius = UDim.new(0, 6)
 
 local function UpdateExecUI()
     LblSlot.Text = "── Slot " .. CurrentSlot .. " / 10 ──"
@@ -1488,6 +1558,16 @@ BtnExec.MouseButton1Click:Connect(function()
         pcall(function() local fn = loadstring(code); if fn then fn() end end)
     end
 end)
+BtnFloat.MouseButton1Click:Connect(function()
+    local savedCode = scriptBox.Text
+    local slotNum = CurrentSlot
+    CreateFloatingActionButton("Executar Slot " .. slotNum, function()
+        if savedCode ~= "" then
+            pcall(function() local fn = loadstring(savedCode); if fn then fn() end end)
+        end
+    end)
+end)
+
 scriptBox:GetPropertyChangedSignal("Text"):Connect(function() RN_Data.ScriptsDB[CurrentSlot] = scriptBox.Text end)
 
 local SecTheme, _ = CreateSection(Cfg_L, "🎨 Paleta de Cores")
@@ -1546,7 +1626,7 @@ CreateButton(SecSaveLoad, "🗑️ Resetar Tudo Padrão", function()
         Speed = 16, Jump = 50, AccentColor = {0, 200, 120}, FlySpeed = 60,
         FarmPlayerOffset = -2, FarmNPCOffset = -2, FarmItemSpeed = 120, TweenChaseSpeed = 100,
         SpinSpeed = 5, AimbotSmooth = 0.10, AimbotFOV = 80, HitboxSize = 10, NPCHitboxSize = 20,
-        ESPDir = "workspace.Items", FarmNPCDir = "workspace.NPCs", FarmItemDir = "workspace.Drops",
+        ESPDir = "", FarmNPCDir = "", FarmItemDir = "",
         AntiVoid = false
     }
     SaveConfigs()
@@ -1556,6 +1636,43 @@ local SecInfo, _ = CreateSection(Cfg_R, "ℹ️ Informações")
 CreateLabel(SecInfo, "RN TEAM - Clean Edition", Theme.Accent)
 CreateLabel(SecInfo, "Otimizado para Mobile", Theme.DarkText)
 CreateLabel(SecInfo, "Salva tudo automaticamente", Theme.DarkText)
+
+MainFrame.AnchorPoint = Vector2.new(0.5, 0.5) -- Define o "pino" no meio do menu
+MainFrame.Position = UDim2.new(0.5, 0, 0.5, 0) -- Garante que ele fique no centro da tela
+
+local uiScale = Instance.new("UIScale")
+uiScale.Parent = MainFrame 
+
+local btnScale = Instance.new("UIScale")
+btnScale.Parent = FloatingBtn 
+
+-- Esta é a altura de "referência". 
+-- Se a tela for MAIOR que isso, o menu AUMENTA.
+-- Se a tela for MENOR que isso, o menu DIMINUI.
+local alturaBaseIdeal = 600 
+
+local function atualizarEscala()
+    local camera = workspace.CurrentCamera
+    if camera then
+        local viewportSize = camera.ViewportSize
+        
+        -- Cálculo da escala baseado na altura da tela
+        local escala = viewportSize.Y / alturaBaseIdeal
+        
+        -- AUMENTAMOS O LIMITE: 
+        -- 0.3 (pode ficar bem pequeno) até 3.0 (pode ficar 3x maior)
+        escala = math.clamp(escala, 0.3, 3.0) 
+        
+        uiScale.Scale = escala
+        btnScale.Scale = escala
+        
+        -- OPCIONAL: Se quiser que o menu sempre force o centro ao mudar DPI
+        MainFrame.Position = UDim2.new(0.5, 0, 0.5, 0)
+    end
+end
+
+atualizarEscala()
+workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"):Connect(atualizarEscala)
 
 UserInputService.InputBegan:Connect(function(inp, gameProcessed)
     if gameProcessed then return end
