@@ -118,7 +118,7 @@ local Config = {
     FarmPlayerTeam  = true,
     FarmChaseTeam   = true,
 
-    NPCDir          = RN_Data.FarmNPCDir,
+    NPCDir          = RN_Data.FarmNPCTargets,
     ItemFarmDir     = RN_Data.FarmItemDir,
     CollectDir      = "",
     TeleportDir     = "",
@@ -160,6 +160,19 @@ local function GetNextTarget(dir, nameList)
     for _, obj in pairs(folder:GetChildren()) do
         if #nameList == 0 or table.find(nameList, obj.Name) then
             if obj:FindFirstChild("HumanoidRootPart") then return obj end
+        end
+    end
+    return nil
+end
+
+local function GetTeleportTarget(dir, nameList)
+    local folder = GetPathFromString(dir)
+    if not folder then return nil end
+    for _, obj in pairs(folder:GetChildren()) do
+        if #nameList == 0 or table.find(nameList, obj.Name) then
+            if obj:IsA("Model") or obj:IsA("BasePart") then
+                return obj
+            end
         end
     end
     return nil
@@ -673,7 +686,7 @@ task.spawn(function()
             pcall(function()
                 local char = LocalPlayer.Character
                 if not char then return end
-                local target = GetNextTarget(Config.TeleportDir, Config.TeleportTargets)
+                local target = GetTeleportTarget(Config.TeleportDir, Config.TeleportTargets)
                 if target then
                     char:PivotTo(target:IsA("Model") and target:GetPivot() or target.CFrame)
                 end
@@ -762,11 +775,15 @@ MinBtn.Font = Enum.Font.GothamBold
 MinBtn.TextSize = 18
 Instance.new("UICorner", MinBtn).CornerRadius = UDim.new(0, 6)
 
-local TabContainer = Instance.new("Frame", MainFrame)
+-- MODIFICAÇÃO 1: Menu de Abas virou ScrollingFrame com rolagem invisível
+local TabContainer = Instance.new("ScrollingFrame", MainFrame)
 TabContainer.Name = "TabContainer"
 TabContainer.Size = UDim2.new(0, 155, 1, -58)
 TabContainer.Position = UDim2.new(0, 8, 0, 54)
 TabContainer.BackgroundTransparency = 1
+TabContainer.ScrollBarThickness = 0
+TabContainer.CanvasSize = UDim2.new(0, 0, 0, 0)
+TabContainer.AutomaticCanvasSize = Enum.AutomaticSize.Y
 local TabList = Instance.new("UIListLayout", TabContainer)
 TabList.Padding = UDim.new(0, 5)
 
@@ -1060,6 +1077,7 @@ local function CreateTextBox(parent, label, placeholder, default, callback)
     return frame
 end
 
+-- MODIFICAÇÃO 2: Dropdowns agora usam ScrollingFrame com limite de altura
 local function CreateDropdown(parent, label, list, callback)
     local dropFrame = Instance.new("Frame", parent)
     dropFrame.Size = UDim2.new(1, 0, 0, 36)
@@ -1076,10 +1094,13 @@ local function CreateDropdown(parent, label, list, callback)
     header.Font = Enum.Font.GothamBold
     header.TextSize = 11
 
-    local cont = Instance.new("Frame", dropFrame)
+    local cont = Instance.new("ScrollingFrame", dropFrame)
     cont.Position = UDim2.new(0, 0, 0, 36)
     cont.Size = UDim2.new(1, 0, 0, 0)
     cont.BackgroundTransparency = 1
+    cont.ScrollBarThickness = 0
+    cont.CanvasSize = UDim2.new(0, 0, 0, 0)
+    cont.AutomaticCanvasSize = Enum.AutomaticSize.Y
     Instance.new("UIListLayout", cont).Padding = UDim.new(0, 2)
 
     local open = false
@@ -1087,7 +1108,9 @@ local function CreateDropdown(parent, label, list, callback)
     local function Rebuild(newList)
         for _, c in pairs(cont:GetChildren()) do if c:IsA("TextButton") then c:Destroy() end end
         local totalH = #newList * 30
-        cont.Size = UDim2.new(1, 0, 0, totalH)
+        local maxHeight = math.min(totalH, 120) 
+        cont.Size = UDim2.new(1, 0, 0, maxHeight)
+        
         for _, item in ipairs(newList) do
             local itm = Instance.new("TextButton", cont)
             itm.Size = UDim2.new(1, 0, 0, 28)
@@ -1217,7 +1240,7 @@ CreateToggle(SecAim, "Ativar Aimbot", false, function(s) Config.Aimbot = s end)
 CreateToggle(SecAim, "Mostrar Círculo FOV", false, function(s) Config.ShowFOVCircle = s end)
 CreateToggle(SecAim, "Team Check", true, function(s) Config.TeamCheck = s end)
 CreateToggle(SecAim, "Visible Check (Paredes)", true, function(s) Config.VisibleCheck = s end)
-CreateSlider(SecAim, "FOV Tamanho", 10, 400, Config.FOVSize, function(v) Config.FOVSize = v end)
+CreateSlider(SecAim, "FOV Tamanho", 10, 360, Config.FOVSize, function(v) Config.FOVSize = v end)
 CreateSlider(SecAim, "Suavidade", 0, 100, math.floor(Config.Smoothness * 100), function(v) 
     Config.Smoothness = v / 100 
 end)
@@ -1287,15 +1310,66 @@ CreateSlider(SecChase, "Velocidade Tween", 10, 500, Config.TweenSpeed, function(
 CreateToggle(SecChase, "Ignorar Aliados", true, function(s) Config.FarmChaseTeam = s end)
 CreateToggle(SecChase, "Ativar Perseguição", false, function(s) Config.FarmChase = s end)
 
-local SecTp, _ = CreateSection(F_L, "🌀 Teleport & Coleta")
-CreateTextBox(SecTp, "Diretório Teleport", "", Config.TeleportDir, function(v) Config.TeleportDir = v end)
-local TpDropdown = CreateDropdown(SecTp, "Selecionar Item", {}, function(v) Config.TeleportTargets = {v} end)
-CreateButton(SecTp, "🔄 Atualizar Itens", function()
+local SecTp, _ = CreateSection(F_L, "Teleport items")
+CreateTextBox(SecTp, "Diretório Pasta", "", Config.TeleportDir, function(v) Config.TeleportDir = v end)
+CreateTextBox(SecTp, "Caminho Direto", "", "", function(v)
+    -- Suporta workspace.Map.Zone1:GetChildren()[6] ou caminho normal
+    Config._DirectTeleportPath = v
+end)
+
+local TpDropdown = CreateDropdown(SecTp, "Selecionar Item", {}, function(v)
+    Config.TeleportTargets = {v}
+end)
+
+CreateButton(SecTp, "🔄 Atualizar Lista", function()
     local folder = GetPathFromString(Config.TeleportDir)
     local list = {}
-    if folder then for _, v in pairs(folder:GetChildren()) do table.insert(list, v.Name) end end
+    if folder then
+        for _, v in pairs(folder:GetChildren()) do
+            if v:IsA("Model") or v:IsA("BasePart") then
+                table.insert(list, v.Name)
+            end
+        end
+    end
     TpDropdown.UpdateList(list)
 end)
+
+CreateButton(SecTp, "⚡ Teleportar Agora", function()
+    local char = LocalPlayer.Character
+    if not char then return end
+
+    -- Tenta caminho direto primeiro
+    if Config._DirectTeleportPath and Config._DirectTeleportPath ~= "" then
+        local ok, result = pcall(function()
+            -- Suporta :GetChildren()[N]
+            local path = Config._DirectTeleportPath
+            local childIndex = nil
+            local getChildMatch = path:match(":GetChildren()%[(%d+)%]")
+            if getChildMatch then
+                childIndex = tonumber(getChildMatch)
+                path = path:gsub(":GetChildren()%[%d+%]", "")
+            end
+            local obj = GetPathFromString(path)
+            if childIndex and obj then
+                obj = obj:GetChildren()[childIndex]
+            end
+            return obj
+        end)
+        if ok and result then
+            local cf = result:IsA("Model") and result:GetPivot() or (result:IsA("BasePart") and result.CFrame)
+            if cf then char:PivotTo(cf) return end
+        end
+    end
+
+    -- Usa dropdown
+    if #Config.TeleportTargets > 0 then
+        local target = GetTeleportTarget(Config.TeleportDir, Config.TeleportTargets)
+        if target then
+            char:PivotTo(target:IsA("Model") and target:GetPivot() or target.CFrame)
+        end
+    end
+end)
+
 CreateToggle(SecTp, "Loop Teleport", false, function(s) Config.LoopTeleport = s end)
 
 local SecCollect, _ = CreateSection(F_R, "🧲 Coletar Área")
@@ -1394,16 +1468,16 @@ CreateToggle(SecSpeed, "Bunny Hop (Auto Pulo)", false, function(s) Config.BunnyH
 
 local SecFly, _ = CreateSection(M_L, "🦅 Voo e Gravidade")
 CreateSlider(SecFly, "Velocidade de Voo", 10, 1000, Config.FlySpeed, function(v) Config.FlySpeed = v; RN_Data.FlySpeed = v; SaveConfigs() end)
-CreateToggle(SecFly, "Ativar Fly (Joystick)", false, function(s)
+CreateToggle(SecFly, "Ativar Fly", false, function(s)
     Config.FlyEnabled = s
     if s then StartFly() else StopFly() end
 end)
 CreateSlider(SecFly, "Gravidade do Mapa", 0, 196, 196, function(v) workspace.Gravity = v end)
 
 local SecNoclip, _ = CreateSection(M_R, "👻 Poderes Especiais")
-CreateToggle(SecNoclip, "Noclip (Atravessar Paredes)", false, function(s) Config.NoclipEnabled = s; if s then StartNoclip() end end)
+CreateToggle(SecNoclip, "Noclip", false, function(s) Config.NoclipEnabled = s; if s then StartNoclip() end end)
 CreateToggle(SecNoclip, "Anti-Knockback", false, function(s) Config.AntiKnockback = s; if s then StartAntiKB() end end)
-CreateSlider(SecNoclip, "Velocidade de Spin", 1, 50, Config.SpinSpeed, function(v) Config.SpinSpeed = v; RN_Data.SpinSpeed = v; SaveConfigs() end)
+CreateSlider(SecNoclip, "Velocidade de Spin", 1, 100, Config.SpinSpeed, function(v) Config.SpinSpeed = v; RN_Data.SpinSpeed = v; SaveConfigs() end)
 CreateToggle(SecNoclip, "Spin (Girar)", false, function(s) Config.SpinEnabled = s; if s then StartSpin() end end)
 CreateToggle(SecNoclip, "Anti-Void (Salva de Quedas)", Config.AntiVoid, function(s) Config.AntiVoid = s; RN_Data.AntiVoid = s; SaveConfigs() end)
 
@@ -1570,48 +1644,181 @@ end)
 
 scriptBox:GetPropertyChangedSignal("Text"):Connect(function() RN_Data.ScriptsDB[CurrentSlot] = scriptBox.Text end)
 
-local SecTheme, _ = CreateSection(Cfg_L, "🎨 Paleta de Cores")
-local colorGrid = Instance.new("Frame", SecTheme)
-colorGrid.Size = UDim2.new(1, 0, 0, 40)
-colorGrid.BackgroundTransparency = 1
-local colorLayout = Instance.new("UIListLayout", colorGrid)
-colorLayout.FillDirection = Enum.FillDirection.Horizontal
-colorLayout.Padding = UDim.new(0, 8)
-colorLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+local SecTheme, _ = CreateSection(Cfg_L, "🎨 Seletor de Cores")
 
-local Palette = {
-    Color3.fromRGB(0, 200, 120),
-    Color3.fromRGB(255, 70, 70),
-    Color3.fromRGB(60, 140, 255),
-    Color3.fromRGB(150, 60, 255),
-    Color3.fromRGB(255, 150, 0),
-    Color3.fromRGB(255, 255, 255)
-}
+-- Frame principal do seletor
+local colorPickerFrame = Instance.new("Frame", SecTheme)
+colorPickerFrame.Size = UDim2.new(1, 0, 0, 160)
+colorPickerFrame.BackgroundTransparency = 1
 
-for i, colorVal in ipairs(Palette) do
-    local btn = Instance.new("TextButton", colorGrid)
-    btn.Size = UDim2.new(0, 24, 0, 24)
-    btn.BackgroundColor3 = colorVal
-    btn.Text = ""
-    Instance.new("UICorner", btn).CornerRadius = UDim.new(1, 0)
-    
-    btn.MouseButton1Click:Connect(function()
-        Theme.Accent = colorVal
-        RN_Data.AccentColor = {math.floor(colorVal.R*255), math.floor(colorVal.G*255), math.floor(colorVal.B*255)}
-        SaveConfigs()
-        
-        Title.TextColor3 = Theme.Accent
-        MainStroke.Color = Theme.Accent
-        FloatStroke.Color = Theme.Accent
-        FloatClick.TextColor3 = Theme.Accent
-        if ActiveTab then ActiveTab.TextColor3 = Theme.Accent end
-        
-        for _, te in pairs(ToggleElements) do
-            if te.getState() then te.bg.BackgroundColor3 = Theme.Accent end
-        end
-        FOVCircle.Color = Theme.Accent
-    end)
+-- === CANVAS SV (Saturação/Brilho) ===
+local svCanvas = Instance.new("Frame", colorPickerFrame)
+svCanvas.Size = UDim2.new(1, -30, 0, 130)
+svCanvas.BackgroundColor3 = Color3.fromHSV(0, 1, 1) -- começa vermelho
+Instance.new("UICorner", svCanvas).CornerRadius = UDim.new(0, 6)
+
+-- Gradiente branco (esquerda → direita)
+local gradWhite = Instance.new("UIGradient", svCanvas)
+gradWhite.Color = ColorSequence.new({
+    ColorSequenceKeypoint.new(0, Color3.new(1,1,1)),
+    ColorSequenceKeypoint.new(1, Color3.new(1,1,1)),
+})
+gradWhite.Transparency = NumberSequence.new({
+    NumberSequenceKeypoint.new(0, 0),
+    NumberSequenceKeypoint.new(1, 1),
+})
+
+-- Frame preto por cima (transparência vertical)
+local svDark = Instance.new("Frame", svCanvas)
+svDark.Size = UDim2.new(1, 0, 1, 0)
+svDark.BackgroundTransparency = 1
+Instance.new("UICorner", svDark).CornerRadius = UDim.new(0, 6)
+local gradDark = Instance.new("UIGradient", svDark)
+gradDark.Color = ColorSequence.new({
+    ColorSequenceKeypoint.new(0, Color3.new(0,0,0)),
+    ColorSequenceKeypoint.new(1, Color3.new(0,0,0)),
+})
+gradDark.Rotation = 90
+gradDark.Transparency = NumberSequence.new({
+    NumberSequenceKeypoint.new(0, 1),
+    NumberSequenceKeypoint.new(1, 0),
+})
+
+-- Cursor do SV
+local svCursor = Instance.new("Frame", svDark)
+svCursor.Size = UDim2.new(0, 12, 0, 12)
+svCursor.BackgroundColor3 = Color3.new(1,1,1)
+svCursor.Position = UDim2.new(1, -6, 0, -6)
+svCursor.ZIndex = 5
+Instance.new("UICorner", svCursor).CornerRadius = UDim.new(1, 0)
+Instance.new("UIStroke", svCursor).Color = Color3.new(0,0,0)
+
+-- === HUE SLIDER (vertical, lado direito) ===
+local hueSlider = Instance.new("Frame", colorPickerFrame)
+hueSlider.Size = UDim2.new(0, 18, 0, 130)
+hueSlider.Position = UDim2.new(1, -22, 0, 0)
+Instance.new("UICorner", hueSlider).CornerRadius = UDim.new(0, 6)
+local hueGrad = Instance.new("UIGradient", hueSlider)
+hueGrad.Rotation = 270
+hueGrad.Color = ColorSequence.new({
+    ColorSequenceKeypoint.new(0,    Color3.fromHSV(0,    1, 1)),
+    ColorSequenceKeypoint.new(0.17, Color3.fromHSV(0.17, 1, 1)),
+    ColorSequenceKeypoint.new(0.33, Color3.fromHSV(0.33, 1, 1)),
+    ColorSequenceKeypoint.new(0.50, Color3.fromHSV(0.50, 1, 1)),
+    ColorSequenceKeypoint.new(0.67, Color3.fromHSV(0.67, 1, 1)),
+    ColorSequenceKeypoint.new(0.83, Color3.fromHSV(0.83, 1, 1)),
+    ColorSequenceKeypoint.new(1,    Color3.fromHSV(1,    1, 1)),
+})
+
+-- Cursor do Hue
+local hueCursor = Instance.new("Frame", hueSlider)
+hueCursor.Size = UDim2.new(1, 4, 0, 6)
+hueCursor.Position = UDim2.new(0, -2, 0, -3)
+hueCursor.BackgroundColor3 = Color3.new(1,1,1)
+hueCursor.ZIndex = 5
+Instance.new("UICorner", hueCursor).CornerRadius = UDim.new(0, 3)
+Instance.new("UIStroke", hueCursor).Color = Color3.new(0,0,0)
+
+-- Preview da cor
+local colorPreview = Instance.new("Frame", colorPickerFrame)
+colorPreview.Size = UDim2.new(1, -30, 0, 22)
+colorPreview.Position = UDim2.new(0, 0, 0, 136)
+colorPreview.BackgroundColor3 = Theme.Accent
+Instance.new("UICorner", colorPreview).CornerRadius = UDim.new(0, 5)
+
+-- Estado interno
+local currentH, currentS, currentV = Color3.toHSV(Theme.Accent)
+local draggingSV, draggingHue = false, false
+
+local function applyColor()
+    local newColor = Color3.fromHSV(currentH, currentS, currentV)
+    colorPreview.BackgroundColor3 = newColor
+    Theme.Accent = newColor
+    RN_Data.AccentColor = {math.floor(newColor.R*255), math.floor(newColor.G*255), math.floor(newColor.B*255)}
+    SaveConfigs()
+    -- Atualiza UI
+    Title.TextColor3 = Theme.Accent
+    MainStroke.Color = Theme.Accent
+    FloatStroke.Color = Theme.Accent
+    FloatClick.TextColor3 = Theme.Accent
+    if ActiveTab then ActiveTab.TextColor3 = Theme.Accent end
+    for _, te in pairs(ToggleElements) do
+        if te.getState() then te.bg.BackgroundColor3 = Theme.Accent end
+    end
+    FOVCircle.Color = Theme.Accent
 end
+
+local function updateSVCanvas()
+    svCanvas.BackgroundColor3 = Color3.fromHSV(currentH, 1, 1)
+    svCursor.Position = UDim2.new(currentS, -6, 1 - currentV, -6)
+end
+
+local function updateHueCursor()
+    hueCursor.Position = UDim2.new(0, -2, currentH, -3)
+end
+
+updateSVCanvas()
+updateHueCursor()
+
+-- Drag SV
+svDark.InputBegan:Connect(function(inp)
+    if inp.UserInputType == Enum.UserInputType.MouseButton1 or inp.UserInputType == Enum.UserInputType.Touch then
+        draggingSV = true
+    end
+end)
+
+UserInputService.InputEnded:Connect(function(inp)
+    if inp.UserInputType == Enum.UserInputType.MouseButton1 or inp.UserInputType == Enum.UserInputType.Touch then
+        draggingSV = false
+        draggingHue = false
+    end
+end)
+
+UserInputService.InputChanged:Connect(function(inp)
+    if inp.UserInputType == Enum.UserInputType.MouseMovement or inp.UserInputType == Enum.UserInputType.Touch then
+        if draggingSV then
+            local abs = svCanvas.AbsolutePosition
+            local sz  = svCanvas.AbsoluteSize
+            currentS = math.clamp((inp.Position.X - abs.X) / sz.X, 0, 1)
+            currentV = 1 - math.clamp((inp.Position.Y - abs.Y) / sz.Y, 0, 1)
+            updateSVCanvas()
+            applyColor()
+        end
+        if draggingHue then
+            local abs = hueSlider.AbsolutePosition
+            local sz  = hueSlider.AbsoluteSize
+            currentH = math.clamp((inp.Position.Y - abs.Y) / sz.Y, 0, 1)
+            updateSVCanvas()
+            updateHueCursor()
+            applyColor()
+        end
+    end
+end)
+
+-- Drag Hue
+hueSlider.InputBegan:Connect(function(inp)
+    if inp.UserInputType == Enum.UserInputType.MouseButton1 or inp.UserInputType == Enum.UserInputType.Touch then
+        draggingHue = true
+        local abs = hueSlider.AbsolutePosition
+        local sz  = hueSlider.AbsoluteSize
+        currentH = math.clamp((inp.Position.Y - abs.Y) / sz.Y, 0, 1)
+        updateSVCanvas()
+        updateHueCursor()
+        applyColor()
+    end
+end)
+
+-- Clique direto no SV
+svDark.InputBegan:Connect(function(inp)
+    if inp.UserInputType == Enum.UserInputType.MouseButton1 or inp.UserInputType == Enum.UserInputType.Touch then
+        local abs = svCanvas.AbsolutePosition
+        local sz  = svCanvas.AbsoluteSize
+        currentS = math.clamp((inp.Position.X - abs.X) / sz.X, 0, 1)
+        currentV = 1 - math.clamp((inp.Position.Y - abs.Y) / sz.Y, 0, 1)
+        updateSVCanvas()
+        applyColor()
+    end
+end)
 
 local SecHotkeys, _ = CreateSection(Cfg_L, "⌨️ Hotkeys (Teclado)")
 CreateLabel(SecHotkeys, "RightShift: Abrir/Fechar", Theme.DarkText)
