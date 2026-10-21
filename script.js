@@ -14,6 +14,8 @@
       Sec:AddButton  {Name, Callback}
       Sec:AddInput   {Name, Flag, Default, Placeholder, Numeric, Min, Max, Validate, Callback}
       Sec:AddDropdown{Name, Flag, Options, Default, Multi, Placeholder, Callback}
+      Sec:AddMultiDropdown{Name, Flag, Options, Default, Source, AutoRefresh, Callback(valores, info), Searchable, Sort}
+         (AddDropdown{Multi = true} usa o mesmo motor; nomes repetidos viram uma opção com contagem)
       Sec:AddKeybind {Name, Flag, Default, Callback (ao pressionar), Changed (ao trocar)}
       Sec:AddLabel("texto")
       Win:Notify{Title, Content, Duration, Type = info/success/warning/error}
@@ -78,6 +80,7 @@ if HAS_FS and type(isfolder) == "function" and type(makefolder) == "function" th
     end)
 end
 
+local errorSink = nil -- recebe os erros de callbacks (ligado à Central de Eventos pela janela)
 local function fire(callback, ...)
     if type(callback) ~= "function" then
         return
@@ -85,7 +88,34 @@ local function fire(callback, ...)
     local ok, err = pcall(callback, ...)
     if not ok then
         warn("[NovaUI] Erro em callback: " .. tostring(err))
+        if errorSink then
+            pcall(errorSink, tostring(err))
+        end
     end
+end
+
+-- pesquisa sem diferenciar maiúsculas/acentos ("Dragão" = "dragao")
+local FOLD = {
+    {"á", "a"}, {"à", "a"}, {"â", "a"}, {"ã", "a"}, {"ä", "a"}, {"Á", "a"}, {"À", "a"}, {"Â", "a"}, {"Ã", "a"}, {"Ä", "a"},
+    {"é", "e"}, {"è", "e"}, {"ê", "e"}, {"ë", "e"}, {"É", "e"}, {"È", "e"}, {"Ê", "e"}, {"Ë", "e"},
+    {"í", "i"}, {"ì", "i"}, {"î", "i"}, {"ï", "i"}, {"Í", "i"}, {"Ì", "i"}, {"Î", "i"}, {"Ï", "i"},
+    {"ó", "o"}, {"ò", "o"}, {"ô", "o"}, {"õ", "o"}, {"ö", "o"}, {"Ó", "o"}, {"Ò", "o"}, {"Ô", "o"}, {"Õ", "o"}, {"Ö", "o"},
+    {"ú", "u"}, {"ù", "u"}, {"û", "u"}, {"ü", "u"}, {"Ú", "u"}, {"Ù", "u"}, {"Û", "u"}, {"Ü", "u"},
+    {"ç", "c"}, {"Ç", "c"}, {"ñ", "n"}, {"Ñ", "n"},
+}
+local function foldText(text)
+    text = tostring(text):lower()
+    for _, p in ipairs(FOLD) do
+        text = text:gsub(p[1], p[2])
+    end
+    return text
+end
+
+-- ordem natural: "Zombie 2" vem antes de "Zombie 10"
+local function naturalKey(text)
+    return (foldText(text):gsub("%d+", function(d)
+        return string.rep("0", math.max(0, 12 - #d)) .. d
+    end))
 end
 
 local function roundTo(value, step)
@@ -306,12 +336,28 @@ function Nova.CreateWindow(opts)
     local mainPos = {x = 0, y = 0}
     local launcherPos = {x = 12, y = 120}
     local notifyCount = 0
+    local notifySeen, notifyPrune = {}, 0
     local activeDrag = nil
 
     Theme.Accent = opts.Accent or DEFAULT_ACCENT
 
+    local trackAdds = 0
     local function track(conn)
         table.insert(connections, conn)
+        trackAdds = trackAdds + 1
+        if trackAdds >= 200 then -- descarta conexões de instâncias já destruídas (evita vazamento)
+            trackAdds = 0
+            local keep = {}
+            for _, c in ipairs(connections) do
+                local ok, connected = pcall(function()
+                    return c.Connected
+                end)
+                if not ok or connected then
+                    keep[#keep + 1] = c
+                end
+            end
+            connections = keep
+        end
         return conn
     end
 
@@ -410,6 +456,10 @@ function Nova.CreateWindow(opts)
             detail = nil
         end
         return pushEvent(level, message, detail)
+    end
+
+    errorSink = function(err)
+        Window:Log("ERROR", "Erro em callback de um controle", err)
     end
 
     function Window:OnEvent(fn)
@@ -1348,8 +1398,9 @@ function Nova.CreateWindow(opts)
         local function coerce(raw)
             raw = tostring(raw)
             if numeric then
-                local n = tonumber(raw)
-                if not n then
+                local txt = (raw:gsub(",", ".")):match("^%s*(.-)%s*$")
+                local n = tonumber(txt)
+                if not n or n ~= n or n == math.huge or n == -math.huge then
                     return nil
                 end
                 if minV then
@@ -1558,29 +1609,60 @@ function Nova.CreateWindow(opts)
         return finalize(el, opts2)
     end
 
+    -- MultiDropdown v3: lista virtualizada (só as linhas visíveis existem), nomes repetidos agrupados com
+    -- contagem (ex.: 7 NPCs "Zombie" viram uma opção "Zombie ×7"), pesquisa sem acento, atualização
+    -- automática por Source e preservação/remoção segura das seleções.
     function SectionMT:AddMultiDropdown(opts2)
         opts2 = opts2 or {}
-        local ITEM_H, GAP, MAX_VISIBLE, MAX_RENDER = 28, 3, 6, 300
+        local compat = opts2._compat == true -- vindo de AddDropdown{Multi = true}: Refresh(lista) substitui tudo
+        local ITEM_H = UserInputService.TouchEnabled and 32 or 28
+        local GAP = 2
+        local STEP = ITEM_H + GAP
+        local SEARCH_H, BAR_H, INFO_H = 30, 28, 16
         local sortList = opts2.Sort
         if sortList == nil then
             sortList = opts2.Source ~= nil
         end
 
-        local function normalize(list) -- sem nomes repetidos (só o primeiro de cada nome)
-            local out, seen = {}, {}
+        -- aceita strings (repetidas viram contagem), {Name=, Count=, Label=} ou {nome, ...}
+        local function normalize(list)
+            local names, set, cnt, fold, keys = {}, {}, {}, {}, {}
             if type(list) == "table" then
                 for _, o in ipairs(list) do
-                    local s = tostring(o)
-                    if s ~= "" and not seen[s] then
-                        seen[s] = true
-                        table.insert(out, s)
+                    local name, c
+                    if type(o) == "table" then
+                        name = o.Name or o.name or o.Value or o.value or o[1]
+                        c = tonumber(o.Count or o.count) or 1
+                    else
+                        name, c = o, 1
+                    end
+                    if name ~= nil then
+                        name = tostring(name)
+                        if name ~= "" then
+                            if not set[name] then
+                                set[name] = true
+                                names[#names + 1] = name
+                                cnt[name] = 0
+                                fold[name] = foldText(name)
+                            end
+                            cnt[name] = cnt[name] + math.max(math.floor(c), 1)
+                        end
                     end
                 end
             end
             if sortList then
-                table.sort(out)
+                for _, n in ipairs(names) do
+                    keys[n] = naturalKey(n)
+                end
+                table.sort(names, function(a, b)
+                    local ka, kb = keys[a], keys[b]
+                    if ka == kb then
+                        return a < b
+                    end
+                    return ka < kb
+                end)
             end
-            return out, seen
+            return names, set, cnt, fold
         end
         local function listsEqual(a, b)
             if #a ~= #b then
@@ -1594,44 +1676,64 @@ function Nova.CreateWindow(opts)
             return true
         end
         local function copy(t)
-            local out = {}
+            local out = table.create(#t)
             for i, v in ipairs(t) do
                 out[i] = v
             end
             return out
         end
+        local function toSelectionSet(values)
+            local out = {}
+            if type(values) == "string" then
+                out[values] = true
+            elseif type(values) == "table" then
+                for k, v in pairs(values) do
+                    if type(k) == "number" then
+                        out[tostring(v)] = true
+                    elseif v then
+                        out[tostring(k)] = true
+                    end
+                end
+            end
+            return out
+        end
 
-        local options, optionSet = normalize(opts2.Options)
+        local options, optionSet, counts, folded = normalize(opts2.Options)
         local selected = {}
+        local view = options -- opções visíveis (filtradas); sem pesquisa é a própria lista
         local query = ""
         local isOpen = false
-        local rows = {}
+        local lastRefresh = os.clock()
         local lastCommitted = {}
-        local el = {IsMulti = true, Name = opts2.Name}
+        local dupGroups = 0
+        local pool = {}
+        local el = {IsMulti = true, Name = opts2.Name, AutoRefresh = tonumber(opts2.AutoRefresh)}
+        local toggle, commit
+
+        local function countDuplicates()
+            local n = 0
+            for _, name in ipairs(options) do
+                if counts[name] > 1 then
+                    n = n + 1
+                end
+            end
+            dupGroups = n
+        end
+        countDuplicates()
 
         local function selectedList()
             local out = {}
             if #options > 0 then
                 for _, o in ipairs(options) do
                     if selected[o] then
-                        table.insert(out, o)
+                        out[#out + 1] = o
                     end
                 end
-            else -- lista vazia: mantém as seleções salvas como pendentes (não dá para validá-las agora)
+            else -- lista vazia: as seleções salvas ficam pendentes (não dá para validá-las agora)
                 for name in pairs(selected) do
-                    table.insert(out, name)
+                    out[#out + 1] = name
                 end
                 table.sort(out)
-            end
-            return out
-        end
-
-        local function filtered()
-            local out = {}
-            for _, o in ipairs(options) do
-                if query == "" or o:lower():find(query, 1, true) then
-                    table.insert(out, o)
-                end
             end
             return out
         end
@@ -1675,10 +1777,11 @@ function Nova.CreateWindow(opts)
             tween(wrapper, 0.1, {BackgroundColor3 = Theme.Element})
         end)
 
+        local y = ROW_H + 4
         local searchBox
         if opts2.Searchable ~= false then
             searchBox = new("TextBox", {
-                Position = UDim2.new(0, 6, 0, ROW_H + 4), Size = UDim2.new(1, -12, 0, 28),
+                Position = UDim2.new(0, 6, 0, y), Size = UDim2.new(1, -12, 0, SEARCH_H),
                 BackgroundColor3 = Theme.Background, BorderSizePixel = 0, ClearTextOnFocus = false,
                 PlaceholderText = "Pesquisar...", PlaceholderColor3 = Theme.SubText, Text = "",
                 Font = FONT, TextSize = 13, TextColor3 = Theme.Text, TextXAlignment = Enum.TextXAlignment.Left,
@@ -1686,119 +1789,225 @@ function Nova.CreateWindow(opts)
             corner(searchBox, 6)
             padding(searchBox, 8, 0, 8, 0)
         end
-        local barY = ROW_H + 36
-        local function smallButton(text, x)
+        y = y + SEARCH_H + 4
+        local bar = new("Frame", {
+            Position = UDim2.new(0, 6, 0, y), Size = UDim2.new(1, -12, 0, BAR_H), BackgroundTransparency = 1,
+        }, wrapper)
+        new("UIListLayout", {
+            FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder,
+        }, bar)
+        local function barButton(text, order)
             local b = new("TextButton", {
-                Position = UDim2.new(0, x, 0, barY), Size = UDim2.fromOffset(70, 26), BackgroundColor3 = Theme.Background,
+                LayoutOrder = order, Size = UDim2.new(1 / 3, -3, 1, 0), BackgroundColor3 = Theme.Background,
                 BorderSizePixel = 0, AutoButtonColor = true, Text = text, Font = FONT_BOLD, TextSize = 12,
                 TextColor3 = Theme.Text,
-            }, wrapper)
+            }, bar)
             corner(b, 6)
             return b
         end
-        local allBtn = smallButton("Todos", 6)
-        local clearBtn = smallButton("Limpar", 82)
-        local countLabel = makeLabel(wrapper, "", {
-            Position = UDim2.new(0, 158, 0, barY), Size = UDim2.new(1, -170, 0, 26),
-            TextXAlignment = Enum.TextXAlignment.Right, TextColor3 = Theme.SubText, TextSize = 12,
-        })
-        local listY = barY + 32
+        local allBtn = barButton("Todos", 1)
+        local clearBtn = barButton("Limpar", 2)
+        local invertBtn = barButton("Inverter", 3)
+        y = y + BAR_H + 4
+        local listY = y
         local list = new("ScrollingFrame", {
-            Position = UDim2.new(0, 6, 0, listY), Size = UDim2.new(1, -12, 0, 0), BackgroundColor3 = Theme.Background,
+            Position = UDim2.new(0, 6, 0, listY), Size = UDim2.new(1, -12, 0, STEP + 4), BackgroundColor3 = Theme.Background,
             BorderSizePixel = 0, ScrollBarThickness = 3, CanvasSize = UDim2.new(),
-            AutomaticCanvasSize = Enum.AutomaticSize.Y, ScrollingDirection = Enum.ScrollingDirection.Y,
+            ScrollingDirection = Enum.ScrollingDirection.Y,
         }, wrapper)
         corner(list, 6)
-        new("UIListLayout", {Padding = UDim.new(0, GAP), SortOrder = Enum.SortOrder.LayoutOrder}, list)
-        padding(list, 3, 3, 3, 3)
+        local emptyLabel = makeLabel(list, "", {
+            Size = UDim2.new(1, 0, 0, ITEM_H), Position = UDim2.fromOffset(0, 2), TextXAlignment = Enum.TextXAlignment.Center,
+            TextColor3 = Theme.SubText, TextSize = 12, Visible = false,
+        })
+        local infoLabel = makeLabel(wrapper, "", {
+            Position = UDim2.new(0, 8, 0, 0), Size = UDim2.new(1, -16, 0, INFO_H), TextSize = 11,
+            TextColor3 = Theme.SubText, TextTruncate = Enum.TextTruncate.AtEnd,
+        })
 
+        local function maxRows()
+            local vp = viewport()
+            local sc = math.max(scaleObj.Scale, 0.1)
+            return math.clamp(math.floor((vp.Y / sc * 0.34) / STEP), 3, 8)
+        end
         local function listHeight()
-            local n = math.min(math.max(#options, 1), MAX_VISIBLE)
-            return n * (ITEM_H + GAP) + 3
+            return math.min(math.max(#view, 1), maxRows()) * STEP + 4
         end
         local function openHeight()
-            return listY + listHeight() + 6
+            return listY + listHeight() + 4 + INFO_H + 6
         end
 
-        local function summary()
-            local sel = selectedList()
+        local function newRow()
+            local btn = new("TextButton", {
+                Size = UDim2.new(1, -8, 0, ITEM_H), BackgroundColor3 = Theme.Element, BorderSizePixel = 0,
+                AutoButtonColor = false, Text = "", Visible = false,
+            }, list)
+            corner(btn, 5)
+            local box = new("Frame", {
+                AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.new(0, 8, 0.5, 0), Size = UDim2.fromOffset(14, 14),
+                BackgroundColor3 = Theme.Off, BorderSizePixel = 0,
+            }, btn)
+            corner(box, 4)
+            local label = makeLabel(btn, "", {
+                Position = UDim2.fromOffset(30, 0), Size = UDim2.new(1, -78, 1, 0), TextSize = 13,
+                TextTruncate = Enum.TextTruncate.AtEnd,
+            })
+            local badge = makeLabel(btn, "", {
+                AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -8, 0, 0), Size = UDim2.fromOffset(44, ITEM_H),
+                TextXAlignment = Enum.TextXAlignment.Right, TextSize = 12, TextColor3 = Theme.SubText,
+            })
+            local row = {btn = btn, box = box, label = label, badge = badge, name = nil, vi = nil}
+            btn.MouseButton1Click:Connect(function()
+                if row.name then
+                    toggle(row.name)
+                end
+            end)
+            return row
+        end
+
+        local function paintRow(row)
+            local name = row.name
+            if name then
+                local on = selected[name] == true
+                row.box.BackgroundColor3 = on and Theme.Accent or Theme.Off
+                row.label.TextColor3 = on and Theme.Accent or Theme.Text
+                row.btn.BackgroundColor3 = on and Theme.ElementHover or Theme.Element
+            end
+        end
+
+        local function assignRow(row, vi)
+            local name = view[vi]
+            row.vi, row.name = vi, name
+            row.btn.Visible = name ~= nil
+            if name then
+                row.btn.Position = UDim2.fromOffset(4, 2 + (vi - 1) * STEP)
+                row.label.Text = name
+                local c = counts[name]
+                row.badge.Text = (c and c > 1) and ("×" .. c) or ""
+                paintRow(row)
+            end
+        end
+
+        -- virtualização: só (linhas visíveis + 2) botões existem, mesmo com milhares de opções
+        local function layoutRows(force)
+            local need = math.ceil(listHeight() / STEP) + 2
+            while #pool < need do
+                pool[#pool + 1] = newRow()
+            end
+            local first = math.max(1, math.floor(list.CanvasPosition.Y / STEP) + 1)
+            for p = 1, #pool do
+                local row = pool[p]
+                if p > need then
+                    if row.btn.Visible then
+                        row.name, row.vi = nil, nil
+                        row.btn.Visible = false
+                    end
+                elseif force or row.vi ~= first + p - 1 then
+                    assignRow(row, first + p - 1)
+                end
+            end
+        end
+        list:GetPropertyChangedSignal("CanvasPosition"):Connect(function()
+            layoutRows(false)
+        end)
+
+        local function summaryText(sel)
             if #sel == 0 then
-                return opts2.Placeholder or "Nenhum"
+                return (opts2.Placeholder or "Nenhum") .. (#options > 0 and (" (0/" .. #options .. ")") or "")
             elseif #sel <= 2 then
                 return table.concat(sel, ", ")
             end
-            return #sel .. " selecionados"
+            return #sel .. " de " .. #options
+        end
+        local function infoText(sel)
+            local t = #sel .. " selecionado(s) de " .. #options
+            if query ~= "" then
+                t = t .. " · filtro: " .. #view
+            end
+            if dupGroups > 0 then
+                t = t .. " · " .. dupGroups .. " nome(s) repetido(s) agrupado(s)"
+            end
+            return t
+        end
+        local function refreshHeader(sel)
+            valueLabel.Text = summaryText(sel)
+            infoLabel.Text = infoText(sel)
         end
 
-        local function refreshVisuals()
-            valueLabel.Text = summary()
-            countLabel.Text = #selectedList() .. "/" .. #options
-            for name, r in pairs(rows) do
-                local on = selected[name] == true
-                r.box.BackgroundColor3 = on and Theme.Accent or Theme.Off
-                r.label.TextColor3 = on and Theme.Accent or Theme.Text
-                r.btn.BackgroundColor3 = on and Theme.ElementHover or Theme.Element
-            end
-        end
-        bindAccent(refreshVisuals)
-
-        local commit
-        local function rebuild()
-            for _, c in ipairs(list:GetChildren()) do
-                if c:IsA("GuiObject") then
-                    c:Destroy()
-                end
-            end
-            rows = {}
-            local shown = filtered()
-            if #shown == 0 then
-                makeLabel(list, #options == 0 and "Sem opções" or "Nenhum resultado", {
-                    Size = UDim2.new(1, 0, 0, ITEM_H), TextXAlignment = Enum.TextXAlignment.Center,
-                    TextColor3 = Theme.SubText, TextSize = 12,
-                })
-            end
-            for i = 1, math.min(#shown, MAX_RENDER) do
-                local name = shown[i]
-                local btn = new("TextButton", {
-                    LayoutOrder = i, Size = UDim2.new(1, 0, 0, ITEM_H), BackgroundColor3 = Theme.Element,
-                    BorderSizePixel = 0, AutoButtonColor = false, Text = "",
-                }, list)
-                corner(btn, 5)
-                local box = new("Frame", {
-                    AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.new(0, 8, 0.5, 0), Size = UDim2.fromOffset(14, 14),
-                    BackgroundColor3 = Theme.Off, BorderSizePixel = 0,
-                }, btn)
-                corner(box, 4)
-                local label = makeLabel(btn, name, {
-                    Position = UDim2.fromOffset(30, 0), Size = UDim2.new(1, -36, 1, 0), TextSize = 13,
-                    TextTruncate = Enum.TextTruncate.AtEnd,
-                })
-                rows[name] = {btn = btn, box = box, label = label}
-                btn.MouseButton1Click:Connect(function()
-                    selected[name] = (not selected[name]) or nil
-                    commit(false)
-                end)
-            end
-            list.Size = UDim2.new(1, -12, 0, listHeight())
+        local function applyLayout()
+            local h = listHeight()
+            list.CanvasSize = UDim2.fromOffset(0, #view * STEP + 4)
+            list.Size = UDim2.new(1, -12, 0, h)
+            infoLabel.Position = UDim2.new(0, 8, 0, listY + h + 4)
+            emptyLabel.Visible = #view == 0
+            emptyLabel.Text = #options == 0 and "Sem opções" or "Nenhum resultado"
             if isOpen then
                 wrapper.Size = UDim2.new(1, 0, 0, openHeight())
             end
-            refreshVisuals()
+            layoutRows(true)
+        end
+
+        local function rebuildView()
+            if query == "" then
+                view = options
+            else
+                local out = {}
+                for _, o in ipairs(options) do
+                    if folded[o]:find(query, 1, true) then
+                        out[#out + 1] = o
+                    end
+                end
+                view = out
+            end
+            applyLayout()
+        end
+        bindAccent(function()
+            for _, row in ipairs(pool) do
+                paintRow(row)
+            end
+        end)
+
+        local function makeInfo(prev, cur)
+            local was, now, added, removed = {}, {}, {}, {}
+            for _, v in ipairs(prev) do
+                was[v] = true
+            end
+            for _, v in ipairs(cur) do
+                now[v] = true
+                if not was[v] then
+                    added[#added + 1] = v
+                end
+            end
+            for _, v in ipairs(prev) do
+                if not now[v] then
+                    removed[#removed + 1] = v
+                end
+            end
+            return {added = added, removed = removed, counts = counts}
         end
 
         commit = function(silent)
             local cur = selectedList()
-            refreshVisuals()
+            for _, row in ipairs(pool) do
+                paintRow(row)
+            end
+            refreshHeader(cur)
             local changed = not listsEqual(cur, lastCommitted)
+            local prev = lastCommitted
             lastCommitted = copy(cur)
             setFlag(opts2.Flag, copy(cur))
             if changed and not silent then
-                fire(opts2.Callback, copy(cur))
+                fire(opts2.Callback, copy(cur), makeInfo(prev, cur))
                 queueSave()
             end
             return changed
         end
+        toggle = function(name)
+            selected[name] = (not selected[name]) or nil
+            commit(false)
+        end
 
+        --// API do elemento
         function el:Get()
             return selectedList()
         end
@@ -1808,34 +2017,41 @@ function Nova.CreateWindow(opts)
         function el:GetOptions()
             return copy(options)
         end
+        function el:GetCount(name)
+            return counts[tostring(name)] or 0
+        end
+        function el:GetCounts()
+            local out = {}
+            for k, v in pairs(counts) do
+                out[k] = v
+            end
+            return out
+        end
         function el:IsOpen()
             return isOpen
         end
+        function el:LastRefresh()
+            return lastRefresh
+        end
         function el:Set(values, silent)
-            local new = {}
-            if type(values) == "string" then
-                values = {values}
-            end
-            if type(values) == "table" then
-                for _, v in ipairs(values) do
-                    local s = tostring(v)
-                    if #options == 0 or optionSet[s] then -- opção inexistente é ignorada (ou pendente se a lista está vazia)
-                        new[s] = true
-                    end
+            local wanted, new = toSelectionSet(values), {}
+            for name in pairs(wanted) do
+                if #options == 0 or optionSet[name] then -- inexistente é ignorada (pendente se a lista está vazia)
+                    new[name] = true
                 end
             end
             selected = new
             return commit(silent)
         end
         function el:SelectAll(silent)
-            for _, o in ipairs(filtered()) do
+            for _, o in ipairs(view) do
                 selected[o] = true
             end
             return commit(silent)
         end
         function el:Clear(silent)
             if query ~= "" then
-                for _, o in ipairs(filtered()) do
+                for _, o in ipairs(view) do
                     selected[o] = nil
                 end
             else
@@ -1843,9 +2059,15 @@ function Nova.CreateWindow(opts)
             end
             return commit(silent)
         end
+        function el:Invert(silent)
+            for _, o in ipairs(view) do
+                selected[o] = (not selected[o]) or nil
+            end
+            return commit(silent)
+        end
 
         -- Atualiza as opções sem recriar a interface. Sem argumento usa a Source.
-        -- Mantém as seleções que ainda existem; lista vazia vinda da Source mantém as seleções como pendentes.
+        -- Nada mudou = nada é redesenhado e nenhum callback é chamado.
         function el:Refresh(newOptions, force)
             local source = newOptions
             if source == nil and opts2.Source then
@@ -1856,9 +2078,26 @@ function Nova.CreateWindow(opts)
                 end
                 source = res
             end
-            local new, seen = normalize(source)
+            if compat and newOptions ~= nil and force == nil then
+                force = true
+            end
+            lastRefresh = os.clock()
+            local new, seen, newCounts, newFolded = normalize(source)
             local optionsChanged = not listsEqual(new, options)
-            options, optionSet = new, seen
+            local countsChanged = false
+            if not optionsChanged then
+                for _, n in ipairs(new) do
+                    if newCounts[n] ~= counts[n] then
+                        countsChanged = true
+                        break
+                    end
+                end
+            end
+            if not optionsChanged and not countsChanged then
+                return false, #new
+            end
+            options, optionSet, counts, folded = new, seen, newCounts, newFolded
+            countDuplicates()
             local removed = 0
             if #new > 0 then
                 for name in pairs(selected) do
@@ -1873,32 +2112,39 @@ function Nova.CreateWindow(opts)
                 end
                 selected = {}
             end
-            if optionsChanged then
-                rebuild()
-            end
+            rebuildView()
             local changed = false
             if removed > 0 then
                 changed = commit(false)
             else
-                refreshVisuals()
+                refreshHeader(lastCommitted)
             end
             if optionsChanged and not booting then
                 logLater("opt:" .. tostring(opts2.Flag or opts2.Name), "INFO",
                     string.format("%s: lista atualizada (%d opções)", opts2.Name or "Lista", #new),
                     removed > 0 and (removed .. " seleção(ões) removida(s) por não existirem mais") or nil)
             end
-            return changed or optionsChanged, #new
+            return true, #new
         end
         el.SetOptions = el.Refresh
 
         --// eventos de interface
         local function setOpen(open)
             isOpen = open
-            tween(arrow, 0.15, {Rotation = open and 90 or 0})
-            tween(wrapper, 0.18, {Size = UDim2.new(1, 0, 0, open and openHeight() or ROW_H)})
             if open and opts2.Source then
                 el:Refresh()
             end
+            if open then
+                applyLayout()
+            end
+            tween(arrow, 0.15, {Rotation = open and 90 or 0})
+            tween(wrapper, 0.18, {Size = UDim2.new(1, 0, 0, open and openHeight() or ROW_H)})
+        end
+        function el:Open()
+            setOpen(true)
+        end
+        function el:Close()
+            setOpen(false)
         end
         header.MouseButton1Click:Connect(function()
             setOpen(not isOpen)
@@ -1909,39 +2155,68 @@ function Nova.CreateWindow(opts)
         clearBtn.MouseButton1Click:Connect(function()
             el:Clear(false)
         end)
+        invertBtn.MouseButton1Click:Connect(function()
+            el:Invert(false)
+        end)
         if searchBox then
+            local token = 0
             searchBox:GetPropertyChangedSignal("Text"):Connect(function()
-                local q = searchBox.Text:lower():match("^%s*(.-)%s*$")
-                if q ~= query then
-                    query = q
-                    rebuild()
-                end
+                token = token + 1
+                local my = token
+                task.delay(0.12, function() -- espera a pessoa terminar de digitar
+                    if my ~= token or not alive then
+                        return
+                    end
+                    local q = foldText(searchBox.Text):match("^%s*(.-)%s*$")
+                    if q ~= query then
+                        query = q
+                        rebuildView()
+                        refreshHeader(lastCommitted)
+                    end
+                end)
             end)
         end
 
         -- valor inicial (Default/Selected) e padrão para "restaurar"
         local initial = opts2.Default or opts2.Selected or {}
-        if type(initial) == "string" then
-            initial = {initial}
-        end
-        local initNorm = normalize(initial)
-        el.Default = copy(initNorm)
-        rebuild()
-        for _, v in ipairs(initNorm) do
-            if #options == 0 or optionSet[v] then
-                selected[v] = true
+        local initSet = toSelectionSet(initial)
+        local initList = {}
+        for name in pairs(initSet) do
+            if #options == 0 or optionSet[name] then
+                selected[name] = true
             end
         end
+        for _, name in ipairs(#options > 0 and options or {}) do
+            if selected[name] then
+                initList[#initList + 1] = name
+            end
+        end
+        if #options == 0 then
+            for name in pairs(selected) do
+                initList[#initList + 1] = name
+            end
+            table.sort(initList)
+        end
+        el.Default = copy(initList)
+        applyLayout()
         lastCommitted = selectedList()
+        refreshHeader(lastCommitted)
         if opts2.Source then
             table.insert(multiSources, el)
         end
-        refreshVisuals()
         return finalize(el, opts2)
     end
 
     function SectionMT:AddDropdown(opts2)
         opts2 = opts2 or {}
+        if opts2.Multi == true then -- compatível: Get/Set/Refresh/Callback iguais, agora virtualizado e com pesquisa
+            local o = {}
+            for k, v in pairs(opts2) do
+                o[k] = v
+            end
+            o._compat = true
+            return self:AddMultiDropdown(o)
+        end
         local multi = opts2.Multi == true
         local ITEM_H, GAP, MAX_VISIBLE = 30, 3, 5
         local options = {}
@@ -2685,6 +2960,35 @@ function Nova.CreateWindow(opts)
         }
         local color = colors[o.Type or "info"] or Theme.Accent
 
+        if not o.Force then -- evita repetir a mesma mensagem em sequência (loops de aviso)
+            local key = tostring(o.Title) .. "\0" .. tostring(o.Content)
+            local now = os.clock()
+            if notifySeen[key] and now - notifySeen[key] < 1.5 then
+                return
+            end
+            notifySeen[key] = now
+            if now - notifyPrune > 30 then
+                notifyPrune = now
+                for k, t in pairs(notifySeen) do
+                    if now - t > 5 then
+                        notifySeen[k] = nil
+                    end
+                end
+            end
+        end
+        local live = {}
+        for _, c in ipairs(notifHolder:GetChildren()) do
+            if c:IsA("CanvasGroup") then
+                live[#live + 1] = c
+            end
+        end
+        table.sort(live, function(a, b)
+            return a.LayoutOrder < b.LayoutOrder
+        end)
+        while #live >= 5 do -- no máximo 5 na tela: a mais antiga sai
+            table.remove(live, 1):Destroy()
+        end
+
         notifyCount = notifyCount + 1
         local card = new("CanvasGroup", {
             BackgroundColor3 = Theme.Surface,
@@ -2756,6 +3060,7 @@ function Nova.CreateWindow(opts)
         end
         saveConfig()
         alive = false
+        errorSink = nil
         for _, fn in ipairs(cleanups) do
             pcall(fn)
         end
@@ -2849,20 +3154,17 @@ function Nova.CreateWindow(opts)
 
     -- laços compartilhados: confirmação de estado dos recursos e atualização das listas abertas
     task.spawn(function()
-        local acc = 0
         while alive do
             task.wait(0.5)
             local ok, err = pcall(pollFeatures)
             if not ok then
                 warn("[NovaUI] status: " .. tostring(err))
             end
-            acc = acc + 0.5
-            if acc >= 2 then
-                acc = 0
-                for _, m in ipairs(multiSources) do
-                    if m:IsOpen() then
-                        pcall(m.Refresh, m)
-                    end
+            local now = os.clock()
+            for _, m in ipairs(multiSources) do
+                local age = now - m:LastRefresh()
+                if (m:IsOpen() and age >= 2) or (m.AutoRefresh and age >= m.AutoRefresh) then
+                    pcall(m.Refresh, m)
                 end
             end
         end
@@ -3219,15 +3521,12 @@ local function getNPCs(dirText)
     return list
 end
 
+-- um item por NPC (nomes repetidos ficam repetidos): o MultiDropdown agrupa e mostra "Nome ×7"
 local function npcNames(dirText)
-    local seen, out = {}, {}
+    local out = {}
     for _, m in ipairs(getNPCs(dirText)) do
-        if not seen[m.Name] then
-            seen[m.Name] = true
-            table.insert(out, m.Name)
-        end
+        out[#out + 1] = m.Name
     end
-    table.sort(out)
     return out
 end
 
@@ -4449,18 +4748,23 @@ local function applyFarmCFrame(cf)
     end
 end
 
-local function nearest(models, from)
-    local best, bestD
+-- avoid (opcional): evita escolher de novo o alvo anterior quando existe outro candidato
+local function nearest(models, from, avoid)
+    local best, bestD, fallback
     for _, m in ipairs(models) do
         local r = getRoot(m)
         if r and isAlive(m) then
-            local d = (r.Position - from).Magnitude
-            if not bestD or d < bestD then
-                best, bestD = m, d
+            if m == avoid then
+                fallback = m
+            else
+                local d = (r.Position - from).Magnitude
+                if not bestD or d < bestD then
+                    best, bestD = m, d
+                end
             end
         end
     end
-    return best
+    return best or fallback
 end
 
 -- ---------------- Farm Jogadores ----------------
@@ -4567,7 +4871,7 @@ do
                     table.insert(cands, m)
                 end
             end
-            target = nearest(cands, myRoot.Position)
+            target = nearest(cands, myRoot.Position, target)
         end
         if allowed(target) then
             applyFarmCFrame(farmCFrame(getRoot(target), F.fn_mode, F.fn_off))
@@ -4586,16 +4890,14 @@ do
 
     local function itemNames()
         local dir = resolvePath(F.fi_dir)
-        local seen, out = {}, {}
+        local out = {}
         if dir then
             for _, it in ipairs(dir:GetChildren()) do
-                if (it:IsA("BasePart") or it:IsA("Model")) and not seen[it.Name] then
-                    seen[it.Name] = true
-                    table.insert(out, it.Name)
+                if it:IsA("BasePart") or it:IsA("Model") then
+                    out[#out + 1] = it.Name -- repetidos são agrupados pelo MultiDropdown
                 end
             end
         end
-        table.sort(out)
         return out
     end
 
@@ -5144,14 +5446,10 @@ do
     end
 
     local function objectNames()
-        local seen, out = {}, {}
+        local out = {}
         for _, o in ipairs(objectList(false)) do
-            if not seen[o.Name] then
-                seen[o.Name] = true
-                table.insert(out, o.Name)
-            end
+            out[#out + 1] = o.Name -- repetidos são agrupados pelo MultiDropdown
         end
-        table.sort(out)
         return out
     end
 
@@ -6411,31 +6709,128 @@ do
 end
 
 --// ============================================================
---//  GRAVADOR DE ROTA (aba Farm)
+--//  GRAVADOR DE ROTA v2 (aba Farm)
+--//  * grava posição + orientação completa (inclui inclinação) com tempo, a 30 Hz
+--//  * comprime trechos parados (sem perder o tempo que você ficou parado)
+--//  * replay interpolado fiel ao tempo original, velocidade 0.5x a 8x
+--//  * pausa/retoma (F3), progresso em tempo real e trava de movimento
+--//  * rotas antigas (só pontos) são convertidas automaticamente
 --// ============================================================
 do
-    local MAX_POINTS, MIN_STEP, SAMPLE_DT, ROUTE_COUNT = 1500, 3, 0.15, 5
+    local CFG = {
+        RECORD_INTERVAL = 1 / 30, -- 30 Hz em vez de todo frame (economiza memória)
+        MAX_RECORD_SECONDS = 300, -- limite de segurança (5 min)
+        IDLE_POS_EPS = 0.02, -- studs; abaixo disso considera "parado"
+        IDLE_ROT_EPS = 0.01, -- radianos; abaixo disso considera "sem giro"
+        ROUTE_COUNT = 5,
+        LEGACY_SPEED = 16, -- studs/s usados para dar tempo às rotas antigas
+    }
+    local STRIDE = 7 -- t, x, y, z, rx, ry, rz (Euler YXZ)
+    local SPEED_OPTIONS = {"0.5x", "1x", "1.5x", "2x", "4x", "8x"}
+    local LOCK_STATES = {
+        Enum.HumanoidStateType.Running,
+        Enum.HumanoidStateType.RunningNoPhysics,
+        Enum.HumanoidStateType.Jumping,
+        Enum.HumanoidStateType.Freefall,
+        Enum.HumanoidStateType.Landed,
+        Enum.HumanoidStateType.FallingDown,
+        Enum.HumanoidStateType.Climbing,
+        Enum.HumanoidStateType.Swimming,
+    }
 
-    -- rotas guardadas em listas planas {x1,y1,z1,x2,y2,z2,...}; entram no RN_TEAM_SAVE.json
+    local function rnd(x, m)
+        return math.floor(x * m + 0.5) / m
+    end
+
+    -- rota = {v = 2, d = {t1,x1,y1,z1,rx1,ry1,rz1, t2,...}}; entra no RN_TEAM_SAVE.json
+    local function newRoute()
+        return {v = 2, d = {}}
+    end
+    local function sampleCount(r)
+        return math.floor(#r.d / STRIDE)
+    end
+    local function routeDuration(r)
+        local n = sampleCount(r)
+        if n == 0 then
+            return 0
+        end
+        return r.d[(n - 1) * STRIDE + 1]
+    end
+    local function routeLength(r)
+        local d, len = r.d, 0
+        for i = 1 + STRIDE, #d, STRIDE do
+            len = len + (Vector3.new(d[i + 1], d[i + 2], d[i + 3]) - Vector3.new(d[i - STRIDE + 1], d[i - STRIDE + 2], d[i - STRIDE + 3])).Magnitude
+        end
+        return len
+    end
+
+    local function pushSample(d, t, cf)
+        local rx, ry, rz = cf:ToEulerAnglesYXZ()
+        local p = cf.Position
+        local n = #d
+        d[n + 1], d[n + 2], d[n + 3], d[n + 4] = rnd(t, 1000), rnd(p.X, 100), rnd(p.Y, 100), rnd(p.Z, 100)
+        d[n + 5], d[n + 6], d[n + 7] = rnd(rx, 1000), rnd(ry, 1000), rnd(rz, 1000)
+    end
+
+    -- rota antiga {x,y,z,...}: ganha tempo (16 studs/s) e olha na direção do caminho
+    local function convertLegacy(flat)
+        local pts = {}
+        for i = 1, #flat - 2, 3 do
+            pts[#pts + 1] = Vector3.new(flat[i], flat[i + 1], flat[i + 2])
+        end
+        local r = newRoute()
+        if #pts < 2 then
+            return r
+        end
+        local t, look = 0, CFrame.new()
+        for i, p in ipairs(pts) do
+            if i > 1 then
+                t = t + (p - pts[i - 1]).Magnitude / CFG.LEGACY_SPEED
+            end
+            local dir = pts[i + 1] and (pts[i + 1] - p) or (p - pts[i - 1])
+            local flatDir = Vector3.new(dir.X, 0, dir.Z)
+            if flatDir.Magnitude > 0.05 then
+                look = CFrame.lookAt(Vector3.zero, flatDir)
+            end
+            pushSample(r.d, t, CFrame.new(p) * look)
+        end
+        return r
+    end
+
+    local function loadRoute(src)
+        if type(src) ~= "table" then
+            return newRoute()
+        end
+        if src.v == 2 and type(src.d) == "table" then
+            local d = {}
+            for _, v in ipairs(src.d) do
+                if type(v) ~= "number" then
+                    return newRoute()
+                end
+                d[#d + 1] = v
+            end
+            if #d % STRIDE ~= 0 then
+                return newRoute()
+            end
+            return {v = 2, d = d}
+        end
+        local flat = {}
+        for _, v in ipairs(src) do
+            if type(v) ~= "number" then
+                return newRoute()
+            end
+            flat[#flat + 1] = v
+        end
+        if #flat % 3 ~= 0 then
+            return newRoute()
+        end
+        return convertLegacy(flat)
+    end
+
     local routes = {}
     local savedRoutes = Win.Saved.routes
-    for i = 1, ROUTE_COUNT do
-        local r = {}
-        local src = type(savedRoutes) == "table" and savedRoutes[i] or nil
-        if type(src) == "table" then
-            for _, v in ipairs(src) do
-                if type(v) == "number" then
-                    r[#r + 1] = v
-                else
-                    r = {}
-                    break
-                end
-            end
-            if #r % 3 ~= 0 then
-                r = {}
-            end
-        end
-        routes[i] = r
+    for i = 1, CFG.ROUTE_COUNT do
+        routes[i] = loadRoute(type(savedRoutes) == "table" and savedRoutes[i] or nil)
     end
     Win.Elements.routes = {
         Get = function()
@@ -6448,41 +6843,128 @@ do
         Default = nil,
     }
 
+    -- ---------- reprodução: trilha pré-montada + interpolação ----------
+    local function buildTrack(r)
+        local times, cfs, d = {}, {}, r.d
+        for i = 1, #d, STRIDE do
+            times[#times + 1] = d[i]
+            cfs[#cfs + 1] = CFrame.new(d[i + 1], d[i + 2], d[i + 3]) * CFrame.fromEulerAnglesYXZ(d[i + 4], d[i + 5], d[i + 6])
+        end
+        return {times = times, cfs = cfs, duration = times[#times] or 0}
+    end
+
+    local function findIndex(times, t) -- maior i com times[i] <= t (busca binária)
+        local lo, hi = 1, #times
+        if t <= times[lo] then
+            return lo
+        end
+        if t >= times[hi] then
+            return hi
+        end
+        while lo < hi - 1 do
+            local mid = math.floor((lo + hi) / 2)
+            if times[mid] <= t then
+                lo = mid
+            else
+                hi = mid
+            end
+        end
+        return lo
+    end
+
+    -- CFrame:Lerp interpola posição e faz slerp da orientação (preserva inclinação/giro)
+    local function sampleAt(track, t)
+        local times, cfs = track.times, track.cfs
+        local i = findIndex(times, t)
+        local j = math.min(i + 1, #times)
+        local seg = times[j] - times[i]
+        if seg <= 0 then
+            return cfs[i]
+        end
+        return cfs[i]:Lerp(cfs[j], math.clamp((t - times[i]) / seg, 0, 1))
+    end
+
+    local function speedMult()
+        return tonumber(tostring(F.route_mult or "1x"):match("[%d%.]+")) or 1
+    end
     local function slotIndex()
         return tonumber(tostring(F.route_slot or "Rota 1"):match("%d+")) or 1
     end
-    local function r1(x)
-        return math.floor(x * 10 + 0.5) / 10
-    end
-    local function routeLength(r)
-        local len = 0
-        for i = 4, #r, 3 do
-            len = len + (Vector3.new(r[i], r[i + 1], r[i + 2]) - Vector3.new(r[i - 3], r[i - 2], r[i - 1])).Magnitude
+
+    -- ---------- trava de movimento do Humanoid durante o replay ----------
+    local function lockHum(hum)
+        if not hum then
+            return nil
         end
-        return len
+        local saved = {hum = hum, ws = hum.WalkSpeed, jp = hum.JumpPower, jh = hum.JumpHeight, ar = hum.AutoRotate}
+        pcall(function()
+            hum.WalkSpeed, hum.JumpPower, hum.JumpHeight, hum.AutoRotate = 0, 0, 0, false
+            for _, st in ipairs(LOCK_STATES) do
+                hum:SetStateEnabled(st, false)
+            end
+        end)
+        return saved
+    end
+    local function unlockHum(saved)
+        if not saved or not saved.hum or not saved.hum.Parent then
+            return
+        end
+        local hum = saved.hum
+        pcall(function()
+            for _, st in ipairs(LOCK_STATES) do
+                hum:SetStateEnabled(st, true)
+            end
+            hum.WalkSpeed, hum.JumpPower, hum.JumpHeight = saved.ws, saved.jp, saved.jh
+            hum.AutoRotate = saved.ar ~= false
+        end)
     end
 
+    -- ---------- interface ----------
     local rs = tabFarm:AddSection("🛤️ Gravador de Rota")
     local infoLbl
+    local rec, play = nil, nil
+
     local function refreshInfo()
         if not infoLbl then
             return
         end
         local n = slotIndex()
         local r = routes[n]
-        if #r == 0 then
+        local c = sampleCount(r)
+        if c == 0 then
             infoLbl:Set("Rota " .. n .. ": vazia")
         else
-            infoLbl:Set(string.format("Rota %d: %d pontos, cerca de %d studs", n, math.floor(#r / 3), math.floor(routeLength(r) + 0.5)))
+            infoLbl:Set(string.format("Rota %d: %d amostras, %.1fs, cerca de %d studs", n, c, routeDuration(r), math.floor(routeLength(r) + 0.5)))
         end
     end
 
-    local rec, play = nil, nil
+    local function finishRecording(r)
+        if r.idleT then
+            pushSample(r.d, r.idleT, r.lastCf) -- mantém o tempo parado no final
+        end
+        if #r.d < STRIDE * 2 then
+            notify("Gravador", "Rota muito curta; nada foi salvo.", "warning")
+            return
+        end
+        routes[r.slot] = {v = 2, d = r.d}
+        local saved = Win:Save()
+        refreshInfo()
+        local msg = string.format("Rota %d: %d amostras (%.1fs)", r.slot, sampleCount(routes[r.slot]), routeDuration(routes[r.slot]))
+        if saved then
+            notify("Gravador", msg .. " salva.", "success")
+        else
+            notify("Gravador", msg .. " guardada só na memória (não foi possível gravar o arquivo).", "warning")
+        end
+    end
 
     rs:AddDropdown({
         Name = "Rota", Flag = "route_slot", Default = "Rota 1",
         Options = {"Rota 1", "Rota 2", "Rota 3", "Rota 4", "Rota 5"},
         Callback = function()
+            if rec or play then
+                notify("Gravador", "A troca vale para a próxima gravação/reprodução.", "info")
+                return
+            end
             refreshInfo()
         end,
     })
@@ -6502,24 +6984,15 @@ do
                 if F.route_play then
                     Win.Elements.route_play:Set(false, false)
                 end
-                rec = {slot = slotIndex(), pts = {r1(root.Position.X), r1(root.Position.Y), r1(root.Position.Z)}, last = root.Position, t = 0}
-                notify("Gravador", "Gravando a Rota " .. rec.slot .. " (substitui a anterior). Ande pelo caminho e desligue para salvar.", "info")
+                local cf = root.CFrame
+                rec = {slot = slotIndex(), d = {}, start = os.clock(), lastTick = 0, lastCf = cf, idleT = nil, root = root}
+                pushSample(rec.d, 0, cf)
+                notify("Gravador", "🔴 Gravando a Rota " .. rec.slot .. " (substitui a anterior). Desligue para salvar.", "info")
             else
                 local r = rec
                 rec = nil
                 if r then
-                    if #r.pts >= 6 then
-                        routes[r.slot] = r.pts
-                        local saved = Win:Save()
-                        refreshInfo()
-                        if saved then
-                            notify("Gravador", "Rota " .. r.slot .. " salva: " .. math.floor(#r.pts / 3) .. " pontos.", "success")
-                        else
-                            notify("Gravador", "Rota " .. r.slot .. " guardada só na memória (não foi possível gravar o arquivo).", "warning")
-                        end
-                    else
-                        notify("Gravador", "Rota muito curta; nada foi salvo.", "warning")
-                    end
+                    finishRecording(r)
                 end
             end
         end,
@@ -6533,7 +7006,7 @@ do
                 end
                 local n = slotIndex()
                 local r = routes[n]
-                if #r < 6 then
+                if sampleCount(r) < 2 then
                     notify("Gravador", "A Rota " .. n .. " está vazia.", "warning")
                     Win.Elements.route_play:Set(false, true)
                     return
@@ -6549,66 +7022,100 @@ do
                     Win.Elements.route_play:Set(false, true)
                     return
                 end
-                local pts, idx, best = {}, 1, math.huge
-                for i = 1, #r, 3 do
-                    local p = Vector3.new(r[i], r[i + 1], r[i + 2])
-                    pts[#pts + 1] = p
-                    local d = (p - root.Position).Magnitude
-                    if d < best then
-                        best, idx = d, #pts
+                local track = buildTrack(r)
+                local t0 = 0
+                if F.route_nearest then
+                    local best = math.huge
+                    for i, cf in ipairs(track.cfs) do
+                        local dd = (cf.Position - root.Position).Magnitude
+                        if dd < best then
+                            best, t0 = dd, track.times[i]
+                        end
                     end
                 end
-                play = {pts = pts, idx = idx, root = root}
+                play = {slot = n, track = track, t = t0, root = root, lock = lockHum(getHum()), uiT = 0}
+                notify("Gravador", string.format("▶ Reproduzindo a Rota %d (%.1fs) a %sx.", n, track.duration, tostring(speedMult())), "info")
             else
+                local p = play
                 play = nil
+                if p then
+                    unlockHum(p.lock)
+                end
                 Mover.release("route")
+                if F.route_pause then
+                    Win.Elements.route_pause:Set(false, true)
+                end
+                refreshInfo()
             end
         end,
     })
+    rs:AddToggle({Name = "Pausar reprodução", Flag = "route_pause", Default = false, NoSave = true, Feature = false})
+    rs:AddKeybind({
+        Name = "Tecla pausar/retomar", Flag = "route_pause_key", Default = "F3",
+        Callback = function()
+            if play then
+                Win.Elements.route_pause:Set(not F.route_pause, false)
+            end
+        end,
+    })
+    rs:AddDropdown({Name = "Velocidade do replay", Flag = "route_mult", Options = SPEED_OPTIONS, Default = "1x"})
     rs:AddToggle({Name = "Repetir em loop", Flag = "route_loop", Default = false, Feature = false})
-    rs:AddSlider({Name = "Velocidade", Flag = "route_speed", Min = 10, Max = 500, Default = 100, Step = 5})
+    rs:AddToggle({Name = "Começar do ponto mais próximo", Flag = "route_nearest", Default = false, Feature = false})
     rs:AddButton({Name = "Apagar esta rota", Callback = function()
         local n = slotIndex()
-        if rec and rec.slot == n then
-            notify("Gravador", "Pare a gravação antes de apagar.", "warning")
+        if (rec and rec.slot == n) or (play and play.slot == n) then
+            notify("Gravador", "Pare a gravação/reprodução antes de apagar.", "warning")
             return
         end
-        routes[n] = {}
+        routes[n] = newRoute()
         local saved = Win:Save()
         refreshInfo()
         notify("Gravador", saved and ("Rota " .. n .. " apagada.") or ("Rota " .. n .. " apagada da memória (arquivo não gravado)."), saved and "success" or "warning")
     end})
-    rs:AddLabel("A reprodução anda em linha reta entre os pontos, atravessando paredes, e começa pelo ponto mais próximo de você.")
+    rs:AddLabel("O replay segue o tempo, a posição e a orientação gravados (atravessa paredes). Ficar parado não gasta memória.")
 
-    -- gravação: amostra a posição a cada 0,15 s e guarda só pontos com pelo menos 3 studs de distância
-    connect(RunService.Heartbeat, function(dt)
+    -- ---------- gravação: 30 Hz + compressão de trechos parados ----------
+    connect(RunService.Heartbeat, function()
         if not rec then
             return
         end
         local root = getRoot()
-        if not root or not isAlive(LocalPlayer.Character) then
-            Mon.tick("rrec", "aguardando o personagem", true)
+        if not root or root ~= rec.root or not isAlive(LocalPlayer.Character) then
+            notify("Gravador", "Personagem morreu/resetou: gravação encerrada.", "warning")
+            Win.Elements.route_rec:Set(false, false) -- salva o que já foi gravado
             return
         end
-        rec.t = rec.t + dt
-        if rec.t >= SAMPLE_DT then
-            rec.t = 0
-            local p = root.Position
-            if (p - rec.last).Magnitude >= MIN_STEP then
-                local n = #rec.pts
-                rec.pts[n + 1], rec.pts[n + 2], rec.pts[n + 3] = r1(p.X), r1(p.Y), r1(p.Z)
-                rec.last = p
-                if #rec.pts / 3 >= MAX_POINTS then
-                    Win:Log("WARNING", "Gravador: limite de " .. MAX_POINTS .. " pontos atingido; gravação encerrada")
-                    Win.Elements.route_rec:Set(false, false)
-                    return
-                end
-            end
+        local elapsed = os.clock() - rec.start
+        if elapsed >= CFG.MAX_RECORD_SECONDS then
+            Win:Log("WARNING", "Gravador: limite de " .. CFG.MAX_RECORD_SECONDS .. "s atingido; gravação encerrada")
+            notify("Gravador", "Limite de " .. CFG.MAX_RECORD_SECONDS .. "s atingido; gravação encerrada.", "warning")
+            Win.Elements.route_rec:Set(false, false)
+            return
         end
-        Mon.tick("rrec", math.floor(#rec.pts / 3) .. " ponto(s) gravado(s)")
+        if elapsed - rec.lastTick < CFG.RECORD_INTERVAL then
+            return
+        end
+        rec.lastTick = elapsed
+        local cf = root.CFrame
+        local moved = (cf.Position - rec.lastCf.Position).Magnitude > CFG.IDLE_POS_EPS
+        if not moved then
+            local dot = math.clamp(cf.LookVector:Dot(rec.lastCf.LookVector), -1, 1)
+            moved = math.acos(dot) > CFG.IDLE_ROT_EPS
+        end
+        if moved then
+            if rec.idleT then
+                pushSample(rec.d, rec.idleT, rec.lastCf) -- "segura" a pose até o fim da parada
+                rec.idleT = nil
+            end
+            pushSample(rec.d, elapsed, cf)
+            rec.lastCf = cf
+        else
+            rec.idleT = elapsed
+        end
+        Mon.tick("rrec", string.format("🔴 %d amostra(s), %.1fs", math.floor(#rec.d / STRIDE), elapsed))
     end, "rrec")
 
-    -- reprodução: andador contínuo (um único movimento reservado via Mover.hold)
+    -- ---------- reprodução: tempo real x velocidade, com pausa e loop ----------
     connect(RunService.Heartbeat, function(dt)
         if not (F.route_play and play) then
             return
@@ -6618,55 +7125,52 @@ do
             Mon.tick("rplay", "aguardando o personagem (respawn)", true)
             return
         end
-        if root ~= play.root then -- respawn: retoma pelo ponto mais próximo
+        if root ~= play.root then -- respawn: retoma do mesmo instante da rota
             if not Mover.hold("route", root) then
                 Mon.tick("rplay", "movimento ocupado por outro sistema", true)
                 return
             end
+            unlockHum(play.lock)
             play.root = root
-            local best = math.huge
-            for i, p in ipairs(play.pts) do
-                local d = (p - root.Position).Magnitude
-                if d < best then
-                    best, play.idx = d, i
-                end
-            end
+            play.lock = lockHum(getHum())
         end
-        local pos = root.Position
-        local target = play.pts[play.idx]
-        local vec = target - pos
-        local dist = vec.Magnitude
-        local step = math.max(tonumber(F.route_speed) or 100, 1) * dt
-        local newPos, finished = nil, false
-        if dist <= step then
-            newPos = target
-            play.idx = play.idx + 1
-            if play.idx > #play.pts then
-                if F.route_loop then
-                    play.idx = 1 -- volta andando até o primeiro ponto
+        local track = play.track
+        local finished = false
+        if not F.route_pause then
+            play.t = play.t + dt * speedMult()
+            if play.t >= track.duration then
+                if F.route_loop and track.duration > 0 then
+                    play.t = play.t % track.duration
                 else
+                    play.t = track.duration
                     finished = true
                 end
             end
-        else
-            newPos = pos + vec.Unit * step
         end
-        local rot = root.CFrame - root.CFrame.Position
-        local flat = Vector3.new(vec.X, 0, vec.Z)
-        if flat.Magnitude > 0.05 then
-            rot = CFrame.lookAt(Vector3.zero, flat)
-        end
-        root.CFrame = CFrame.new(newPos) * rot
+        root.CFrame = sampleAt(track, play.t)
         root.AssemblyLinearVelocity = Vector3.zero
-        Mon.tick("rplay", string.format("ponto %d/%d", math.min(play.idx, #play.pts), #play.pts))
+        root.AssemblyAngularVelocity = Vector3.zero
+
+        local pct = track.duration > 0 and (play.t / track.duration) or 1
+        local text = string.format("%s Rota %d: %.1fs / %.1fs (%d%%) • %sx", F.route_pause and "⏸" or "▶", play.slot, play.t, track.duration, math.floor(pct * 100 + 0.5), tostring(speedMult()))
+        Mon.tick("rplay", text)
+        play.uiT = play.uiT + dt
+        if play.uiT >= 0.2 and infoLbl then -- progresso na interface ~5x por segundo
+            play.uiT = 0
+            infoLbl:Set(text)
+        end
         if finished then
             Win.Elements.route_play:Set(false, false)
-            notify("Gravador", "Rota concluída.", "success")
+            notify("Gravador", "⏹ Rota concluída.", "success")
         end
     end, "rplay")
 
     Win:OnDestroy(function()
+        local p = play
         rec, play = nil, nil
+        if p then
+            unlockHum(p.lock)
+        end
         Mover.release("route")
     end)
 end
