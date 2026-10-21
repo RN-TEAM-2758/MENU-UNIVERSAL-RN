@@ -6701,7 +6701,7 @@ do
     rx:AddLabel("Ligado: o RN TEAM se executa sozinho ao entrar no próximo servidor.")
 
     -- link fixo do próprio RN TEAM (usado na reexecução; não é mais digitado na interface)
-    local RN_DEFAULT_URL = "https://pastefy.app/fAo2cDay/raw"
+    local RN_DEFAULT_URL = "https://raw.githubusercontent.com/RN-TEAM-2758/MENU-UNIVERSAL-RN/refs/heads/main/script.js"
 
     -- procura uma cópia local do script na pasta do executor (workspace / autoexec)
     local function findLocalCopy()
