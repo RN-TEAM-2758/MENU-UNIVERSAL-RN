@@ -270,6 +270,9 @@ local function loadConfig(path)
     if ok and type(data) == "table" then
         return data
     end
+    if not ok then
+        return {}, tostring(data) -- arquivo existe mas está inválido
+    end
     return {}
 end
 
@@ -317,35 +320,403 @@ function Nova.CreateWindow(opts)
         table.insert(accentUpdaters, fn)
     end
 
+    --// ---------- Central de Eventos (histórico interno) ----------
+    local EVENT_MAX = 300
+    local LEVELS = {INFO = true, SUCCESS = true, WARNING = true, ERROR = true}
+    local SENSITIVE = {"password", "senha", "token", "secret", "apikey", "api_key", "cookie", "roblosecurity", "authorization"}
+    local loadErr = nil -- preenchido ao carregar o arquivo de configuração
+    local booting = true -- durante a montagem da interface não gera eventos de configuração
+    Window.Events = {}
+    local eventListeners = {}
+    local eventSeq = 0
+    local rate = {sec = 0, n = 0, dropped = 0}
+
+    local function stamp()
+        local ok, s = pcall(os.date, "%H:%M:%S")
+        if ok and type(s) == "string" then
+            return s
+        end
+        return string.format("+%ds", math.floor(os.clock()))
+    end
+
+    -- nunca guarda senhas/chaves; limita o tamanho dos textos
+    local function sanitize(text, limit)
+        text = tostring(text == nil and "" or text)
+        local low = text:lower()
+        for _, w in ipairs(SENSITIVE) do
+            if low:find(w, 1, true) then
+                return "[conteúdo sensível omitido]"
+            end
+        end
+        limit = limit or 300
+        if #text > limit then
+            text = text:sub(1, limit) .. "..."
+        end
+        return text
+    end
+
+    local function pushEvent(level, message, detail)
+        local events = Window.Events
+        local now = os.clock()
+        for i = #events, math.max(1, #events - 7), -1 do -- duplicados recentes viram contador
+            local e = events[i]
+            if e.level == level and e.msg == message and e.detail == detail and now - e.clk < 5 then
+                e.count = e.count + 1
+                e.clk = now
+                e.time = stamp()
+                for _, fn in ipairs(eventListeners) do
+                    pcall(fn, e, true)
+                end
+                return e
+            end
+        end
+        eventSeq = eventSeq + 1
+        local e = {id = eventSeq, level = level, msg = message, detail = detail, count = 1, time = stamp(), clk = now}
+        table.insert(events, e)
+        if #events > EVENT_MAX then
+            table.remove(events, 1)
+        end
+        for _, fn in ipairs(eventListeners) do
+            pcall(fn, e, false)
+        end
+        return e
+    end
+
+    function Window:Log(level, message, detail)
+        if not alive then
+            return nil
+        end
+        level = tostring(level or "INFO"):upper()
+        if not LEVELS[level] then
+            level = "INFO"
+        end
+        local sec = math.floor(os.clock())
+        if rate.sec ~= sec then
+            local dropped = rate.dropped
+            rate.sec, rate.n, rate.dropped = sec, 0, 0
+            if dropped > 0 then
+                pushEvent("WARNING", dropped .. " evento(s) descartado(s) por excesso de registros", nil)
+            end
+        end
+        rate.n = rate.n + 1
+        if rate.n > 25 then -- proteção contra loops de eventos
+            rate.dropped = rate.dropped + 1
+            return nil
+        end
+        message = sanitize(message, 200)
+        if detail ~= nil and detail ~= "" then
+            detail = sanitize(detail, 400)
+        else
+            detail = nil
+        end
+        return pushEvent(level, message, detail)
+    end
+
+    function Window:OnEvent(fn)
+        table.insert(eventListeners, fn)
+        return function()
+            for i, f in ipairs(eventListeners) do
+                if f == fn then
+                    table.remove(eventListeners, i)
+                    break
+                end
+            end
+        end
+    end
+
+    function Window:ClearEvents()
+        Window.Events = {}
+        for _, fn in ipairs(eventListeners) do
+            pcall(fn, nil, false)
+        end
+    end
+
+    function Window:EventCounts()
+        local c = {INFO = 0, SUCCESS = 0, WARNING = 0, ERROR = 0}
+        for _, e in ipairs(Window.Events) do
+            c[e.level] = c[e.level] + e.count
+        end
+        return c
+    end
+
+    -- junta mudanças seguidas (ex.: arrastar um slider) em um único registro
+    local pendingLogs, flushScheduled = {}, false
+    local function logLater(key, level, message, detail)
+        pendingLogs[key] = {level, message, detail}
+        if not flushScheduled then
+            flushScheduled = true
+            task.delay(0.8, function()
+                flushScheduled = false
+                local batch = pendingLogs
+                pendingLogs = {}
+                for _, p in pairs(batch) do
+                    Window:Log(p[1], p[2], p[3])
+                end
+            end)
+        end
+    end
+
+    local multiSources = {} -- MultiDropdowns com Source (atualizados por um único laço compartilhado)
+
+    --// ---------- Registro de recursos (Painel de Status) ----------
+    Window.Features = {}
+    local featureById, featureByFlag = {}, {}
+    local featureListeners = {}
+
+    function Window:RegisterFeature(def)
+        if type(def) ~= "table" or not def.Name then
+            return nil
+        end
+        local id = def.Id or def.Flag or def.Name
+        local f = featureById[id]
+        if f then
+            if def.Probe then
+                f.Probe = def.Probe
+            end
+            return f
+        end
+        f = {Id = id, Name = def.Name, Group = def.Group or "Geral", Flag = def.Flag, Probe = def.Probe}
+        table.insert(Window.Features, f)
+        featureById[id] = f
+        if f.Flag then
+            featureByFlag[f.Flag] = f
+        end
+        for _, fn in ipairs(featureListeners) do
+            pcall(fn, f)
+        end
+        return f
+    end
+
+    -- liga uma "sonda" (estado real da execução) a um recurso já registrado
+    function Window:Monitor(idOrFlag, probe)
+        local f = featureById[idOrFlag] or featureByFlag[idOrFlag]
+        if f and type(probe) == "function" then
+            f.Probe = probe
+            return true
+        end
+        return false
+    end
+
+    function Window:OnFeature(fn)
+        table.insert(featureListeners, fn)
+    end
+
+    -- state: active | waiting | inactive | error | unmonitored (nunca presume que "ligado" = funcionando)
+    function Window:GetFeatureState(f)
+        local control = nil
+        if f.Flag then
+            control = Window.Flags[f.Flag]
+        end
+        if f.Probe then
+            local ok, s, d = pcall(f.Probe, control)
+            if ok and (s == "active" or s == "waiting" or s == "inactive" or s == "error") then
+                return s, d ~= nil and tostring(d) or nil, control
+            end
+            return "error", ok and "a sonda devolveu um valor inválido" or tostring(s), control
+        end
+        local detail
+        if control == true then
+            detail = "ligado; execução não monitorada"
+        elseif control == false then
+            detail = "desligado"
+        end
+        return "unmonitored", detail, control
+    end
+
+    function Window:FeatureCounts()
+        local c = {total = #Window.Features, active = 0, inactive = 0, waiting = 0, error = 0, unmonitored = 0, unmonitoredOn = 0}
+        for _, f in ipairs(Window.Features) do
+            local s, _, control = Window:GetFeatureState(f)
+            c[s] = c[s] + 1
+            if s == "unmonitored" and control == true then
+                c.unmonitoredOn = c.unmonitoredOn + 1
+            end
+        end
+        return c
+    end
+
+    --// ---------- Barramento de mudanças (compartilhado por Status, Eventos e MultiDropdown) ----------
+    local changeListeners = {}
+    local watch, lastState = {}, {}
+
+    function Window:OnChange(fn)
+        table.insert(changeListeners, fn)
+    end
+
+    local function valuesEqual(a, b)
+        if a == b then
+            return true
+        end
+        if type(a) == "table" and type(b) == "table" then
+            if #a ~= #b then
+                return false
+            end
+            for i = 1, #a do
+                if a[i] ~= b[i] then
+                    return false
+                end
+            end
+            return true
+        end
+        return false
+    end
+
     local function setFlag(flag, value)
-        if flag then
-            Window.Flags[flag] = value
+        if not flag then
+            return
+        end
+        local old = Window.Flags[flag]
+        Window.Flags[flag] = value
+        if not valuesEqual(old, value) then
+            for _, fn in ipairs(changeListeners) do
+                local ok, err = pcall(fn, flag, value, old)
+                if not ok then
+                    warn("[NovaUI] observador de mudanças: " .. tostring(err))
+                end
+            end
+        end
+    end
+
+    local function fmtValue(v)
+        if type(v) == "number" then
+            return tostring(math.floor(v * 1000 + 0.5) / 1000)
+        elseif type(v) == "boolean" then
+            return v and "ligado" or "desligado"
+        end
+        return sanitize(v, 40)
+    end
+
+    -- registra alterações de configuração e pedidos de ativação/desativação
+    table.insert(changeListeners, function(flag, value, old)
+        if booting then
+            return
+        end
+        local el = Window.Elements[flag]
+        if el and el.NoLog then
+            return -- ex.: links, que não devem aparecer no histórico
+        end
+        local name = (el and el.Name) or flag
+        local f = featureByFlag[flag]
+        if f then
+            local on = value == true
+            if on then
+                Window:Log("INFO", f.Name .. ": ativação solicitada" .. (f.Probe and "" or " (sem monitoramento: execução não confirmável)"))
+            else
+                Window:Log("INFO", f.Name .. ": desativação solicitada")
+            end
+            if f.Probe then
+                watch[f.Id] = {want = on and "on" or "off", since = os.clock()}
+            else
+                watch[f.Id] = nil
+            end
+        elseif el and el.IsMulti and type(value) == "table" then
+            local oldSet = {}
+            for _, v in ipairs(type(old) == "table" and old or {}) do
+                oldSet[v] = true
+            end
+            local added, removed, newSet = 0, 0, {}
+            for _, v in ipairs(value) do
+                newSet[v] = true
+                if not oldSet[v] then
+                    added = added + 1
+                end
+            end
+            for v in pairs(oldSet) do
+                if not newSet[v] then
+                    removed = removed + 1
+                end
+            end
+            logLater("cfg:" .. flag, "INFO", string.format("Seleção em %s: %d selecionado(s)", name, #value),
+                string.format("+%d / -%d", added, removed))
+        else
+            logLater("cfg:" .. flag, "INFO", string.format("Config: %s = %s", name, fmtValue(value)))
+        end
+    end)
+
+    -- confirma (ou não) que a função realmente passou a executar/parar
+    local function pollFeatures()
+        local now = os.clock()
+        for _, f in ipairs(Window.Features) do
+            if f.Probe then
+                local state, detail = Window:GetFeatureState(f)
+                local w = watch[f.Id]
+                if w then
+                    if w.want == "on" then
+                        if state == "active" then
+                            Window:Log("SUCCESS", f.Name .. ": em execução", detail)
+                            watch[f.Id] = nil
+                        elseif state == "error" then
+                            watch[f.Id] = nil
+                        elseif now - w.since > 8 then
+                            Window:Log("WARNING", f.Name .. ": ligado, mas sem confirmação de execução", detail)
+                            watch[f.Id] = nil
+                        end
+                    else
+                        if state ~= "active" then
+                            Window:Log("SUCCESS", f.Name .. ": desativado e parado")
+                            watch[f.Id] = nil
+                        elseif now - w.since > 8 then
+                            Window:Log("WARNING", f.Name .. ": continua ativo após o pedido de desativação", detail)
+                            watch[f.Id] = nil
+                        end
+                    end
+                end
+                if state == "error" and lastState[f.Id] ~= "error" then
+                    Window:Log("ERROR", f.Name .. ": erro em execução", detail)
+                end
+                lastState[f.Id] = state
+            end
+        end
+    end
+
+    function Window:EndBoot()
+        booting = false
+        local on = 0
+        for _, f in ipairs(Window.Features) do
+            if f.Flag and Window.Flags[f.Flag] == true then
+                on = on + 1
+                if f.Probe then
+                    watch[f.Id] = {want = "on", since = os.clock()}
+                end
+            end
+        end
+        Window:Log("INFO", string.format("Interface iniciada: %d recurso(s) registrado(s), %d ligado(s) pela configuração salva.", #Window.Features, on))
+        if loadErr then
+            Window:Log("WARNING", "Arquivo de configuração inválido; foram usados os valores padrão", loadErr)
         end
     end
 
     --// ---------- Persistência ----------
     local configName = tostring(opts.ConfigName or "Default"):gsub("[^%w_%-]", "_")
     local configPath = (HAS_FOLDER and (CONFIG_FOLDER .. "/") or (CONFIG_FOLDER .. "_")) .. configName .. ".json"
-    local savedConfig = (opts.SaveConfig ~= false) and loadConfig(configPath) or {}
+    local savedConfig = {}
+    if opts.SaveConfig ~= false then
+        savedConfig, loadErr = loadConfig(configPath)
+    end
     local savePending = false
 
     local function saveConfig()
         if not HAS_FS then
             return false
         end
-        local ok = pcall(function()
+        local ok, saveErr = pcall(function()
             local data = {}
             for flag, el in pairs(Window.Elements) do
-                local v
-                if el.Serialize then
-                    v = el:Serialize()
-                else
-                    v = el:Get()
+                if not el.NoSave then
+                    local v
+                    if el.Serialize then
+                        v = el:Serialize()
+                    else
+                        v = el:Get()
+                    end
+                    data[flag] = v
                 end
-                data[flag] = v
             end
             writefile(configPath, HttpService:JSONEncode(data))
         end)
+        if not ok then
+            Window:Log("ERROR", "Falha ao gravar as configurações", tostring(saveErr))
+        end
         return ok
     end
 
@@ -688,10 +1059,16 @@ function Nova.CreateWindow(opts)
     -- Registra o elemento, restaura valor salvo e conecta com a persistência.
     local function finalize(el, opts2)
         local flag = opts2.Flag
+        el.Name = el.Name or opts2.Name
+        el.NoSave = opts2.NoSave
+        el.NoLog = opts2.NoLog
         if flag then
             el.Flag = flag
             Window.Elements[flag] = el
             local saved = savedConfig[flag]
+            if opts2.NoSave then
+                saved = nil -- ações momentâneas (gravar/reproduzir) nunca iniciam sozinhas
+            end
             if saved ~= nil then
                 local ok, err = pcall(el.Set, el, saved, false)
                 if not ok then
@@ -822,6 +1199,12 @@ function Nova.CreateWindow(opts)
             el:Set(not value, false)
         end)
         render(false)
+        if opts2.Flag and opts2.Feature ~= false then
+            Window:RegisterFeature({
+                Id = opts2.Flag, Name = opts2.Name or opts2.Flag, Group = self._tabName,
+                Flag = opts2.Flag, Probe = opts2.Probe,
+            })
+        end
         return finalize(el, opts2)
     end
 
@@ -1172,6 +1555,388 @@ function Nova.CreateWindow(opts)
         end)
 
         render()
+        return finalize(el, opts2)
+    end
+
+    function SectionMT:AddMultiDropdown(opts2)
+        opts2 = opts2 or {}
+        local ITEM_H, GAP, MAX_VISIBLE, MAX_RENDER = 28, 3, 6, 300
+        local sortList = opts2.Sort
+        if sortList == nil then
+            sortList = opts2.Source ~= nil
+        end
+
+        local function normalize(list) -- sem nomes repetidos (só o primeiro de cada nome)
+            local out, seen = {}, {}
+            if type(list) == "table" then
+                for _, o in ipairs(list) do
+                    local s = tostring(o)
+                    if s ~= "" and not seen[s] then
+                        seen[s] = true
+                        table.insert(out, s)
+                    end
+                end
+            end
+            if sortList then
+                table.sort(out)
+            end
+            return out, seen
+        end
+        local function listsEqual(a, b)
+            if #a ~= #b then
+                return false
+            end
+            for i = 1, #a do
+                if a[i] ~= b[i] then
+                    return false
+                end
+            end
+            return true
+        end
+        local function copy(t)
+            local out = {}
+            for i, v in ipairs(t) do
+                out[i] = v
+            end
+            return out
+        end
+
+        local options, optionSet = normalize(opts2.Options)
+        local selected = {}
+        local query = ""
+        local isOpen = false
+        local rows = {}
+        local lastCommitted = {}
+        local el = {IsMulti = true, Name = opts2.Name}
+
+        local function selectedList()
+            local out = {}
+            if #options > 0 then
+                for _, o in ipairs(options) do
+                    if selected[o] then
+                        table.insert(out, o)
+                    end
+                end
+            else -- lista vazia: mantém as seleções salvas como pendentes (não dá para validá-las agora)
+                for name in pairs(selected) do
+                    table.insert(out, name)
+                end
+                table.sort(out)
+            end
+            return out
+        end
+
+        local function filtered()
+            local out = {}
+            for _, o in ipairs(options) do
+                if query == "" or o:lower():find(query, 1, true) then
+                    table.insert(out, o)
+                end
+            end
+            return out
+        end
+
+        --// interface
+        local wrapper = new("Frame", {
+            BackgroundColor3 = Theme.Element,
+            BackgroundTransparency = 0.2,
+            BorderSizePixel = 0,
+            ClipsDescendants = true,
+            Size = UDim2.new(1, 0, 0, ROW_H),
+            LayoutOrder = self:_nextOrder(),
+        }, self._frame)
+        corner(wrapper, 6)
+        makeLabel(wrapper, opts2.Name or "Lista", {
+            Position = UDim2.fromOffset(12, 0),
+            Size = UDim2.new(0.5, -12, 0, ROW_H),
+            TextTruncate = Enum.TextTruncate.AtEnd,
+        })
+        local valueLabel = makeLabel(wrapper, "", {
+            Position = UDim2.new(0.5, 0, 0, 0),
+            Size = UDim2.new(0.5, -30, 0, ROW_H),
+            TextXAlignment = Enum.TextXAlignment.Right,
+            TextColor3 = Theme.SubText,
+            TextTruncate = Enum.TextTruncate.AtEnd,
+        })
+        local arrow = makeLabel(wrapper, ">", {
+            Position = UDim2.new(1, -24, 0, 0),
+            Size = UDim2.fromOffset(16, ROW_H),
+            TextXAlignment = Enum.TextXAlignment.Center,
+            TextColor3 = Theme.SubText,
+            Font = FONT_BOLD,
+        })
+        local header = new("TextButton", {
+            BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, ROW_H), Text = "", ZIndex = 2,
+        }, wrapper)
+        header.MouseEnter:Connect(function()
+            tween(wrapper, 0.1, {BackgroundColor3 = Theme.ElementHover})
+        end)
+        header.MouseLeave:Connect(function()
+            tween(wrapper, 0.1, {BackgroundColor3 = Theme.Element})
+        end)
+
+        local searchBox
+        if opts2.Searchable ~= false then
+            searchBox = new("TextBox", {
+                Position = UDim2.new(0, 6, 0, ROW_H + 4), Size = UDim2.new(1, -12, 0, 28),
+                BackgroundColor3 = Theme.Background, BorderSizePixel = 0, ClearTextOnFocus = false,
+                PlaceholderText = "Pesquisar...", PlaceholderColor3 = Theme.SubText, Text = "",
+                Font = FONT, TextSize = 13, TextColor3 = Theme.Text, TextXAlignment = Enum.TextXAlignment.Left,
+            }, wrapper)
+            corner(searchBox, 6)
+            padding(searchBox, 8, 0, 8, 0)
+        end
+        local barY = ROW_H + 36
+        local function smallButton(text, x)
+            local b = new("TextButton", {
+                Position = UDim2.new(0, x, 0, barY), Size = UDim2.fromOffset(70, 26), BackgroundColor3 = Theme.Background,
+                BorderSizePixel = 0, AutoButtonColor = true, Text = text, Font = FONT_BOLD, TextSize = 12,
+                TextColor3 = Theme.Text,
+            }, wrapper)
+            corner(b, 6)
+            return b
+        end
+        local allBtn = smallButton("Todos", 6)
+        local clearBtn = smallButton("Limpar", 82)
+        local countLabel = makeLabel(wrapper, "", {
+            Position = UDim2.new(0, 158, 0, barY), Size = UDim2.new(1, -170, 0, 26),
+            TextXAlignment = Enum.TextXAlignment.Right, TextColor3 = Theme.SubText, TextSize = 12,
+        })
+        local listY = barY + 32
+        local list = new("ScrollingFrame", {
+            Position = UDim2.new(0, 6, 0, listY), Size = UDim2.new(1, -12, 0, 0), BackgroundColor3 = Theme.Background,
+            BorderSizePixel = 0, ScrollBarThickness = 3, CanvasSize = UDim2.new(),
+            AutomaticCanvasSize = Enum.AutomaticSize.Y, ScrollingDirection = Enum.ScrollingDirection.Y,
+        }, wrapper)
+        corner(list, 6)
+        new("UIListLayout", {Padding = UDim.new(0, GAP), SortOrder = Enum.SortOrder.LayoutOrder}, list)
+        padding(list, 3, 3, 3, 3)
+
+        local function listHeight()
+            local n = math.min(math.max(#options, 1), MAX_VISIBLE)
+            return n * (ITEM_H + GAP) + 3
+        end
+        local function openHeight()
+            return listY + listHeight() + 6
+        end
+
+        local function summary()
+            local sel = selectedList()
+            if #sel == 0 then
+                return opts2.Placeholder or "Nenhum"
+            elseif #sel <= 2 then
+                return table.concat(sel, ", ")
+            end
+            return #sel .. " selecionados"
+        end
+
+        local function refreshVisuals()
+            valueLabel.Text = summary()
+            countLabel.Text = #selectedList() .. "/" .. #options
+            for name, r in pairs(rows) do
+                local on = selected[name] == true
+                r.box.BackgroundColor3 = on and Theme.Accent or Theme.Off
+                r.label.TextColor3 = on and Theme.Accent or Theme.Text
+                r.btn.BackgroundColor3 = on and Theme.ElementHover or Theme.Element
+            end
+        end
+        bindAccent(refreshVisuals)
+
+        local commit
+        local function rebuild()
+            for _, c in ipairs(list:GetChildren()) do
+                if c:IsA("GuiObject") then
+                    c:Destroy()
+                end
+            end
+            rows = {}
+            local shown = filtered()
+            if #shown == 0 then
+                makeLabel(list, #options == 0 and "Sem opções" or "Nenhum resultado", {
+                    Size = UDim2.new(1, 0, 0, ITEM_H), TextXAlignment = Enum.TextXAlignment.Center,
+                    TextColor3 = Theme.SubText, TextSize = 12,
+                })
+            end
+            for i = 1, math.min(#shown, MAX_RENDER) do
+                local name = shown[i]
+                local btn = new("TextButton", {
+                    LayoutOrder = i, Size = UDim2.new(1, 0, 0, ITEM_H), BackgroundColor3 = Theme.Element,
+                    BorderSizePixel = 0, AutoButtonColor = false, Text = "",
+                }, list)
+                corner(btn, 5)
+                local box = new("Frame", {
+                    AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.new(0, 8, 0.5, 0), Size = UDim2.fromOffset(14, 14),
+                    BackgroundColor3 = Theme.Off, BorderSizePixel = 0,
+                }, btn)
+                corner(box, 4)
+                local label = makeLabel(btn, name, {
+                    Position = UDim2.fromOffset(30, 0), Size = UDim2.new(1, -36, 1, 0), TextSize = 13,
+                    TextTruncate = Enum.TextTruncate.AtEnd,
+                })
+                rows[name] = {btn = btn, box = box, label = label}
+                btn.MouseButton1Click:Connect(function()
+                    selected[name] = (not selected[name]) or nil
+                    commit(false)
+                end)
+            end
+            list.Size = UDim2.new(1, -12, 0, listHeight())
+            if isOpen then
+                wrapper.Size = UDim2.new(1, 0, 0, openHeight())
+            end
+            refreshVisuals()
+        end
+
+        commit = function(silent)
+            local cur = selectedList()
+            refreshVisuals()
+            local changed = not listsEqual(cur, lastCommitted)
+            lastCommitted = copy(cur)
+            setFlag(opts2.Flag, copy(cur))
+            if changed and not silent then
+                fire(opts2.Callback, copy(cur))
+                queueSave()
+            end
+            return changed
+        end
+
+        function el:Get()
+            return selectedList()
+        end
+        function el:Serialize()
+            return selectedList()
+        end
+        function el:GetOptions()
+            return copy(options)
+        end
+        function el:IsOpen()
+            return isOpen
+        end
+        function el:Set(values, silent)
+            local new = {}
+            if type(values) == "string" then
+                values = {values}
+            end
+            if type(values) == "table" then
+                for _, v in ipairs(values) do
+                    local s = tostring(v)
+                    if #options == 0 or optionSet[s] then -- opção inexistente é ignorada (ou pendente se a lista está vazia)
+                        new[s] = true
+                    end
+                end
+            end
+            selected = new
+            return commit(silent)
+        end
+        function el:SelectAll(silent)
+            for _, o in ipairs(filtered()) do
+                selected[o] = true
+            end
+            return commit(silent)
+        end
+        function el:Clear(silent)
+            if query ~= "" then
+                for _, o in ipairs(filtered()) do
+                    selected[o] = nil
+                end
+            else
+                selected = {}
+            end
+            return commit(silent)
+        end
+
+        -- Atualiza as opções sem recriar a interface. Sem argumento usa a Source.
+        -- Mantém as seleções que ainda existem; lista vazia vinda da Source mantém as seleções como pendentes.
+        function el:Refresh(newOptions, force)
+            local source = newOptions
+            if source == nil and opts2.Source then
+                local ok, res = pcall(opts2.Source)
+                if not ok then
+                    Window:Log("ERROR", (opts2.Name or "Lista") .. ": erro ao atualizar as opções", tostring(res))
+                    return false, #options
+                end
+                source = res
+            end
+            local new, seen = normalize(source)
+            local optionsChanged = not listsEqual(new, options)
+            options, optionSet = new, seen
+            local removed = 0
+            if #new > 0 then
+                for name in pairs(selected) do
+                    if not seen[name] then
+                        selected[name] = nil
+                        removed = removed + 1
+                    end
+                end
+            elseif force then
+                for _ in pairs(selected) do
+                    removed = removed + 1
+                end
+                selected = {}
+            end
+            if optionsChanged then
+                rebuild()
+            end
+            local changed = false
+            if removed > 0 then
+                changed = commit(false)
+            else
+                refreshVisuals()
+            end
+            if optionsChanged and not booting then
+                logLater("opt:" .. tostring(opts2.Flag or opts2.Name), "INFO",
+                    string.format("%s: lista atualizada (%d opções)", opts2.Name or "Lista", #new),
+                    removed > 0 and (removed .. " seleção(ões) removida(s) por não existirem mais") or nil)
+            end
+            return changed or optionsChanged, #new
+        end
+        el.SetOptions = el.Refresh
+
+        --// eventos de interface
+        local function setOpen(open)
+            isOpen = open
+            tween(arrow, 0.15, {Rotation = open and 90 or 0})
+            tween(wrapper, 0.18, {Size = UDim2.new(1, 0, 0, open and openHeight() or ROW_H)})
+            if open and opts2.Source then
+                el:Refresh()
+            end
+        end
+        header.MouseButton1Click:Connect(function()
+            setOpen(not isOpen)
+        end)
+        allBtn.MouseButton1Click:Connect(function()
+            el:SelectAll(false)
+        end)
+        clearBtn.MouseButton1Click:Connect(function()
+            el:Clear(false)
+        end)
+        if searchBox then
+            searchBox:GetPropertyChangedSignal("Text"):Connect(function()
+                local q = searchBox.Text:lower():match("^%s*(.-)%s*$")
+                if q ~= query then
+                    query = q
+                    rebuild()
+                end
+            end)
+        end
+
+        -- valor inicial (Default/Selected) e padrão para "restaurar"
+        local initial = opts2.Default or opts2.Selected or {}
+        if type(initial) == "string" then
+            initial = {initial}
+        end
+        local initNorm = normalize(initial)
+        el.Default = copy(initNorm)
+        rebuild()
+        for _, v in ipairs(initNorm) do
+            if #options == 0 or optionSet[v] then
+                selected[v] = true
+            end
+        end
+        lastCommitted = selectedList()
+        if opts2.Source then
+            table.insert(multiSources, el)
+        end
+        refreshVisuals()
         return finalize(el, opts2)
     end
 
@@ -1828,7 +2593,7 @@ function Nova.CreateWindow(opts)
                 end)
             end
 
-            local section = setmetatable({_frame = body, _page = page, _order = 0}, SectionMT)
+            local section = setmetatable({_frame = body, _page = page, _order = 0, _tabName = Tab.Name}, SectionMT)
             table.insert(Tab.Sections, section)
             return section
         end
@@ -2082,6 +2847,32 @@ function Nova.CreateWindow(opts)
         launcherPos.x, launcherPos.y = place(Launcher, launcherPos.x, launcherPos.y, LAUNCHER_SIZE)
     end))
 
+    -- laços compartilhados: confirmação de estado dos recursos e atualização das listas abertas
+    task.spawn(function()
+        local acc = 0
+        while alive do
+            task.wait(0.5)
+            local ok, err = pcall(pollFeatures)
+            if not ok then
+                warn("[NovaUI] status: " .. tostring(err))
+            end
+            acc = acc + 0.5
+            if acc >= 2 then
+                acc = 0
+                for _, m in ipairs(multiSources) do
+                    if m:IsOpen() then
+                        pcall(m.Refresh, m)
+                    end
+                end
+            end
+        end
+    end)
+    function Window:RefreshSources()
+        for _, m in ipairs(multiSources) do
+            pcall(m.Refresh, m)
+        end
+    end
+
     Window.Gui = gui
     Window.Root = Root
     Window.Main = Main
@@ -2122,6 +2913,8 @@ local tabVisual = Win:AddTab("👁 Visual", {Columns = 2})
 local tabMove = Win:AddTab("🏃 Movimento", {Columns = 2})
 local tabMisc = Win:AddTab("🎲 Misc", {Columns = 2})
 local tabExec = Win:AddTab("💻 Executor", {Collapsible = false})
+local tabStatus = Win:AddTab("📊 Status", {Columns = 1})
+local tabEvents = Win:AddTab("📜 Eventos", {Collapsible = false})
 local tabCfg = Win:AddTab("⚙️ Config", {Columns = 1})
 local createFloatButton -- definido na aba Misc (botões flutuantes)
 
@@ -2206,15 +2999,65 @@ FloatClick.Image = "rbxassetid://" .. FLOAT_IMAGE_ID
 
 --// ---------------- utilidades gerais ----------------
 
-local function notify(title, content, kind)
-    Win:Notify({Title = title, Content = content, Type = kind or "info", Duration = 3})
+-- Monitoramento de execução: cada função informa o que REALMENTE rodou (usado pelo Painel de Status)
+local Mon = {t = {}, detail = {}, wait = {}, err = {}, conns = {}}
+function Mon.tick(id, detail, waiting) -- rodou agora (waiting = ligado, mas faltando uma condição)
+    Mon.t[id] = os.clock()
+    Mon.detail[id] = detail
+    Mon.wait[id] = waiting or nil
+end
+function Mon.beat(id) -- só prova que o laço está vivo
+    Mon.t[id] = os.clock()
+    Mon.detail[id] = Mon.detail[id] or "ciclo em execução"
+end
+function Mon.fail(id, err)
+    Mon.err[id] = {t = os.clock(), msg = tostring(err)}
+end
+function Mon.probe(id, maxAge)
+    maxAge = maxAge or 2.5
+    return function(control)
+        local now = os.clock()
+        local t = Mon.t[id]
+        if control ~= true then
+            if t and now - t < 0.6 then
+                return "active", "encerrando..."
+            end
+            return "inactive"
+        end
+        local e = Mon.err[id]
+        if e and now - e.t < 8 then
+            return "error", e.msg
+        end
+        if t and now - t < maxAge then
+            if Mon.wait[id] then
+                return "waiting", Mon.detail[id]
+            end
+            return "active", Mon.detail[id]
+        end
+        return "waiting", "sem execução confirmada"
+    end
 end
 
-local function connect(signal, fn)
+local function notify(title, content, kind)
+    kind = kind or "info"
+    local level = ({success = "SUCCESS", warning = "WARNING", error = "ERROR"})[kind] or "INFO"
+    Win:Log(level, tostring(title) .. ": " .. tostring(content))
+    Win:Notify({Title = title, Content = content, Type = kind, Duration = 3})
+end
+
+-- ids: id (ou lista de ids) de recursos a marcar com erro quando o ciclo falhar
+local function connect(signal, fn, ids)
     return Win:Track(signal:Connect(function(...)
         local ok, err = pcall(fn, ...)
         if not ok then
             warn("[RN TEAM] " .. tostring(err))
+            if type(ids) == "string" then
+                ids = {ids}
+            end
+            for _, id in ipairs(ids or {}) do
+                Mon.fail(id, err)
+            end
+            Win:Log("ERROR", "Erro em " .. tostring(type(ids) == "table" and ids[1] or "ciclo interno"), tostring(err))
         end
     end))
 end
@@ -2388,18 +3231,15 @@ local function npcNames(dirText)
     return out
 end
 
--- Troca as opções de um dropdown sem apagar a seleção salva quando a pasta não foi achada
-local function refreshDropdown(dd, names, what)
+-- Atualiza um MultiDropdown pela sua Source; avisa quando nada foi encontrado
+local function refreshMulti(dd, what)
     if not dd then
         return
     end
-    if #names == 0 then
-        if what then
-            notify("Nada encontrado", "Nenhum(a) " .. what .. " no diretório informado.", "warning")
-        end
-        return
+    local _, count = dd:Refresh()
+    if count == 0 and what then
+        notify("Nada encontrado", "Nenhum(a) " .. what .. " no diretório informado.", "warning")
     end
-    dd:Refresh(names)
 end
 
 --// ---------------- gerenciador de loops ----------------
@@ -2413,9 +3253,12 @@ local function startLoop(key, fn, getInterval)
     Loops[key] = token
     task.spawn(function()
         while Loops[key] == token and Win:IsAlive() do
+            Mon.beat(key)
             local ok, err = pcall(fn)
             if not ok then
                 warn("[RN TEAM] loop " .. tostring(key) .. ": " .. tostring(err))
+                Mon.fail(key, err)
+                Win:Log("ERROR", "Erro no loop '" .. tostring(key) .. "'", tostring(err))
             end
             local iv = tonumber(getInterval and getInterval()) or 0.5
             if iv <= 0 then
@@ -2427,6 +3270,7 @@ local function startLoop(key, fn, getInterval)
                     local d = math.min(0.25, iv - waited)
                     task.wait(d)
                     waited = waited + d
+                    Mon.beat(key)
                 end
             end
         end
@@ -2435,7 +3279,7 @@ end
 
 --// ---------------- movimentação Tween (uma por vez) ----------------
 -- Durante o Tween: sem colisão (atravessa paredes) e sem gravidade; tudo é desfeito ao terminar/cancelar.
-local Mover = {tween = nil, owner = nil, bv = nil, conn = nil, touched = setmetatable({}, {__mode = "k"})}
+local Mover = {tween = nil, owner = nil, held = nil, bv = nil, conn = nil, touched = setmetatable({}, {__mode = "k"})}
 
 local function moverHelpersOn(root)
     if not (Mover.bv and Mover.bv.Parent) then
@@ -2475,9 +3319,37 @@ local function moverHelpersOff()
     end
 end
 
+function Mover.hold(owner, root) -- reserva o movimento (noclip + sem gravidade) para um andador contínuo
+    local cur = Mover.tween
+    if cur and Mover.owner ~= owner and cur.PlaybackState == Enum.PlaybackState.Playing then
+        return false
+    end
+    if Mover.held and Mover.held ~= owner then
+        return false
+    end
+    Mover.held = owner
+    moverHelpersOn(root)
+    return true
+end
+
+function Mover.release(owner)
+    if Mover.held == owner then
+        Mover.held = nil
+        if not Mover.tween then
+            moverHelpersOff()
+        end
+    end
+end
+
 function Mover.cancel(owner)
+    if owner and Mover.held == owner then
+        Mover.release(owner)
+    end
     if owner and Mover.owner ~= owner then
         return
+    end
+    if not owner then
+        Mover.held = nil
     end
     if Mover.tween then
         pcall(function()
@@ -2492,6 +3364,9 @@ function Mover.to(owner, root, pos, speed)
     local cur = Mover.tween
     if cur and Mover.owner ~= owner and cur.PlaybackState == Enum.PlaybackState.Playing then
         return nil -- outro sistema está se movendo; não iniciar movimentos simultâneos
+    end
+    if Mover.held and Mover.held ~= owner then
+        return nil -- um andador contínuo (rota) está com o movimento
     end
     local dist = (root.Position - pos).Magnitude
     if dist <= 1 then
@@ -2560,16 +3435,16 @@ local HB_PARTS = {"HumanoidRootPart", "Head", "Torso", "UpperTorso", "LowerTorso
 do
     local s = tabCombat:AddSection("🎯 Aimbot Jogadores")
     s:AddToggle({Name = "Aimbot", Flag = "aim_on", Default = false})
-    s:AddToggle({Name = "Mostrar círculo de FOV", Flag = "aim_fov_show", Default = false})
-    s:AddToggle({Name = "Team Check (ignorar aliados)", Flag = "aim_team", Default = true})
-    s:AddToggle({Name = "Visible Check (sem obstáculos)", Flag = "aim_vis", Default = true})
+    s:AddToggle({Name = "Mostrar círculo de FOV", Flag = "aim_fov_show", Default = false, Feature = false})
+    s:AddToggle({Name = "Team Check (ignorar aliados)", Flag = "aim_team", Default = true, Feature = false})
+    s:AddToggle({Name = "Visible Check (sem obstáculos)", Flag = "aim_vis", Default = true, Feature = false})
     s:AddSlider({Name = "FOV", Flag = "aim_fov", Min = 10, Max = 360, Default = 50, Step = 1})
     s:AddSlider({Name = "Suavidade (1 = instantâneo)", Flag = "aim_smooth", Min = 0, Max = 1, Default = 0.8, Step = 0.05})
     s:AddDropdown({Name = "Parte do corpo", Flag = "aim_part", Options = AIM_PARTS, Default = "Head"})
 
     local n = tabCombat:AddSection("🎯 Aimbot NPCs")
     n:AddToggle({Name = "Aimbot NPC", Flag = "aimn_on", Default = false})
-    n:AddToggle({Name = "Mostrar círculo de FOV", Flag = "aimn_fov_show", Default = false})
+    n:AddToggle({Name = "Mostrar círculo de FOV", Flag = "aimn_fov_show", Default = false, Feature = false})
     n:AddInput({Name = "Pasta de NPCs", Flag = "aimn_dir", Default = "", Placeholder = "Ex.: Workspace.NPCs"})
     n:AddSlider({Name = "FOV", Flag = "aimn_fov", Min = 10, Max = 360, Default = 50, Step = 1})
     n:AddSlider({Name = "Suavidade (1 = instantâneo)", Flag = "aimn_smooth", Min = 0, Max = 1, Default = 0.8, Step = 0.05})
@@ -2655,6 +3530,12 @@ do
             circN.Size = UDim2.fromOffset((F.aimn_fov or 50) * 2, (F.aimn_fov or 50) * 2)
         end
         if not cam or not isAlive(LocalPlayer.Character) then
+            if F.aim_on then
+                Mon.tick("aim", "aguardando personagem/câmera", true)
+            end
+            if F.aimn_on then
+                Mon.tick("aimn", "aguardando personagem/câmera", true)
+            end
             return
         end
 
@@ -2667,11 +3548,16 @@ do
             end
             local part = bestTarget(models, F.aim_fov or 50, F.aim_part or "Head", F.aim_vis)
             if part then
+                Mon.tick("aim", "mirando em " .. tostring(part.Parent and part.Parent.Name))
                 aimAt(part, F.aim_smooth)
                 return
             end
+            Mon.tick("aim", "sem alvo dentro do FOV")
         end
 
+        if F.aimn_on and trim(F.aimn_dir) == "" then
+            Mon.tick("aimn", "informe a pasta de NPCs", true)
+        end
         if F.aimn_on and trim(F.aimn_dir) ~= "" then
             local models = {}
             for _, m in ipairs(getNPCs(F.aimn_dir)) do
@@ -2681,7 +3567,10 @@ do
             end
             local part = bestTarget(models, F.aimn_fov or 50, F.aimn_part or "Head", false)
             if part then
+                Mon.tick("aimn", "mirando em " .. tostring(part.Parent and part.Parent.Name))
                 aimAt(part, F.aimn_smooth)
+            else
+                Mon.tick("aimn", #models == 0 and "nenhum NPC vivo na pasta" or "sem alvo dentro do FOV", #models == 0)
             end
         end
     end
@@ -2691,6 +3580,9 @@ do
         local ok, err = pcall(step)
         if not ok then
             warn("[RN TEAM] aimbot: " .. tostring(err))
+            Mon.fail("aim", err)
+            Mon.fail("aimn", err)
+            Win:Log("ERROR", "Erro no ciclo do Aimbot", tostring(err))
         end
     end)
     Win:OnDestroy(function()
@@ -2780,6 +3672,11 @@ do
                 end
             end
             sync(storeP, wanted, F.hb_size or 10, (F.hb_transp or 50) / 100)
+            local n = 0
+            for _ in pairs(storeP) do
+                n = n + 1
+            end
+            Mon.tick("hb", n .. " parte(s) ajustada(s)", n == 0)
         elseif next(storeP) then
             restoreAll(storeP)
         end
@@ -2795,10 +3692,18 @@ do
                 end
             end
             sync(storeN, wanted, F.hbn_size or 20, (F.hbn_transp or 50) / 100)
+            local n = 0
+            for _ in pairs(storeN) do
+                n = n + 1
+            end
+            Mon.tick("hbn", n .. " NPC(s) ajustado(s)", n == 0)
         elseif next(storeN) then
             restoreAll(storeN)
         end
-    end)
+        if F.hbn_on and trim(F.hbn_dir) == "" then
+            Mon.tick("hbn", "informe a pasta de NPCs", true)
+        end
+    end, {"hb", "hbn"})
 
     Win:OnDestroy(function()
         restoreAll(storeP)
@@ -2820,7 +3725,7 @@ do
     s:AddToggle({Name = "ESP Distância", Flag = "esp_dist", Default = false})
     s:AddToggle({Name = "XRay Colorido", Flag = "esp_xray", Default = false})
     s:AddToggle({Name = "ESP Assassino (papéis)", Flag = "esp_role", Default = false})
-    s:AddToggle({Name = "Team Check (ignorar aliados)", Flag = "esp_team", Default = true})
+    s:AddToggle({Name = "Team Check (ignorar aliados)", Flag = "esp_team", Default = true, Feature = false})
     s:AddLabel("Papéis: detectados pelo nome das Tools do jogador (faca/adaga/espada = assassino, arma = xerife, o resto = inocente). Só funciona em jogos que expõem isso.")
 
     local c = tabVisual:AddSection("Chams")
@@ -2829,7 +3734,7 @@ do
     c:AddColorPicker({Name = "Cor do contorno", Flag = "chams_outline", Default = "255, 255, 255"})
     c:AddSlider({Name = "Transparência do preenchimento", Flag = "chams_filltr", Min = 0, Max = 1, Default = 0.5, Step = 0.05})
     c:AddSlider({Name = "Transparência do contorno", Flag = "chams_outtr", Min = 0, Max = 1, Default = 0, Step = 0.05})
-    c:AddToggle({Name = "Team Check", Flag = "chams_team", Default = true})
+    c:AddToggle({Name = "Team Check", Flag = "chams_team", Default = true, Feature = false})
 end
 
 --// ---------------- ESP de jogadores + Chams ----------------
@@ -2968,6 +3873,7 @@ do
         local chamFill = toColor(F.chams_fill, Color3.fromRGB(255, 0, 0))
         local chamOut = toColor(F.chams_outline, Color3.new(1, 1, 1))
 
+        local shownESP, shownChams = 0, 0
         for _, plr in ipairs(Players:GetPlayers()) do
             if plr ~= LocalPlayer then
                 local ch = plr.Character
@@ -2979,6 +3885,12 @@ do
                 local showESP = live and espAny and not (F.esp_team and ally)
                 local showChams = live and F.chams_on and not (F.chams_team and ally)
 
+                if showESP then
+                    shownESP = shownESP + 1
+                end
+                if showChams then
+                    shownChams = shownChams + 1
+                end
                 if (showESP or showChams) and not e then
                     e = newEntry()
                     entries[plr] = e
@@ -3041,7 +3953,29 @@ do
         end
     end
 
-    connect(RunService.RenderStepped, update)
+    local function updateWithStatus()
+        update()
+        local espAny = F.esp_box or F.esp_tracer or F.esp_health or F.esp_name or F.esp_dist or F.esp_xray or F.esp_role
+        if espAny then
+            local count = 0
+            for _, e in pairs(entries) do
+                if e.gui.Enabled or e.box.Adornee or e.xray.Adornee or e.tracer.Visible then
+                    count = count + 1
+                end
+            end
+            Mon.tick("esp", count .. " jogador(es) com ESP visível", count == 0)
+        end
+        if F.chams_on then
+            local count = 0
+            for _, e in pairs(entries) do
+                if e.chams.Adornee then
+                    count = count + 1
+                end
+            end
+            Mon.tick("chams", count .. " jogador(es) com Chams", count == 0)
+        end
+    end
+    connect(RunService.RenderStepped, updateWithStatus, {"esp", "chams"})
     connect(Players.PlayerRemoving, destroyEntry)
 end
 
@@ -3122,6 +4056,13 @@ do
                 destroyObj(inst)
             end
         end
+        if F.espo_on then
+            if dir then
+                Mon.tick("espo", count .. " objeto(s) destacado(s)", count == 0)
+            else
+                Mon.tick("espo", "diretório não encontrado", true)
+            end
+        end
     end
 
     task.spawn(function()
@@ -3129,6 +4070,8 @@ do
             local ok, err = pcall(refresh)
             if not ok then
                 warn("[RN TEAM] esp objetos: " .. tostring(err))
+                Mon.fail("espo", err)
+                Win:Log("ERROR", "Erro no ESP de objetos", tostring(err))
             end
             task.wait(0.5)
         end
@@ -3241,7 +4184,12 @@ do
         if cam and hum and cam.CameraSubject ~= hum then
             cam.CameraSubject = hum
         end
-    end)
+        if cam and hum and cam.CameraSubject == hum then
+            Mon.tick("spec", labelFor(current))
+        else
+            Mon.tick("spec", "sem alvo para observar", true)
+        end
+    end, "spec")
     Win:OnDestroy(function()
         if F.spec_on then
             pcall(stopSpectate)
@@ -3316,6 +4264,25 @@ do
                 Lighting[prop] = val
             end
         end
+        local function applied(prop)
+            return want[prop] == nil or Lighting[prop] == want[prop]
+        end
+        if F.fb_on then
+            local ok = applied("Brightness") and applied("GlobalShadows") and applied("Ambient")
+            Mon.tick("fb", ok and "iluminação aplicada" or "o jogo está sobrescrevendo a iluminação", not ok)
+        end
+        if F.nofog then
+            local ok = applied("FogEnd")
+            Mon.tick("nofog", ok and "neblina removida" or "o jogo está sobrescrevendo a neblina", not ok)
+        end
+        if F.light_time_on then
+            local ok = applied("ClockTime")
+            Mon.tick("ltime", ok and "hora aplicada" or "o jogo está alterando a hora", not ok)
+        end
+        if F.light_bright_on then
+            local ok = applied("Brightness")
+            Mon.tick("lbright", ok and "brilho aplicado" or "o jogo está alterando o brilho", not ok)
+        end
         for _, prop in ipairs(lightProps) do
             if stored[prop] ~= nil and want[prop] == nil then
                 pcall(function()
@@ -3333,6 +4300,8 @@ do
         if F.cam_fov_on and cam then
             origFov = origFov or cam.FieldOfView
             cam.FieldOfView = F.cam_fov or 70
+            local ok = math.abs(cam.FieldOfView - (F.cam_fov or 70)) < 0.5
+            Mon.tick("camfov", ok and ("FOV " .. tostring(F.cam_fov)) or "o jogo está alterando o FOV", not ok)
         elseif origFov and cam then
             cam.FieldOfView = origFov
             origFov = nil
@@ -3342,6 +4311,8 @@ do
             origZoomMin = origZoomMin or LocalPlayer.CameraMinZoomDistance
             LocalPlayer.CameraMaxZoomDistance = F.zoom_max or 400
             LocalPlayer.CameraMinZoomDistance = F.zoom_min or 0.5
+            local ok = LocalPlayer.CameraMaxZoomDistance == (F.zoom_max or 400)
+            Mon.tick("zoom", ok and "zoom personalizado aplicado" or "o jogo está alterando o zoom", not ok)
         elseif origZoomMax then
             LocalPlayer.CameraMaxZoomDistance = origZoomMax
             LocalPlayer.CameraMinZoomDistance = origZoomMin or 0.5
@@ -3413,10 +4384,15 @@ do
         camStep()
         if F.antiui then
             antiUiOn()
+            local n = 0
+            for _ in pairs(hidden) do
+                n = n + 1
+            end
+            Mon.tick("antiui", antiConn and (n .. " tela(s) fechada(s)") or "sem PlayerGui", antiConn == nil)
         elseif antiConn or next(hidden) then
             antiUiOff()
         end
-    end)
+    end, {"fb", "nofog", "ltime", "lbright", "camfov", "zoom", "antiui"})
 
     Win:OnDestroy(function()
         F.fb_on, F.nofog, F.light_time_on, F.light_bright_on = false, false, false, false
@@ -3491,7 +4467,7 @@ end
 do
     local s = tabFarm:AddSection("Farm Jogadores")
     s:AddToggle({Name = "Ativar farm", Flag = "fp_on", Default = false})
-    s:AddToggle({Name = "Ignorar aliados", Flag = "fp_ally", Default = true})
+    s:AddToggle({Name = "Ignorar aliados", Flag = "fp_ally", Default = true, Feature = false})
     s:AddSlider({Name = "Offset de altura (valor absoluto)", Flag = "fp_off", Min = -20, Max = 10, Default = -5, Step = 1})
     s:AddDropdown({Name = "Posicionamento", Flag = "fp_mode", Options = MODES, Default = "Em Cima"})
 
@@ -3508,6 +4484,7 @@ do
         end
         local myRoot = getRoot()
         if not myRoot or not isAlive(LocalPlayer.Character) then
+            Mon.tick("fp", "aguardando o personagem (respawn)", true)
             return -- respawn / sem personagem: espera
         end
         if not valid(target) then
@@ -3522,43 +4499,45 @@ do
         end
         if valid(target) then
             applyFarmCFrame(farmCFrame(getRoot(target.Character), F.fp_mode, F.fp_off))
+            Mon.tick("fp", "seguindo " .. target.Name)
+        else
+            Mon.tick("fp", "nenhum jogador válido no momento", true)
         end
-    end)
+    end, "fp")
 end
 
 -- ---------------- Farm NPCs ----------------
 do
     local s = tabFarm:AddSection("Farm NPCs")
-    local selSet = toSet(savedList("fn_sel"))
+    local selSet = {}
     local dd
 
     s:AddToggle({Name = "Ativar farm", Flag = "fn_on", Default = false})
     s:AddInput({
         Name = "Diretório dos NPCs", Flag = "fn_dir", Default = "", Placeholder = "Ex.: Workspace.Mobs",
         Callback = function()
-            if dd then
-                refreshDropdown(dd, npcNames(F.fn_dir), "NPC")
-            end
+            refreshMulti(dd, "NPC")
         end,
     })
-    s:AddToggle({Name = "Farmar TODOS da Pasta", Flag = "fn_all", Default = false})
-    dd = s:AddDropdown({
-        Name = "NPCs específicos", Flag = "fn_sel", Multi = true, Options = savedList("fn_sel"),
+    s:AddToggle({Name = "Farmar TODOS da Pasta", Flag = "fn_all", Default = false, Feature = false})
+    dd = s:AddMultiDropdown({
+        Name = "NPCs específicos", Flag = "fn_sel",
+        Source = function()
+            return npcNames(F.fn_dir or "")
+        end,
         Callback = function(v)
             selSet = toSet(v)
         end,
     })
+    selSet = toSet(dd:Get())
     s:AddButton({Name = "Atualizar lista de NPCs", Callback = function()
-        refreshDropdown(dd, npcNames(F.fn_dir), "NPC")
+        refreshMulti(dd, "NPC")
     end})
     s:AddDropdown({Name = "Posicionamento", Flag = "fn_mode", Options = MODES, Default = "Em Cima"})
     s:AddSlider({Name = "Offset de altura (valor absoluto)", Flag = "fn_off", Min = -40, Max = 100, Default = -5, Step = 1})
 
     task.defer(function()
-        local names = npcNames(F.fn_dir or "")
-        if #names > 0 then
-            dd:Refresh(names)
-        end
+        dd:Refresh()
     end)
 
     local target
@@ -3567,12 +4546,18 @@ do
     end
 
     connect(RunService.Heartbeat, function()
-        if not F.fn_on or trim(F.fn_dir) == "" then
+        if not F.fn_on then
             target = nil
+            return
+        end
+        if trim(F.fn_dir) == "" then
+            target = nil
+            Mon.tick("fn", "informe a pasta de NPCs", true)
             return
         end
         local myRoot = getRoot()
         if not myRoot or not isAlive(LocalPlayer.Character) then
+            Mon.tick("fn", "aguardando o personagem (respawn)", true)
             return
         end
         if not allowed(target) then
@@ -3586,14 +4571,17 @@ do
         end
         if allowed(target) then
             applyFarmCFrame(farmCFrame(getRoot(target), F.fn_mode, F.fn_off))
+            Mon.tick("fn", "farmando " .. target.Name)
+        else
+            Mon.tick("fn", "nenhum NPC válido (pasta/seleção)", true)
         end
-    end)
+    end, "fn")
 end
 
 -- ---------------- Farm Itens (Tween) ----------------
 do
     local s = tabFarm:AddSection("Farm Itens (Tween)")
-    local selSet = toSet(savedList("fi_sel"))
+    local selSet = {}
     local dd
 
     local function itemNames()
@@ -3618,6 +4606,7 @@ do
         end
         local dir = resolvePath(F.fi_dir)
         if not dir then
+            Mon.tick("fi", "diretório dos itens não encontrado", true)
             return
         end
         local best, bestD
@@ -3633,8 +4622,10 @@ do
             end
         end
         if not best then
+            Mon.tick("fi", "nenhum item encontrado", true)
             return
         end
+        Mon.tick("fi", "indo até " .. best.Name)
         local tw = Mover.to("fi", root, posOf(best), F.fi_speed)
         if not tw then
             return
@@ -3665,21 +4656,23 @@ do
     s:AddInput({
         Name = "Diretório dos itens", Flag = "fi_dir", Default = "", Placeholder = "Ex.: Workspace.Drops",
         Callback = function()
-            if dd then
-                refreshDropdown(dd, itemNames(), "item")
-            end
+            refreshMulti(dd, "item")
         end,
     })
-    s:AddToggle({Name = "Coletar Todos os Itens", Flag = "fi_all", Default = false})
-    dd = s:AddDropdown({
-        Name = "Itens específicos", Flag = "fi_sel", Multi = true, Options = savedList("fi_sel"),
+    s:AddToggle({Name = "Coletar Todos os Itens", Flag = "fi_all", Default = false, Feature = false})
+    dd = s:AddMultiDropdown({
+        Name = "Itens específicos", Flag = "fi_sel", Source = itemNames,
         Callback = function(v)
             selSet = toSet(v)
         end,
     })
+    selSet = toSet(dd:Get())
     s:AddButton({Name = "Atualizar lista de itens", Callback = function()
-        refreshDropdown(dd, itemNames(), "item")
+        refreshMulti(dd, "item")
     end})
+    task.defer(function()
+        dd:Refresh()
+    end)
     s:AddSlider({Name = "Velocidade Tween", Flag = "fi_speed", Min = 10, Max = 500, Default = 120, Step = 5})
 end
 
@@ -3706,12 +4699,15 @@ do
         end
         if not best then
             Mover.cancel("ch")
+            Mon.tick("ch", "nenhum jogador válido", true)
             return
         end
         if bestD > 4 then
             Mover.to("ch", root, getRoot(best.Character).Position, F.ch_speed)
+            Mon.tick("ch", "perseguindo " .. best.Name)
         else
             Mover.cancel("ch")
+            Mon.tick("ch", "junto de " .. best.Name)
         end
     end
 
@@ -3733,13 +4729,14 @@ do
         Name = "Foco", Flag = "ch_focus", Options = {"Todos os Jogadores", "Jogadores Selecionados"},
         Default = "Todos os Jogadores",
     })
-    s:AddToggle({Name = "Ignorar aliados", Flag = "ch_ally", Default = true})
-    local dd = s:AddDropdown({
-        Name = "Jogadores selecionados", Multi = true, Options = playerNameList(),
+    s:AddToggle({Name = "Ignorar aliados", Flag = "ch_ally", Default = true, Feature = false})
+    local dd = s:AddMultiDropdown({
+        Name = "Jogadores selecionados", Source = playerNameList,
         Callback = function(v)
             selSet = toSet(v)
         end,
     })
+    dd:Refresh()
     table.insert(playerDropdowns, dd)
 end
 
@@ -3768,7 +4765,7 @@ do
 
     local f = tabMove:AddSection("Voo e Gravidade")
     f:AddToggle({Name = "Voo", Flag = "fly_on", Default = false})
-    f:AddToggle({Name = "Mostrar barra de Fly", Flag = "flybar_show", Default = true})
+    f:AddToggle({Name = "Mostrar barra de Fly", Flag = "flybar_show", Default = true, Feature = false})
     f:AddSlider({Name = "Velocidade de voo", Flag = "fly_speed", Min = 1, Max = 1000, Default = 60, Step = 1})
     f:AddLabel("Celular: use os botões SOBE / DESCE que aparecem na tela com o voo ligado. PC: Espaço sobe, Shift/Ctrl desce.")
     f:AddToggle({Name = "AntiVoid (voltar ao último ponto seguro)", Flag = "antivoid", Default = false})
@@ -3803,6 +4800,8 @@ do
             if hum.WalkSpeed ~= F.mv_speed then
                 hum.WalkSpeed = F.mv_speed
             end
+            local ok = hum.WalkSpeed == F.mv_speed
+            Mon.tick("speed", ok and ("WalkSpeed = " .. F.mv_speed) or "o jogo está sobrescrevendo a velocidade", not ok)
         elseif o.WalkSpeed then
             hum.WalkSpeed = o.WalkSpeed
             o.WalkSpeed = nil
@@ -3815,6 +4814,8 @@ do
             if hum.JumpPower ~= F.mv_jump then
                 hum.JumpPower = F.mv_jump
             end
+            local ok = hum.JumpPower == F.mv_jump
+            Mon.tick("jump", ok and ("JumpPower = " .. F.mv_jump) or "o jogo está sobrescrevendo o pulo", not ok)
         elseif o.UseJumpPower ~= nil then
             hum.JumpPower = o.JumpPower
             hum.UseJumpPower = o.UseJumpPower
@@ -3832,6 +4833,7 @@ do
                     part.CanCollide = false
                 end
             end
+            Mon.tick("noclip", "colisão do personagem desativada")
         elseif next(noclipChanged) then
             for part in pairs(noclipChanged) do
                 if part.Parent then
@@ -3921,6 +4923,7 @@ do
         fly.bv.Velocity = vel + Vector3.new(0, vert * speed, 0)
         fly.bg.CFrame = CFrame.new(root.Position, root.Position + flat)
         hum.PlatformStand = false
+        Mon.tick("fly", "voando a " .. speed .. " studs/s")
     end
 
 
@@ -4002,8 +5005,10 @@ do
             if hum.FloorMaterial ~= Enum.Material.Air then
                 lastSafe = root.Position + Vector3.new(0, 3, 0)
             end
+            Mon.tick("antivoid", lastSafe and "ponto seguro registrado" or "aguardando chão firme para registrar um ponto seguro", lastSafe == nil)
         elseif lastSafe then
             teleportTo(lastSafe)
+            Mon.tick("antivoid", "resgatado do vazio")
         end
     end
 
@@ -4016,15 +5021,24 @@ do
             end
             hum.AutoRotate = false
             root.CFrame = root.CFrame * CFrame.Angles(0, math.rad((F.spin_speed or 5) * dt * 60), 0)
+            Mon.tick("spin", "girando")
         elseif spinAuto[hum] ~= nil then
             hum.AutoRotate = spinAuto[hum]
             spinAuto[hum] = nil
         end
 
-        if F.bhop and hum.FloorMaterial ~= Enum.Material.Air and hum.MoveDirection.Magnitude > 0 then
-            hum.Jump = true
+        if F.bhop then
+            if hum.FloorMaterial ~= Enum.Material.Air and hum.MoveDirection.Magnitude > 0 then
+                hum.Jump = true
+                Mon.tick("bhop", "pulando em sequência")
+            else
+                Mon.tick("bhop", "aguardando movimento no chão", true)
+            end
         end
 
+        if F.antikb then
+            Mon.tick("antikb", "monitorando empurrões")
+        end
         if F.antikb and not F.fly_on and not Mover.tween then
             local state = hum:GetState()
             if state == Enum.HumanoidStateType.FallingDown or state == Enum.HumanoidStateType.Ragdoll then
@@ -4039,7 +5053,7 @@ do
         end
     end
 
-    connect(UserInputService.JumpRequest, function()
+    Mon.conns.infjump = connect(UserInputService.JumpRequest, function()
         if F.infjump then
             local hum = getHum()
             if hum then
@@ -4055,6 +5069,8 @@ do
             if Workspace.Gravity ~= F.grav then
                 Workspace.Gravity = F.grav
             end
+            local ok = Workspace.Gravity == F.grav
+            Mon.tick("grav", ok and ("gravidade " .. F.grav) or "o jogo está sobrescrevendo a gravidade", not ok)
         elseif origGravity then
             Workspace.Gravity = origGravity
             origGravity = nil
@@ -4063,6 +5079,13 @@ do
         local ch = LocalPlayer.Character
         local hum, root = getHum(ch), getRoot(ch)
         if not (ch and hum and root) then
+            local wanting = {speed = "mv_speed_on", jump = "mv_jump_on", fly = "fly_on", antivoid = "antivoid",
+                noclip = "noclip", bhop = "bhop", spin = "spin_on", antikb = "antikb"}
+            for id, flag in pairs(wanting) do
+                if F[flag] then
+                    Mon.tick(id, "aguardando o personagem (respawn)", true)
+                end
+            end
             return -- sem personagem (respawn): espera
         end
         speedJump(hum)
@@ -4072,7 +5095,7 @@ do
             antiVoidStep(hum, root)
             powersStep(hum, root, dt)
         end
-    end)
+    end, {"speed", "jump", "fly", "antivoid", "noclip", "bhop", "spin", "antikb", "grav"})
 
     Win:OnDestroy(function()
         F.mv_speed_on, F.mv_jump_on, F.noclip, F.spin_on, F.fly_on = false, false, false, false, false
@@ -4100,7 +5123,7 @@ local Actions = {} -- ações reutilizadas pelos botões flutuantes
 
 do
     local s = tabMisc:AddSection("🔌 Interação Automática")
-    local selSet = toSet(savedList("ia_sel"))
+    local selSet = {}
     local dd
     local tpIndex = 0
 
@@ -4199,6 +5222,7 @@ do
     function Actions.collectOnce()
         local root = getRoot()
         if not root or not isAlive(LocalPlayer.Character) then
+            Mon.tick("ia_collect", "aguardando o personagem", true)
             return
         end
         if tostring(F.ia_method):find("Toque", 1, true) and type(firetouchinterest) == "function" then
@@ -4216,6 +5240,7 @@ do
                     end
                 end
             end
+            Mon.tick("ia_collect", dir and (n .. " peça(s) tocada(s)") or "diretório não encontrado", dir == nil)
             return
         end
         local home = root.CFrame
@@ -4232,25 +5257,31 @@ do
         if getRoot() then
             getRoot().CFrame = home
         end
+        Mon.tick("ia_collect", #list == 0 and "nenhum objeto encontrado" or (math.min(#list, 60) .. " objeto(s) visitado(s)"), #list == 0)
     end
 
     function Actions.tpOnce()
         local list = objectList(true)
         if #list == 0 then
+            Mon.tick("ia_tp", "nenhum objeto selecionado", true)
             return
         end
         tpIndex = (tpIndex % #list) + 1
         local p = posOf(list[tpIndex])
-        if p then
-            teleportTo(p + Vector3.new(0, 3, 0))
+        if p and teleportTo(p + Vector3.new(0, 3, 0)) then
+            Mon.tick("ia_tp", "teleportado para " .. list[tpIndex].Name)
         end
     end
 
     function Actions.interactOnce()
         local list = objectList(next(selSet) ~= nil)
+        local done = 0
         for i = 1, math.min(#list, 60) do
-            interact(list[i])
+            if interact(list[i]) then
+                done = done + 1
+            end
         end
+        Mon.tick("ia_interact", #list == 0 and "nenhum objeto encontrado" or (done .. " de " .. #list .. " objeto(s) interagido(s)"), #list == 0)
     end
 
     local function interval()
@@ -4261,9 +5292,7 @@ do
     s:AddInput({
         Name = "Diretório dos objetos", Flag = "ia_dir", Default = "", Placeholder = "Ex.: Workspace.Coletaveis",
         Callback = function()
-            if dd then
-                refreshDropdown(dd, objectNames(), "objeto")
-            end
+            refreshMulti(dd, "objeto")
         end,
     })
     s:AddDropdown({
@@ -4271,14 +5300,15 @@ do
         Options = {"ProximityPrompt", "ClickDetector", "Toque (TouchInterest)", "RemoteEvent (FireServer)", "RemoteFunction (InvokeServer)"},
         Default = "ProximityPrompt",
     })
-    dd = s:AddDropdown({
-        Name = "Objetos selecionados", Flag = "ia_sel", Multi = true, Options = savedList("ia_sel"),
+    dd = s:AddMultiDropdown({
+        Name = "Objetos selecionados", Flag = "ia_sel", Source = objectNames,
         Callback = function(v)
             selSet = toSet(v)
         end,
     })
+    selSet = toSet(dd:Get())
     s:AddButton({Name = "Atualizar lista de objetos", Callback = function()
-        refreshDropdown(dd, objectNames(), "objeto")
+        refreshMulti(dd, "objeto")
     end})
     s:AddButton({Name = "Interagir com objetos", Callback = function()
         task.spawn(Actions.interactOnce)
@@ -4314,10 +5344,7 @@ do
     loopToggle(t, "Loop de teleporte", "ia_loop_tp", "ia_tp", Actions.tpOnce)
 
     task.defer(function()
-        local names = objectNames()
-        if #names > 0 then
-            dd:Refresh(names)
-        end
+        dd:Refresh()
     end)
 end
 
@@ -4479,8 +5506,11 @@ do
     end})
     local function copyText(text, what)
         if type(setclipboard) == "function" then
-            pcall(setclipboard, tostring(text))
-            notify("Copiado", what .. " copiado.", "success")
+            if pcall(setclipboard, tostring(text)) then
+                notify("Copiado", what .. " copiado.", "success")
+            else
+                notify("Copiar", "Falha ao copiar " .. what .. ".", "error")
+            end
         else
             notify("Copiar", "Seu executor não suporta clipboard.", "warning")
         end
@@ -4665,6 +5695,16 @@ do
         floats[id] = {card = card, loopKey = loopKey, num = num}
     end
 
+    Win:RegisterFeature({
+        Id = "floatbtn", Name = "Botões de ação flutuantes", Group = tabMisc.Name,
+        Probe = function()
+            local n = countFloats()
+            if n > 0 then
+                return "active", n .. " botão(ões) na tela"
+            end
+            return "inactive"
+        end,
+    })
     local s = tabMisc:AddSection("📌 Botões de Ação Flutuantes")
     local pickDd = s:AddDropdown({Name = "Ação", Options = actionNames, Default = actionNames[1]})
     local nameInput = s:AddInput({Name = "Nome do botão (opcional)", Default = "", Placeholder = "Padrão: Flutuante 1, 2, 3..."})
@@ -4789,10 +5829,12 @@ do
             notify("Erro de sintaxe", tostring(err), "error")
             return
         end
-        notify("Executor", "Código em execução.", "success")
+        notify("Executor", "Executando o script do slot " .. cur .. "...", "info")
         task.spawn(function() -- assíncrono: um script longo não trava o menu
             local ok, runErr = pcall(fn)
-            if not ok then
+            if ok then
+                notify("Executor", "O script terminou sem erros.", "success")
+            else
                 notify("Erro ao executar", tostring(runErr), "error")
             end
         end)
@@ -4821,8 +5863,11 @@ do
     local r2 = row(36)
     button(r2, "💾 Salvar no Slot", 2, nil, function()
         slots[cur] = editor.Text
-        Win:Save()
-        notify("Executor", "Salvo no slot " .. cur .. ".", "success")
+        if Win:Save() then
+            notify("Executor", "Slot " .. cur .. " salvo no arquivo.", "success")
+        else
+            notify("Executor", "Slot " .. cur .. " mantido só na memória (não foi possível gravar o arquivo).", "warning")
+        end
     end)
     button(r2, "📋 Executar Clipboard", 2, nil, function()
         if type(getclipboard) ~= "function" then
@@ -4947,9 +5992,9 @@ do
             Win:SetAccent(toColor(rgb, Color3.fromRGB(0, 200, 120)))
         end,
     })
-    ui:AddToggle({Name = "Animação de abertura", Flag = "intro_on", Default = true})
+    ui:AddToggle({Name = "Animação de abertura", Flag = "intro_on", Default = true, Feature = false})
     ui:AddToggle({
-        Name = "Notificações", Flag = "ui_notify", Default = true,
+        Name = "Notificações", Flag = "ui_notify", Default = true, Feature = false,
         Callback = function(on)
             if not on then
                 Win:ClearNotifications() -- some as que já estão na tela
@@ -5056,6 +6101,15 @@ do
         end
 
         local files, fileByName = {}, {}
+        Win:RegisterFeature({
+            Id = "music", Name = "Música", Group = tabCfg.Name,
+            Probe = function()
+                if sound.IsPlaying then
+                    return "active", "tocando"
+                end
+                return "inactive"
+            end,
+        })
         local songDd
         local function scan()
             files, fileByName = {}, {}
@@ -5189,7 +6243,602 @@ local function playIntro()
     cover:Destroy()
 end
 
+
+--// ============================================================
+--//  ABA STATUS: FPS e ping
+--// ============================================================
+local LEVEL_COLOR = {
+    INFO = Color3.fromRGB(147, 197, 253),
+    SUCCESS = Color3.fromRGB(74, 222, 128),
+    WARNING = Color3.fromRGB(251, 191, 36),
+    ERROR = Color3.fromRGB(248, 113, 113),
+}
+local function hex(c)
+    return string.format("#%02x%02x%02x", math.floor(c.R * 255 + 0.5), math.floor(c.G * 255 + 0.5), math.floor(c.B * 255 + 0.5))
+end
+local function esc(s)
+    s = tostring(s)
+    s = s:gsub("&", "&amp;")
+    s = s:gsub("<", "&lt;")
+    s = s:gsub(">", "&gt;")
+    return s
+end
+
+do
+    -- FPS e ping medidos de verdade (sem valores inventados)
+    local Stats = game:GetService("Stats")
+    local fpsValue, fpsAcc, fpsFrames = nil, 0, 0
+    connect(RunService.RenderStepped, function(dt)
+        fpsAcc = fpsAcc + dt
+        fpsFrames = fpsFrames + 1
+        if fpsAcc >= 0.5 then
+            fpsValue = fpsFrames / fpsAcc
+            fpsAcc, fpsFrames = 0, 0
+        end
+    end)
+    local function readPing()
+        local ok, v = pcall(function()
+            return Stats.Network.ServerStatsItem["Data Ping"]:GetValue()
+        end)
+        if ok and type(v) == "number" then
+            return v, false
+        end
+        local ok2, p = pcall(function()
+            return LocalPlayer:GetNetworkPing()
+        end)
+        if ok2 and type(p) == "number" then
+            return p * 1000, true
+        end
+        return nil
+    end
+
+    local ov = tabStatus:AddSection("📊 FPS e Ping", true)
+    local fpsLabel = ov:AddLabel("FPS: medindo...")
+    local pingLabel = ov:AddLabel("Ping: medindo...")
+
+    task.spawn(function()
+        while Win:IsAlive() do
+            task.wait(0.5)
+            if tabStatus.Page.Visible then
+                fpsLabel:Set(fpsValue and string.format("FPS: %d", math.floor(fpsValue + 0.5)) or "FPS: medindo...")
+                local ping, approx = readPing()
+                pingLabel:Set(ping and string.format("Ping: %s%d ms", approx and "~" or "", math.floor(ping + 0.5)) or "Ping: indisponível neste ambiente")
+            end
+        end
+    end)
+end
+
+--// ============================================================
+--//  ABA EVENTOS: Central de Eventos
+--// ============================================================
+do
+    local filterLevel, filterText = "Todas", ""
+    local ctl = tabEvents.Page
+
+    local sc = tabEvents:AddSection("📜 Central de Eventos", true)
+    local summary = sc:AddLabel("")
+    sc:AddInput({
+        Name = "Pesquisar mensagens", Default = "", Placeholder = "Digite para filtrar",
+        Callback = function(v)
+            filterText = tostring(v or ""):lower()
+            Win._eventsDirty = true
+        end,
+    })
+    sc:AddDropdown({
+        Name = "Categoria", Flag = "ev_filter", Options = {"Off", "Todas", "INFO", "SUCCESS", "WARNING", "ERROR"}, Default = "Todas",
+        Callback = function(v)
+            filterLevel = v or "Todas"
+            Win._eventsDirty = true
+        end,
+    })
+    sc:AddButton({Name = "Limpar histórico", Callback = function()
+        Win:ClearEvents()
+        Win:Log("INFO", "Histórico de eventos limpo")
+    end})
+
+    local sl = tabEvents:AddSection("🧾 Histórico", true)
+    local holder = new("ScrollingFrame", {
+        Size = UDim2.new(1, 0, 0, 300), BackgroundColor3 = Theme.Background, BackgroundTransparency = 0.1,
+        BorderSizePixel = 0, ScrollBarThickness = 4, CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y,
+        LayoutOrder = sl:_nextOrder(),
+    }, sl._frame)
+    corner(holder, 8)
+    new("UIListLayout", {Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder}, holder)
+    padding(holder, 6, 6, 6, 6)
+
+    local MAX_SHOWN = 100
+    local function render()
+        for _, c in ipairs(holder:GetChildren()) do
+            if c:IsA("GuiObject") then
+                c:Destroy()
+            end
+        end
+        local shown = 0
+        if filterLevel == "Off" then
+            makeLabel(holder, "Exibição desligada (Off). Os eventos continuam sendo registrados; escolha outra categoria para ver.", {
+                Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, TextWrapped = true,
+                TextXAlignment = Enum.TextXAlignment.Center, TextColor3 = Theme.SubText, TextSize = 12,
+            })
+        end
+        for i = #Win.Events, 1, -1 do
+            if filterLevel == "Off" then
+                break
+            end
+            local e = Win.Events[i]
+            if (filterLevel == "Todas" or e.level == filterLevel)
+                and (filterText == "" or e.msg:lower():find(filterText, 1, true) or (e.detail and e.detail:lower():find(filterText, 1, true))) then
+                shown = shown + 1
+                local text = string.format('<font color="#6b7280">%s</font> <b><font color="%s">%s</font></b> %s%s',
+                    e.time, hex(LEVEL_COLOR[e.level]), e.level, esc(e.msg), e.count > 1 and (" ×" .. e.count) or "")
+                if e.detail then
+                    text = text .. '\n<font color="#9ca3af" size="11">' .. esc(e.detail) .. "</font>"
+                end
+                makeLabel(holder, text, {
+                    Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, TextWrapped = true, RichText = true,
+                    TextSize = 12, LayoutOrder = shown,
+                })
+                if shown >= MAX_SHOWN then
+                    break
+                end
+            end
+        end
+        if shown == 0 and filterLevel ~= "Off" then
+            makeLabel(holder, "Nenhum evento para este filtro.", {
+                Size = UDim2.new(1, 0, 0, 24), TextXAlignment = Enum.TextXAlignment.Center, TextColor3 = Theme.SubText, TextSize = 12,
+            })
+        end
+        local c = Win:EventCounts()
+        summary:Set(string.format("INFO %d   SUCCESS %d   WARNING %d   ERROR %d   (guarda os últimos 300 registros; mostrando até %d)",
+            c.INFO, c.SUCCESS, c.WARNING, c.ERROR, MAX_SHOWN))
+    end
+
+    Win._eventsDirty = true
+    Win:OnEvent(function()
+        Win._eventsDirty = true
+    end)
+    task.spawn(function()
+        while Win:IsAlive() do
+            task.wait(0.3)
+            if Win._eventsDirty and tabEvents.Page.Visible then
+                Win._eventsDirty = false
+                local ok, err = pcall(render)
+                if not ok then
+                    warn("[RN TEAM] eventos: " .. tostring(err))
+                end
+            end
+        end
+    end)
+end
+
+--// ============================================================
+--//  GRAVADOR DE ROTA (aba Farm)
+--// ============================================================
+do
+    local MAX_POINTS, MIN_STEP, SAMPLE_DT, ROUTE_COUNT = 1500, 3, 0.15, 5
+
+    -- rotas guardadas em listas planas {x1,y1,z1,x2,y2,z2,...}; entram no RN_TEAM_SAVE.json
+    local routes = {}
+    local savedRoutes = Win.Saved.routes
+    for i = 1, ROUTE_COUNT do
+        local r = {}
+        local src = type(savedRoutes) == "table" and savedRoutes[i] or nil
+        if type(src) == "table" then
+            for _, v in ipairs(src) do
+                if type(v) == "number" then
+                    r[#r + 1] = v
+                else
+                    r = {}
+                    break
+                end
+            end
+            if #r % 3 ~= 0 then
+                r = {}
+            end
+        end
+        routes[i] = r
+    end
+    Win.Elements.routes = {
+        Get = function()
+            return routes
+        end,
+        Serialize = function()
+            return routes
+        end,
+        Set = function() end,
+        Default = nil,
+    }
+
+    local function slotIndex()
+        return tonumber(tostring(F.route_slot or "Rota 1"):match("%d+")) or 1
+    end
+    local function r1(x)
+        return math.floor(x * 10 + 0.5) / 10
+    end
+    local function routeLength(r)
+        local len = 0
+        for i = 4, #r, 3 do
+            len = len + (Vector3.new(r[i], r[i + 1], r[i + 2]) - Vector3.new(r[i - 3], r[i - 2], r[i - 1])).Magnitude
+        end
+        return len
+    end
+
+    local rs = tabFarm:AddSection("🛤️ Gravador de Rota")
+    local infoLbl
+    local function refreshInfo()
+        if not infoLbl then
+            return
+        end
+        local n = slotIndex()
+        local r = routes[n]
+        if #r == 0 then
+            infoLbl:Set("Rota " .. n .. ": vazia")
+        else
+            infoLbl:Set(string.format("Rota %d: %d pontos, cerca de %d studs", n, math.floor(#r / 3), math.floor(routeLength(r) + 0.5)))
+        end
+    end
+
+    local rec, play = nil, nil
+
+    rs:AddDropdown({
+        Name = "Rota", Flag = "route_slot", Default = "Rota 1",
+        Options = {"Rota 1", "Rota 2", "Rota 3", "Rota 4", "Rota 5"},
+        Callback = function()
+            refreshInfo()
+        end,
+    })
+    infoLbl = rs:AddLabel("")
+    refreshInfo()
+
+    rs:AddToggle({
+        Name = "Gravar rota (ande e ele grava)", Flag = "route_rec", Default = false, NoSave = true,
+        Callback = function(on)
+            if on then
+                local root = getRoot()
+                if not root or not isAlive(LocalPlayer.Character) then
+                    notify("Gravador", "Precisa de um personagem vivo para gravar.", "warning")
+                    Win.Elements.route_rec:Set(false, true)
+                    return
+                end
+                if F.route_play then
+                    Win.Elements.route_play:Set(false, false)
+                end
+                rec = {slot = slotIndex(), pts = {r1(root.Position.X), r1(root.Position.Y), r1(root.Position.Z)}, last = root.Position, t = 0}
+                notify("Gravador", "Gravando a Rota " .. rec.slot .. " (substitui a anterior). Ande pelo caminho e desligue para salvar.", "info")
+            else
+                local r = rec
+                rec = nil
+                if r then
+                    if #r.pts >= 6 then
+                        routes[r.slot] = r.pts
+                        local saved = Win:Save()
+                        refreshInfo()
+                        if saved then
+                            notify("Gravador", "Rota " .. r.slot .. " salva: " .. math.floor(#r.pts / 3) .. " pontos.", "success")
+                        else
+                            notify("Gravador", "Rota " .. r.slot .. " guardada só na memória (não foi possível gravar o arquivo).", "warning")
+                        end
+                    else
+                        notify("Gravador", "Rota muito curta; nada foi salvo.", "warning")
+                    end
+                end
+            end
+        end,
+    })
+    rs:AddToggle({
+        Name = "Reproduzir rota", Flag = "route_play", Default = false, NoSave = true,
+        Callback = function(on)
+            if on then
+                if F.route_rec then
+                    Win.Elements.route_rec:Set(false, false)
+                end
+                local n = slotIndex()
+                local r = routes[n]
+                if #r < 6 then
+                    notify("Gravador", "A Rota " .. n .. " está vazia.", "warning")
+                    Win.Elements.route_play:Set(false, true)
+                    return
+                end
+                local root = getRoot()
+                if not root or not isAlive(LocalPlayer.Character) then
+                    notify("Gravador", "Precisa de um personagem vivo para reproduzir.", "warning")
+                    Win.Elements.route_play:Set(false, true)
+                    return
+                end
+                if not Mover.hold("route", root) then
+                    notify("Gravador", "Outro movimento (farm de itens, perseguição) está em andamento. Desligue-o primeiro.", "warning")
+                    Win.Elements.route_play:Set(false, true)
+                    return
+                end
+                local pts, idx, best = {}, 1, math.huge
+                for i = 1, #r, 3 do
+                    local p = Vector3.new(r[i], r[i + 1], r[i + 2])
+                    pts[#pts + 1] = p
+                    local d = (p - root.Position).Magnitude
+                    if d < best then
+                        best, idx = d, #pts
+                    end
+                end
+                play = {pts = pts, idx = idx, root = root}
+            else
+                play = nil
+                Mover.release("route")
+            end
+        end,
+    })
+    rs:AddToggle({Name = "Repetir em loop", Flag = "route_loop", Default = false, Feature = false})
+    rs:AddSlider({Name = "Velocidade", Flag = "route_speed", Min = 10, Max = 500, Default = 100, Step = 5})
+    rs:AddButton({Name = "Apagar esta rota", Callback = function()
+        local n = slotIndex()
+        if rec and rec.slot == n then
+            notify("Gravador", "Pare a gravação antes de apagar.", "warning")
+            return
+        end
+        routes[n] = {}
+        local saved = Win:Save()
+        refreshInfo()
+        notify("Gravador", saved and ("Rota " .. n .. " apagada.") or ("Rota " .. n .. " apagada da memória (arquivo não gravado)."), saved and "success" or "warning")
+    end})
+    rs:AddLabel("A reprodução anda em linha reta entre os pontos, atravessando paredes, e começa pelo ponto mais próximo de você.")
+
+    -- gravação: amostra a posição a cada 0,15 s e guarda só pontos com pelo menos 3 studs de distância
+    connect(RunService.Heartbeat, function(dt)
+        if not rec then
+            return
+        end
+        local root = getRoot()
+        if not root or not isAlive(LocalPlayer.Character) then
+            Mon.tick("rrec", "aguardando o personagem", true)
+            return
+        end
+        rec.t = rec.t + dt
+        if rec.t >= SAMPLE_DT then
+            rec.t = 0
+            local p = root.Position
+            if (p - rec.last).Magnitude >= MIN_STEP then
+                local n = #rec.pts
+                rec.pts[n + 1], rec.pts[n + 2], rec.pts[n + 3] = r1(p.X), r1(p.Y), r1(p.Z)
+                rec.last = p
+                if #rec.pts / 3 >= MAX_POINTS then
+                    Win:Log("WARNING", "Gravador: limite de " .. MAX_POINTS .. " pontos atingido; gravação encerrada")
+                    Win.Elements.route_rec:Set(false, false)
+                    return
+                end
+            end
+        end
+        Mon.tick("rrec", math.floor(#rec.pts / 3) .. " ponto(s) gravado(s)")
+    end, "rrec")
+
+    -- reprodução: andador contínuo (um único movimento reservado via Mover.hold)
+    connect(RunService.Heartbeat, function(dt)
+        if not (F.route_play and play) then
+            return
+        end
+        local root = getRoot()
+        if not root or not isAlive(LocalPlayer.Character) then
+            Mon.tick("rplay", "aguardando o personagem (respawn)", true)
+            return
+        end
+        if root ~= play.root then -- respawn: retoma pelo ponto mais próximo
+            if not Mover.hold("route", root) then
+                Mon.tick("rplay", "movimento ocupado por outro sistema", true)
+                return
+            end
+            play.root = root
+            local best = math.huge
+            for i, p in ipairs(play.pts) do
+                local d = (p - root.Position).Magnitude
+                if d < best then
+                    best, play.idx = d, i
+                end
+            end
+        end
+        local pos = root.Position
+        local target = play.pts[play.idx]
+        local vec = target - pos
+        local dist = vec.Magnitude
+        local step = math.max(tonumber(F.route_speed) or 100, 1) * dt
+        local newPos, finished = nil, false
+        if dist <= step then
+            newPos = target
+            play.idx = play.idx + 1
+            if play.idx > #play.pts then
+                if F.route_loop then
+                    play.idx = 1 -- volta andando até o primeiro ponto
+                else
+                    finished = true
+                end
+            end
+        else
+            newPos = pos + vec.Unit * step
+        end
+        local rot = root.CFrame - root.CFrame.Position
+        local flat = Vector3.new(vec.X, 0, vec.Z)
+        if flat.Magnitude > 0.05 then
+            rot = CFrame.lookAt(Vector3.zero, flat)
+        end
+        root.CFrame = CFrame.new(newPos) * rot
+        root.AssemblyLinearVelocity = Vector3.zero
+        Mon.tick("rplay", string.format("ponto %d/%d", math.min(play.idx, #play.pts), #play.pts))
+        if finished then
+            Win.Elements.route_play:Set(false, false)
+            notify("Gravador", "Rota concluída.", "success")
+        end
+    end, "rplay")
+
+    Win:OnDestroy(function()
+        rec, play = nil, nil
+        Mover.release("route")
+    end)
+end
+
+--// ============================================================
+--//  REEXECUTAR AO TROCAR DE SERVIDOR (aba Config)
+--// ============================================================
+do
+    local qot = (type(queue_on_teleport) == "function" and queue_on_teleport)
+        or (type(queueonteleport) == "function" and queueonteleport)
+        or (type(syn) == "table" and type(syn.queue_on_teleport) == "function" and syn.queue_on_teleport)
+        or (type(fluxus) == "table" and type(fluxus.queue_on_teleport) == "function" and fluxus.queue_on_teleport)
+        or nil
+
+    -- se este script foi reexecutado pelo próprio recurso, confirma (só agora é "concluído")
+    local okG, genv = pcall(function()
+        return getgenv and getgenv() or nil
+    end)
+    if okG and type(genv) == "table" and genv.RN_TEAM_REEXEC then
+        genv.RN_TEAM_REEXEC = nil
+        Win:Log("SUCCESS", "Reexecutado automaticamente após a troca de servidor")
+    end
+
+    local rx = tabCfg:AddSection("🔁 Reexecutar ao Trocar de Servidor")
+    rx:AddLabel(qot and "queue_on_teleport disponível neste executor." or "⚠️ Este executor não tem queue_on_teleport: o recurso não consegue funcionar aqui.")
+    rx:AddToggle({Name = "Reexecutar ao trocar de servidor", Flag = "reexec_on", Default = false})
+    local slotOptions = {"Nenhum"}
+    for i = 1, 10 do
+        slotOptions[#slotOptions + 1] = "Slot " .. i
+    end
+    rx:AddDropdown({Name = "Reexecutar também o slot do Executor", Flag = "reexec_slot", Options = slotOptions, Default = "Nenhum"})
+    rx:AddLabel("Ligado: o RN TEAM se executa sozinho ao entrar no próximo servidor.")
+
+    -- link fixo do próprio RN TEAM (usado na reexecução; não é mais digitado na interface)
+    local RN_DEFAULT_URL = "https://pastefy.app/fAo2cDay/raw"
+
+    -- procura uma cópia local do script na pasta do executor (workspace / autoexec)
+    local function findLocalCopy()
+        if not (type(isfile) == "function" and type(readfile) == "function") then
+            return nil
+        end
+        local names = {"RN_TEAM_v2.lua", "RN_TEAM.lua"}
+        local dirs = {"", "autoexec/", "Autoexec/", "AutoExec/", "autoexecute/"}
+        for _, d in ipairs(dirs) do
+            for _, n in ipairs(names) do
+                local path = d .. n
+                local ok, found = pcall(isfile, path)
+                if ok and found then
+                    return path
+                end
+            end
+        end
+        return nil
+    end
+
+    local function buildQueuedCode()
+        local parts = {
+            "if not game:IsLoaded() then game.Loaded:Wait() end",
+            "pcall(function() if getgenv then getgenv().RN_TEAM_REEXEC = true end end)",
+        }
+        local base = #parts
+        local url = trim(RN_DEFAULT_URL)
+        if url == "" and okG and type(genv) == "table" and type(genv.RN_TEAM_URL) == "string" then
+            url = trim(genv.RN_TEAM_URL)
+        end
+        if url ~= "" then
+            -- guarda o link no próximo servidor também, para a cadeia continuar sozinha
+            parts[#parts + 1] = string.format("pcall(function() if getgenv then getgenv().RN_TEAM_URL = %q end end)", url)
+            parts[#parts + 1] = string.format("pcall(function() loadstring(game:HttpGet(%q))() end)", url)
+        else
+            local path = findLocalCopy()
+            if path then
+                parts[#parts + 1] = string.format("pcall(function() loadstring(readfile(%q))() end)", path)
+            end
+        end
+        local n = tonumber(tostring(F.reexec_slot or ""):match("%d+"))
+        if n then
+            local slotsEl = Win.Elements.exec_slots
+            local code = slotsEl and slotsEl:Get()[n]
+            if type(code) == "string" and trim(code) ~= "" then
+                parts[#parts + 1] = string.format("pcall(function() loadstring(%q)() end)", code)
+            end
+        end
+        if #parts == base then
+            return nil
+        end
+        return table.concat(parts, "\n")
+    end
+
+    -- enfileira no início do teleporte, com as configurações do momento (uma vez por teleporte)
+    local queuedNow = false
+    local tpConn = connect(LocalPlayer.OnTeleport, function(state)
+        if state == Enum.TeleportState.Failed then
+            queuedNow = false
+            return
+        end
+        if not F.reexec_on or queuedNow then
+            return
+        end
+        if state == Enum.TeleportState.Started or state == Enum.TeleportState.RequestedFromServer
+            or state == Enum.TeleportState.InProgress or state == Enum.TeleportState.WaitingForServer then
+            local code = buildQueuedCode()
+            if not code then
+                Win:Log("WARNING", "Reexecução ligada, mas não há link, cópia local (RN_TEAM_v2.lua) nem slot; nada foi enfileirado")
+                return
+            end
+            if not qot then
+                Win:Log("ERROR", "Reexecução: o executor não tem queue_on_teleport")
+                return
+            end
+            local ok, err = pcall(qot, code)
+            if ok then
+                queuedNow = true
+                Win:Log("SUCCESS", "Reexecução enfileirada para o próximo servidor")
+            else
+                Win:Log("ERROR", "Reexecução: falha ao enfileirar", tostring(err))
+            end
+        end
+    end)
+
+    Win:Monitor("reexec_on", function(control)
+        if control ~= true then
+            return "inactive"
+        end
+        if not qot then
+            return "error", "o executor não tem queue_on_teleport"
+        end
+        if not buildQueuedCode() then
+            return "waiting", "sem link configurado no script"
+        end
+        if not (tpConn and tpConn.Connected) then
+            return "error", "o ouvinte de teleporte não está conectado"
+        end
+        return "active", "pronto: será enfileirado quando o teleporte começar"
+    end)
+end
+
+--// ============================================================
+--//  SONDAS: ligam cada controle ao que a função realmente executou
+--// ============================================================
+do
+    local P = Mon.probe
+    local map = {
+        aim_on = "aim", aimn_on = "aimn", hb_on = "hb", hbn_on = "hbn",
+        esp_box = "esp", esp_tracer = "esp", esp_health = "esp", esp_name = "esp", esp_dist = "esp",
+        esp_xray = "esp", esp_role = "esp", chams_on = "chams", espo_on = "espo", spec_on = "spec",
+        fp_on = "fp", fn_on = "fn", fi_on = "fi", ch_on = "ch",
+        mv_speed_on = "speed", mv_jump_on = "jump", fly_on = "fly", antivoid = "antivoid", grav_on = "grav",
+        noclip = "noclip", bhop = "bhop", spin_on = "spin", antikb = "antikb",
+        fb_on = "fb", nofog = "nofog", light_time_on = "ltime", light_bright_on = "lbright",
+        cam_fov_on = "camfov", zoom_on = "zoom", antiui = "antiui",
+        ia_loop_interact = "ia_interact", ia_loop_collect = "ia_collect", ia_loop_tp = "ia_tp",
+        route_rec = "rrec", route_play = "rplay",
+    }
+    for flag, id in pairs(map) do
+        Win:Monitor(flag, P(id))
+    end
+    -- Infinite Jump só reage a eventos: a prova é o ouvinte conectado
+    Win:Monitor("infjump", function(control)
+        if control ~= true then
+            return "inactive"
+        end
+        local c = Mon.conns.infjump
+        if c and c.Connected then
+            return "active", "ouvindo pedidos de pulo"
+        end
+        return "error", "o ouvinte de pulo não está conectado"
+    end)
+end
+
 Win:SelectTab(Win.Tabs[1])
+Win:EndBoot() -- a partir daqui, mudanças de controle entram na Central de Eventos
 task.spawn(function()
     if F.intro_on ~= false then
         local ok, err = pcall(playIntro)
@@ -5205,6 +6854,7 @@ task.spawn(function()
     end
     if Win:IsAlive() then
         Win:SetVisible(true)
+        Win:Log("SUCCESS", "RN TEAM v2 carregada e visível")
         Win:Notify({
             Title = "RN TEAM carregada",
             Content = "Toque no botão flutuante para abrir ou fechar o menu.",
