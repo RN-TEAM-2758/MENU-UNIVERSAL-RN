@@ -1094,6 +1094,42 @@ function Nova.CreateWindow(opts)
         return self._order
     end
 
+    -- Section dentro de Section (recolhível). Devolve um objeto com os mesmos métodos Add*.
+    function SectionMT:AddSubSection(name, startOpen)
+        local box = new("Frame", {
+            Name = "Sub_" .. tostring(name), BackgroundColor3 = Theme.Background, BackgroundTransparency = 0.4,
+            BorderSizePixel = 0, Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
+            LayoutOrder = self:_nextOrder(),
+        }, self._frame)
+        corner(box, 8)
+        stroke(box, Theme.Stroke, 1)
+        new("UIListLayout", {Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder}, box)
+        padding(box, 6, 6, 6, 6)
+        local open = startOpen ~= false
+        local header = new("TextButton", {
+            Size = UDim2.new(1, 0, 0, 26), BackgroundTransparency = 1, AutoButtonColor = false, Text = "",
+            Font = FONT_BOLD, TextSize = 13, TextXAlignment = Enum.TextXAlignment.Left,
+            TextTruncate = Enum.TextTruncate.AtEnd, LayoutOrder = 0,
+        }, box)
+        local body = new("Frame", {
+            BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
+            LayoutOrder = 1, Visible = open,
+        }, box)
+        new("UIListLayout", {Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder}, body)
+        local function render()
+            header.Text = tostring(name)
+            header.TextColor3 = open and Theme.Accent or Theme.Text
+            body.Visible = open
+        end
+        render()
+        bindAccent(render)
+        header.MouseButton1Click:Connect(function()
+            open = not open
+            render()
+        end)
+        return setmetatable({_frame = body, _page = self._page, _order = 0, _tabName = self._tabName}, SectionMT)
+    end
+
     function SectionMT:_row(height)
         local row = new("Frame", {
             BackgroundColor3 = Theme.Element,
@@ -1707,6 +1743,8 @@ function Nova.CreateWindow(opts)
         local lastCommitted = {}
         local dupGroups = 0
         local pool = {}
+        local ordered = opts2.Ordered == true -- guarda a ORDEM em que as opções foram marcadas
+        local orderList, orderIdx = {}, {}
         local el = {IsMulti = true, Name = opts2.Name, AutoRefresh = tonumber(opts2.AutoRefresh)}
         local toggle, commit
 
@@ -1721,8 +1759,77 @@ function Nova.CreateWindow(opts)
         end
         countDuplicates()
 
+        local function valuesToList(values) -- lista (na ordem dada) a partir de lista, mapa ou texto
+            local out, seen = {}, {}
+            if type(values) == "string" then
+                out[1] = values
+            elseif type(values) == "table" then
+                for _, v in ipairs(values) do
+                    local name = tostring(v)
+                    if not seen[name] then
+                        seen[name] = true
+                        out[#out + 1] = name
+                    end
+                end
+                local extra = {}
+                for k, v in pairs(values) do
+                    if type(k) ~= "number" and v then
+                        local name = tostring(k)
+                        if not seen[name] then
+                            seen[name] = true
+                            extra[#extra + 1] = name
+                        end
+                    end
+                end
+                table.sort(extra)
+                for _, name in ipairs(extra) do
+                    out[#out + 1] = name
+                end
+            end
+            return out
+        end
+        local function selAdd(name)
+            if not selected[name] then
+                selected[name] = true
+                if ordered then
+                    orderList[#orderList + 1] = name
+                end
+            end
+        end
+        local function selRemove(name)
+            if selected[name] then
+                selected[name] = nil
+                if ordered then
+                    for i = #orderList, 1, -1 do
+                        if orderList[i] == name then
+                            table.remove(orderList, i)
+                            break
+                        end
+                    end
+                end
+            end
+        end
+        local function selClear()
+            selected = {}
+            orderList = {}
+        end
+        local function rebuildOrderIdx()
+            orderIdx = {}
+            for i, name in ipairs(orderList) do
+                orderIdx[name] = i
+            end
+        end
+
         local function selectedList()
             local out = {}
+            if ordered then
+                for _, name in ipairs(orderList) do
+                    if selected[name] then
+                        out[#out + 1] = name
+                    end
+                end
+                return out
+            end
             if #options > 0 then
                 for _, o in ipairs(options) do
                     if selected[o] then
@@ -1872,6 +1979,10 @@ function Nova.CreateWindow(opts)
                 row.box.BackgroundColor3 = on and Theme.Accent or Theme.Off
                 row.label.TextColor3 = on and Theme.Accent or Theme.Text
                 row.btn.BackgroundColor3 = on and Theme.ElementHover or Theme.Element
+                if ordered then
+                    local c = counts[name]
+                    row.badge.Text = on and ("#" .. tostring(orderIdx[name] or "")) or ((c and c > 1) and ("×" .. c) or "")
+                end
             end
         end
 
@@ -1988,6 +2099,9 @@ function Nova.CreateWindow(opts)
 
         commit = function(silent)
             local cur = selectedList()
+            if ordered then
+                rebuildOrderIdx()
+            end
             for _, row in ipairs(pool) do
                 paintRow(row)
             end
@@ -2003,7 +2117,11 @@ function Nova.CreateWindow(opts)
             return changed
         end
         toggle = function(name)
-            selected[name] = (not selected[name]) or nil
+            if selected[name] then
+                selRemove(name)
+            else
+                selAdd(name)
+            end
             commit(false)
         end
 
@@ -2034,34 +2152,37 @@ function Nova.CreateWindow(opts)
             return lastRefresh
         end
         function el:Set(values, silent)
-            local wanted, new = toSelectionSet(values), {}
-            for name in pairs(wanted) do
+            selClear()
+            for _, name in ipairs(valuesToList(values)) do
                 if #options == 0 or optionSet[name] then -- inexistente é ignorada (pendente se a lista está vazia)
-                    new[name] = true
+                    selAdd(name)
                 end
             end
-            selected = new
             return commit(silent)
         end
         function el:SelectAll(silent)
             for _, o in ipairs(view) do
-                selected[o] = true
+                selAdd(o)
             end
             return commit(silent)
         end
         function el:Clear(silent)
             if query ~= "" then
                 for _, o in ipairs(view) do
-                    selected[o] = nil
+                    selRemove(o)
                 end
             else
-                selected = {}
+                selClear()
             end
             return commit(silent)
         end
         function el:Invert(silent)
             for _, o in ipairs(view) do
-                selected[o] = (not selected[o]) or nil
+                if selected[o] then
+                    selRemove(o)
+                else
+                    selAdd(o)
+                end
             end
             return commit(silent)
         end
@@ -2102,7 +2223,7 @@ function Nova.CreateWindow(opts)
             if #new > 0 then
                 for name in pairs(selected) do
                     if not seen[name] then
-                        selected[name] = nil
+                        selRemove(name)
                         removed = removed + 1
                     end
                 end
@@ -2110,7 +2231,7 @@ function Nova.CreateWindow(opts)
                 for _ in pairs(selected) do
                     removed = removed + 1
                 end
-                selected = {}
+                selClear()
             end
             rebuildView()
             local changed = false
@@ -2179,25 +2300,15 @@ function Nova.CreateWindow(opts)
 
         -- valor inicial (Default/Selected) e padrão para "restaurar"
         local initial = opts2.Default or opts2.Selected or {}
-        local initSet = toSelectionSet(initial)
-        local initList = {}
-        for name in pairs(initSet) do
+        for _, name in ipairs(valuesToList(initial)) do
             if #options == 0 or optionSet[name] then
-                selected[name] = true
+                selAdd(name)
             end
         end
-        for _, name in ipairs(#options > 0 and options or {}) do
-            if selected[name] then
-                initList[#initList + 1] = name
-            end
+        el.Default = copy(selectedList())
+        if ordered then
+            rebuildOrderIdx()
         end
-        if #options == 0 then
-            for name in pairs(selected) do
-                initList[#initList + 1] = name
-            end
-            table.sort(initList)
-        end
-        el.Default = copy(initList)
         applyLayout()
         lastCommitted = selectedList()
         refreshHeader(lastCommitted)
@@ -3214,6 +3325,7 @@ local tabFarm = Win:AddTab("🌾 Farm", {Columns = 2})
 local tabVisual = Win:AddTab("👁 Visual", {Columns = 2})
 local tabMove = Win:AddTab("🏃 Movimento", {Columns = 2})
 local tabMisc = Win:AddTab("🎲 Misc", {Columns = 2})
+local tabRemote = Win:AddTab("⚡ Remote", {Columns = 1})
 local tabExec = Win:AddTab("💻 Executor", {Collapsible = false})
 local tabStatus = Win:AddTab("📊 Status", {Columns = 1})
 local tabEvents = Win:AddTab("📜 Eventos", {Collapsible = false})
@@ -3401,28 +3513,148 @@ local function toColor(text, fallback)
     return Color3.fromRGB(tonumber(r), tonumber(g), tonumber(b))
 end
 
+-- Lê caminhos escritos como CÓDIGO (o texto nunca é executado), por exemplo:
+--   local Event = game:GetService("Players").LocalPlayer.Character.DefaultSlap.Event
+--   game:GetService("Players").LocalPlayer.Character.DefaultSlap.Event
+-- Aceita "local X =", ponto e vírgula, ["Nome"], :WaitForChild("Nome"), :FindFirstChild("Nome")
+-- e ignora um :FireServer(...) / :InvokeServer(...) no final.
+-- Devolve {segs = {...a partir do game...}, method = ...} ou nil quando é um caminho comum.
+local function parsePathExpr(text)
+    text = tostring(text or "")
+    if not text:find("[%(%[:=\"']") then
+        return nil
+    end
+    local line
+    for l in text:gmatch("[^\r\n]+") do
+        local cleaned = (l:gsub("%-%-.*$", ""))
+        local low = cleaned:lower()
+        if low:find("game", 1, true) or low:find("workspace", 1, true) then
+            line = cleaned
+            break
+        end
+    end
+    if not line then
+        return nil
+    end
+    line = trim(line)
+    line = (line:gsub("^local%s+[%a_][%w_]*%s*=%s*", ""))
+    line = (line:gsub("^[%a_][%w_]*%s*=%s*", ""))
+    local n, pos = #line, 1
+    local function skipSpace()
+        pos = line:find("%S", pos) or (n + 1)
+    end
+    skipSpace()
+    local root, after = line:match("^([%a_][%w_]*)()", pos)
+    if not root then
+        return nil
+    end
+    local lroot = root:lower()
+    local segs = {}
+    if lroot == "workspace" then
+        segs[1] = "Workspace"
+    elseif lroot ~= "game" then
+        return nil
+    end
+    pos = after
+    local method
+    while true do
+        skipSpace()
+        if pos > n then
+            break
+        end
+        local c = line:sub(pos, pos)
+        if c == ";" then
+            break
+        elseif c == "." then
+            local name, nxt = line:match("^%.%s*([%a_][%w_]*)()", pos)
+            if not name then
+                return nil
+            end
+            segs[#segs + 1] = name
+            pos = nxt
+        elseif c == "[" then
+            local _, name, nxt = line:match("^%[%s*([\"'])(.-)%1%s*%]()", pos)
+            if not name then
+                return nil
+            end
+            segs[#segs + 1] = name
+            pos = nxt
+        elseif c == ":" then
+            local name, nxt = line:match("^:%s*([%a_][%w_]*)()", pos)
+            if not name then
+                return nil
+            end
+            pos = nxt
+            skipSpace()
+            if name == "FireServer" or name == "InvokeServer" then
+                method = name
+                break
+            end
+            local _, arg, nxt2 = line:match("^%(%s*([\"'])(.-)%1()", pos)
+            if not arg then
+                return nil
+            end
+            local close = line:find(")", nxt2, true)
+            if not close or not line:sub(nxt2, close - 1):match("^[%s,%d%.]*$") then
+                return nil
+            end
+            if name == "GetService" and #segs == 0 then
+                segs[1] = arg
+            elseif name == "WaitForChild" or name == "FindFirstChild" then
+                segs[#segs + 1] = arg
+            else
+                return nil
+            end
+            pos = close + 1
+        else
+            return nil
+        end
+    end
+    if #segs == 0 then
+        return nil
+    end
+    return {segs = segs, method = method}
+end
+
 -- "Pasta.Sub.Pasta" ou "Workspace/Pasta"; sem prefixo, parte do Workspace.
+-- Também entende código: game:GetService("Players").LocalPlayer.Character.Tool.Event
 local function resolvePath(text)
     text = trim(text)
     if text == "" then
         return nil
     end
-    local parts = {}
-    for p in text:gmatch("[^%./\\]+") do
-        table.insert(parts, p)
-    end
-    local cur, start = Workspace, 1
-    local first = parts[1] and parts[1]:lower()
-    if first == "game" then
-        cur, start = game, 2
-    elseif first == "workspace" then
-        start = 2
+    local parts, cur, start = {}, Workspace, 1
+    local px = parsePathExpr(text)
+    if px then
+        parts, cur = px.segs, game
+    else
+        for p in text:gmatch("[^%./\\]+") do
+            table.insert(parts, p)
+        end
+        local first = parts[1] and parts[1]:lower()
+        if first == "game" then
+            cur, start = game, 2
+        elseif first == "workspace" then
+            start = 2
+        end
     end
     for i = start, #parts do
         local nxt = cur:FindFirstChild(parts[i])
+        if not nxt and parts[i] == "LocalPlayer" and cur == Players then
+            nxt = LocalPlayer
+        end
         if not nxt and cur == game then
             local ok, svc = pcall(game.GetService, game, parts[i])
             nxt = ok and svc or nil
+        end
+        -- Character não é "filho" do Player: é uma propriedade (Players.LocalPlayer.Character)
+        if not nxt and (parts[i] == "Character" or parts[i] == "PrimaryPart" or parts[i] == "Parent") then
+            local okp, v = pcall(function()
+                return cur[parts[i]]
+            end)
+            if okp and typeof(v) == "Instance" then
+                nxt = v
+            end
         end
         if not nxt then
             return nil
@@ -4702,6 +4934,174 @@ do
     end)
 end
 
+--// ---------------- FX Clean Global (aba Visual) ----------------
+-- Desliga (sem apagar) partículas, trails, beams, fumaça, fogo, luzes e pós-processamento.
+-- Ao desligar o toggle, tudo volta ao valor original. "ballhit" e "slasheffect" são apagados de vez.
+do
+    local fxs = tabVisual:AddSection("✨ FX Clean")
+    local fxOn = false
+    local saved = setmetatable({}, {__mode = "k"}) -- instância -> valores originais
+    local savedCount = 0
+    local origQuality = nil
+    local fxRun = 0
+    local fxConn1, fxConn2
+
+    local DEL_NAMES = {"ballhit", "slasheffect"}
+    local FX_CLASS = {
+        ParticleEmitter = {Enabled = false, Lifetime = NumberRange.new(0)},
+        Trail = {Enabled = false},
+        Beam = {Enabled = false},
+        Smoke = {Enabled = false},
+        Fire = {Enabled = false},
+        Sparkles = {Enabled = false},
+        Explosion = {Visible = false},
+        PointLight = {Enabled = false},
+        SpotLight = {Enabled = false},
+        SurfaceLight = {Enabled = false},
+        BloomEffect = {Enabled = false},
+        BlurEffect = {Enabled = false},
+        SunRaysEffect = {Enabled = false},
+        DepthOfFieldEffect = {Enabled = false},
+        ColorCorrectionEffect = {Enabled = false},
+    }
+
+    local function fxHit(inst)
+        if not fxOn or not inst or not inst.Parent then
+            return
+        end
+        local okN, lname = pcall(function()
+            return inst.Name:lower()
+        end)
+        if okN and lname ~= "" then
+            for _, n in ipairs(DEL_NAMES) do
+                if lname == n or lname:find(n, 1, true) then
+                    if inst:IsDescendantOf(Workspace) then
+                        pcall(function()
+                            inst:Destroy()
+                        end)
+                    end
+                    return
+                end
+            end
+        end
+        local props = FX_CLASS[inst.ClassName]
+        if not props or saved[inst] then
+            return
+        end
+        local old = {}
+        for k, v in pairs(props) do
+            local ok, cur = pcall(function()
+                return inst[k]
+            end)
+            if ok then
+                old[k] = cur
+                pcall(function()
+                    inst[k] = v
+                end)
+            end
+        end
+        saved[inst] = old
+        savedCount = savedCount + 1
+    end
+
+    local function fxApply()
+        fxRun = fxRun + 1
+        local myRun = fxRun
+        if origQuality == nil then
+            pcall(function()
+                local r = settings().Rendering
+                origQuality = r.QualityLevel
+                r.QualityLevel = Enum.QualityLevel.Level01
+            end)
+        end
+        local n = 0
+        for _, root in ipairs({Workspace, Lighting}) do
+            local okD, list = pcall(root.GetDescendants, root)
+            if okD then
+                for _, d in ipairs(list) do
+                    if not fxOn or myRun ~= fxRun then
+                        return
+                    end
+                    fxHit(d)
+                    n = n + 1
+                    if n % 400 == 0 then
+                        task.wait() -- varredura em lotes, sem travar o jogo
+                    end
+                end
+            end
+        end
+    end
+
+    local function fxRestore()
+        fxRun = fxRun + 1 -- cancela varredura em andamento
+        for inst, old in pairs(saved) do
+            if inst and inst.Parent then
+                for k, v in pairs(old) do
+                    pcall(function()
+                        inst[k] = v
+                    end)
+                end
+            end
+            saved[inst] = nil
+        end
+        savedCount = 0
+        if origQuality ~= nil then
+            pcall(function()
+                settings().Rendering.QualityLevel = origQuality
+            end)
+            origQuality = nil
+        end
+    end
+
+    local function fxSet(v)
+        fxOn = v and true or false
+        if fxOn then
+            task.spawn(fxApply)
+        else
+            task.spawn(fxRestore)
+        end
+    end
+
+    fxs:AddToggle({
+        Name = "FX Clean Global", Flag = "fxclean", Default = false,
+        Callback = function(v)
+            fxSet(v)
+        end,
+    })
+    fxs:AddLabel("Desliga partículas, trails, beams, fumaça, fogo, luzes e efeitos de tela (bloom, blur...) e baixa a qualidade gráfica. Ao desligar, tudo volta ao normal.")
+
+    -- objetos novos também são limpos enquanto estiver ligado
+    fxConn1 = Win:Track(Workspace.DescendantAdded:Connect(function(inst)
+        if fxOn then
+            task.defer(fxHit, inst)
+        end
+    end))
+    fxConn2 = Win:Track(Lighting.DescendantAdded:Connect(function(inst)
+        if fxOn then
+            task.defer(fxHit, inst)
+        end
+    end))
+
+    -- batimento para o Painel de Status
+    local acc = 0
+    connect(RunService.Heartbeat, function(dt)
+        acc = acc + dt
+        if acc < 1 then
+            return
+        end
+        acc = 0
+        if fxOn then
+            Mon.tick("fxclean", savedCount .. " efeito(s) desligado(s)")
+        end
+    end, {"fxclean"})
+
+    Win:OnDestroy(function()
+        fxOn = false
+        F.fxclean = false
+        pcall(fxRestore)
+    end)
+end
+
 --// ============================================================
 --//  ABA FARM: jogadores, NPCs, itens (Tween) e perseguição
 --// ============================================================
@@ -5844,9 +6244,10 @@ do
     local floats = {} -- [id] = {card = Frame}
     local counter = 0
 
+    local AUTOCLICK_NAME = "🎯 Auto Click (ponto na tela)"
     local actionNames = {
         "Coletar itens do diretório", "Teleportar p/ objeto selecionado", "Interagir com objetos",
-        "Pular", "Teleportar p/ jogador mais próximo",
+        "Pular", "Teleportar p/ jogador mais próximo", AUTOCLICK_NAME,
     }
     local actionFns = {
         ["Coletar itens do diretório"] = function()
@@ -5890,7 +6291,9 @@ do
         -- nome padrão "Flutuante N" (menor número livre) quando não foi dado um nome
         local used = {}
         for _, f in pairs(floats) do
-            used[f.num] = true
+            if f.num then
+                used[f.num] = true
+            end
         end
         local num = 1
         while used[num] do
@@ -5993,6 +6396,291 @@ do
         floats[id] = {card = card, loopKey = loopKey, num = num}
     end
 
+
+    --// ---- Auto Click flutuante: toque virtual num ponto travado da tela ----
+    local GuiService = game:GetService("GuiService")
+    local VIM
+    pcall(function()
+        VIM = game:GetService("VirtualInputManager")
+    end)
+    -- No celular, clique de mouse virtual faz o Roblox trocar para o modo teclado/mouse e
+    -- esconder o joystick; por isso lá o clique é enviado como TOQUE virtual.
+    local IS_MOBILE = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
+    local touchWorks = true -- vira false se o executor não suportar SendTouchEvent
+    local AUTOCLICK_Y_OFFSET = 0 -- ajuste fino vertical se o clique cair fora da bolinha
+    local DOT_COLORS = {
+        Color3.fromRGB(255, 60, 60), Color3.fromRGB(0, 140, 255), Color3.fromRGB(0, 200, 90),
+        Color3.fromRGB(255, 200, 0), Color3.fromRGB(180, 90, 255),
+    }
+
+    local function virtualTap(x, y, slot)
+        if IS_MOBILE and touchWorks then
+            local tid = 100 + slot -- id diferente do dedo real (joystick)
+            local ok = pcall(function()
+                VIM:SendTouchEvent(tid, 0, x, y) -- Begin
+                VIM:SendTouchEvent(tid, 2, x, y) -- End
+            end)
+            if ok then
+                return true
+            end
+            touchWorks = false -- cai para o clique de mouse abaixo
+        end
+        return pcall(function()
+            VIM:SendMouseButtonEvent(x, y, 0, true, game, 0)
+            VIM:SendMouseButtonEvent(x, y, 0, false, game, 0)
+        end)
+    end
+
+    local function createAutoClickFloat(label)
+        if countFloats() >= MAX_FLOATS then
+            notify("Botões de ação", "Limite de " .. MAX_FLOATS .. " botões atingido.", "warning")
+            return
+        end
+        if not VIM then
+            notify("Auto Click", "Seu executor não liberou o VirtualInputManager.", "error")
+            return
+        end
+        counter = counter + 1
+        local id = counter
+
+        -- número do Auto Click: menor número livre
+        local used = {}
+        for _, f in pairs(floats) do
+            if f.anum then
+                used[f.anum] = true
+            end
+        end
+        local anum = 1
+        while used[anum] do
+            anum = anum + 1
+        end
+        label = (label and label ~= "") and label or ("Auto Click " .. anum)
+
+        local interval = 0.1 -- segundos entre cliques (0 = a cada frame)
+        local target = nil -- Vector2 em coordenadas de tela
+        local running = false
+        local runToken = 0
+        local capture, captureConn = nil, nil
+        local EXPANDED_H = 120
+
+        local card = new("Frame", {
+            Name = "RN_AutoClick_" .. id, Size = UDim2.fromOffset(190, 46), BackgroundColor3 = Theme.Surface,
+            BorderSizePixel = 0, Active = true, ZIndex = 6,
+        }, Root)
+        corner(card, 10)
+        stroke(card, Theme.Accent, 1.5)
+
+        local main = new("TextButton", {
+            Name = "Main", Position = UDim2.fromOffset(6, 7), Size = UDim2.fromOffset(110, 32), BackgroundColor3 = Theme.Element,
+            AutoButtonColor = false, Text = "▶ " .. label, Font = FONT_BOLD, TextSize = 12, TextColor3 = Theme.Text,
+            TextTruncate = Enum.TextTruncate.AtEnd, ZIndex = 7,
+        }, card)
+        corner(main, 8)
+        local cfg = new("TextButton", {
+            Name = "Config", Position = UDim2.fromOffset(122, 7), Size = UDim2.fromOffset(28, 32), BackgroundColor3 = Theme.Element,
+            Text = "⚙️", Font = FONT_BOLD, TextSize = 14, TextColor3 = Theme.Text, ZIndex = 7,
+        }, card)
+        corner(cfg, 8)
+        local close = new("TextButton", {
+            Name = "Close", Position = UDim2.fromOffset(156, 7), Size = UDim2.fromOffset(28, 32), BackgroundColor3 = Color3.fromRGB(150, 50, 60),
+            Text = "X", Font = FONT_BOLD, TextSize = 13, TextColor3 = Color3.new(1, 1, 1), ZIndex = 7,
+        }, card)
+        corner(close, 8)
+
+        -- painel: SET ALVO / DELETE / intervalo
+        local panel = new("Frame", {
+            Name = "Settings", Position = UDim2.fromOffset(6, 46), Size = UDim2.fromOffset(178, 70),
+            BackgroundTransparency = 1, Visible = false, ZIndex = 7,
+        }, card)
+        local setBtn = new("TextButton", {
+            Name = "Set", Position = UDim2.fromOffset(0, 3), Size = UDim2.fromOffset(84, 28), BackgroundColor3 = Theme.Element,
+            Text = "🎯 SET ALVO", Font = FONT_BOLD, TextSize = 11, TextColor3 = Theme.Text, ZIndex = 8,
+        }, panel)
+        corner(setBtn, 6)
+        local delBtn = new("TextButton", {
+            Name = "Delete", Position = UDim2.fromOffset(90, 3), Size = UDim2.fromOffset(84, 28), BackgroundColor3 = Color3.fromRGB(150, 50, 60),
+            Text = "🗑 DELETE", Font = FONT_BOLD, TextSize = 11, TextColor3 = Color3.new(1, 1, 1), ZIndex = 8,
+        }, panel)
+        corner(delBtn, 6)
+        makeLabel(panel, "Intervalo", {Position = UDim2.fromOffset(0, 37), Size = UDim2.fromOffset(84, 28), ZIndex = 8, TextColor3 = Theme.SubText, TextSize = 12})
+        local box = new("TextBox", {
+            Name = "Interval", Position = UDim2.fromOffset(88, 37), Size = UDim2.fromOffset(62, 28), BackgroundColor3 = Theme.Background,
+            Text = tostring(interval), ClearTextOnFocus = false, Font = FONT, TextSize = 12, TextColor3 = Theme.Text, ZIndex = 8,
+        }, panel)
+        corner(box, 6)
+        makeLabel(panel, "s", {Position = UDim2.fromOffset(154, 37), Size = UDim2.fromOffset(20, 28), ZIndex = 8, TextColor3 = Theme.SubText})
+
+        -- bolinha do alvo (não intercepta toques: o clique virtual passa por ela)
+        local dot = new("Frame", {
+            Name = "RN_AutoClickDot_" .. id, Size = UDim2.fromOffset(18, 18), AnchorPoint = Vector2.new(0.5, 0.5),
+            BackgroundColor3 = DOT_COLORS[(anum - 1) % #DOT_COLORS + 1], BorderSizePixel = 0, Visible = false, Active = false, ZIndex = 9,
+        }, Root)
+        corner(dot, 9)
+        stroke(dot, Color3.new(1, 1, 1), 1.5)
+        makeLabel(dot, tostring(anum), {
+            Size = UDim2.fromScale(1, 1), ZIndex = 10, TextSize = 10, Font = FONT_BOLD,
+            TextXAlignment = Enum.TextXAlignment.Center, TextColor3 = Color3.new(1, 1, 1),
+        })
+
+        local function refreshSetBtn()
+            if capture then
+                setBtn.Text = "✖ CANCELAR"
+                setBtn.BackgroundColor3 = Color3.fromRGB(150, 50, 60)
+            elseif target then
+                setBtn.Text = "✅ TRAVADO"
+                setBtn.BackgroundColor3 = Theme.Element
+            else
+                setBtn.Text = "🎯 SET ALVO"
+                setBtn.BackgroundColor3 = Theme.Element
+            end
+        end
+
+        local function endCapture()
+            if captureConn then
+                captureConn:Disconnect()
+                captureConn = nil
+            end
+            if capture then
+                pcall(function()
+                    capture:Destroy()
+                end)
+                capture = nil
+            end
+            refreshSetBtn()
+        end
+
+        local function setRunning(on)
+            if on then
+                if running then
+                    return
+                end
+                if capture then
+                    endCapture()
+                end
+                if not target then
+                    notify("Auto Click", "Trave um ponto primeiro: ⚙️ → SET ALVO.", "warning")
+                    panel.Visible = true
+                    card.Size = UDim2.fromOffset(190, EXPANDED_H)
+                    return
+                end
+                running = true
+                runToken = runToken + 1
+                local my = runToken
+                main.Text = "■ " .. label
+                main.BackgroundColor3 = Theme.Accent
+                task.spawn(function()
+                    while running and runToken == my and Win:IsAlive() do
+                        local p = target
+                        if not p then
+                            break
+                        end
+                        virtualTap(p.X, p.Y + AUTOCLICK_Y_OFFSET, anum)
+                        if interval > 0 then
+                            task.wait(interval)
+                        else
+                            task.wait() -- 0 = a cada frame
+                        end
+                    end
+                end)
+            else
+                running = false
+                runToken = runToken + 1
+                main.Text = "▶ " .. label
+                main.BackgroundColor3 = Theme.Element
+            end
+        end
+
+        -- Modo SET ALVO: uma camada cobre a tela e o PRÓXIMO toque (mesmo em cima de botão do jogo) vira o alvo
+        local function beginCapture()
+            endCapture()
+            capture = new("TextButton", {
+                Name = "RN_AutoClickCapture", Size = UDim2.fromScale(1, 1), BackgroundColor3 = Color3.new(0, 0, 0),
+                BackgroundTransparency = 0.7, AutoButtonColor = false, Active = true, ZIndex = 3,
+                Text = "Toque no ponto onde o clique deve acontecer\n(pode ser em cima de qualquer botão)",
+                Font = FONT_BOLD, TextSize = 16, TextWrapped = true, TextColor3 = Color3.new(1, 1, 1),
+            }, Root)
+            -- escuta o toque ignorando "processed": botões do jogo não impedem de travar o ponto
+            captureConn = UserInputService.InputBegan:Connect(function(input)
+                local t = input.UserInputType
+                if t ~= Enum.UserInputType.MouseButton1 and t ~= Enum.UserInputType.Touch then
+                    return
+                end
+                if not (card and card.Parent) then
+                    endCapture() -- interface foi fechada
+                    return
+                end
+                local p = Vector2.new(input.Position.X, input.Position.Y + GuiService:GetGuiInset().Y)
+                -- toque em cima de um flutuante do RN TEAM não conta (permite usar CANCELAR)
+                for _, f in pairs(floats) do
+                    local c = f.card
+                    if c and c.Parent then
+                        local ap, sz = c.AbsolutePosition, c.AbsoluteSize
+                        if p.X >= ap.X and p.X <= ap.X + sz.X and p.Y >= ap.Y and p.Y <= ap.Y + sz.Y then
+                            return
+                        end
+                    end
+                end
+                target = p
+                dot.Position = UDim2.fromOffset(p.X, p.Y)
+                dot.Visible = true
+                endCapture()
+            end)
+            refreshSetBtn()
+        end
+
+        setBtn.MouseButton1Click:Connect(function()
+            if capture then
+                endCapture() -- cancelar
+            else
+                setRunning(false) -- o clique automático não pode rodar enquanto escolhe o ponto
+                beginCapture()
+            end
+        end)
+        delBtn.MouseButton1Click:Connect(function()
+            setRunning(false)
+            endCapture()
+            target = nil
+            dot.Visible = false
+            refreshSetBtn()
+        end)
+        box.FocusLost:Connect(function()
+            local n = tonumber(box.Text)
+            if n then
+                interval = math.min(n, 3600) -- 0 ou negativo = a cada frame
+            end
+            box.Text = tostring(interval) -- valor inválido volta ao anterior
+        end)
+        cfg.MouseButton1Click:Connect(function()
+            panel.Visible = not panel.Visible
+            card.Size = panel.Visible and UDim2.fromOffset(190, EXPANDED_H) or UDim2.fromOffset(190, 46)
+        end)
+
+        local function cleanup()
+            setRunning(false)
+            endCapture()
+            pcall(function()
+                dot:Destroy()
+            end)
+        end
+        close.MouseButton1Click:Connect(function()
+            cleanup()
+            floats[id] = nil
+            card:Destroy()
+        end)
+
+        -- toque no botão principal liga/desliga; arrastar só move com o menu aberto (Auto-Lock)
+        local pos = {x = Win._viewport().X * 0.38, y = 8}
+        pos.x, pos.y = Win._place(card, pos.x, pos.y, Vector2.new(190, 46))
+        Win._makeDraggable(main, card, pos, function()
+            return card.AbsoluteSize
+        end, function()
+            setRunning(not running)
+        end, function()
+            return isDraggingEnabled
+        end)
+        floats[id] = {card = card, loopKey = "float_" .. id, anum = anum, cleanup = cleanup}
+    end
+
     Win:RegisterFeature({
         Id = "floatbtn", Name = "Botões de ação flutuantes", Group = tabMisc.Name,
         Probe = function()
@@ -6010,12 +6698,19 @@ do
         local action = pickDd:Get()
         if action then
             local label = trim(nameInput:Get())
-            createFloatButton(actionFns[action], label ~= "" and label or nil)
+            if action == AUTOCLICK_NAME then
+                createAutoClickFloat(label ~= "" and label or nil)
+            else
+                createFloatButton(actionFns[action], label ~= "" and label or nil)
+            end
         end
     end})
     s:AddButton({Name = "Remover todos os botões", Callback = function()
         for id, f in pairs(floats) do
             stopLoop(f.loopKey)
+            if f.cleanup then
+                pcall(f.cleanup)
+            end
             pcall(function()
                 f.card:Destroy()
             end)
@@ -6023,6 +6718,7 @@ do
         end
     end})
     s:AddLabel("Com o menu fechado os botões ficam travados (só clicam). Abra o menu para reposicioná-los.")
+    s:AddLabel("🎯 Auto Click: crie o botão, toque em ⚙️ → SET ALVO e toque no ponto da tela (pode ser em cima de botão do jogo). Depois toque no botão para ligar/desligar. No celular, escolha um ponto do lado direito para não pegar o joystick.")
 end
 
 --// ============================================================
@@ -7309,6 +8005,3498 @@ do
 end
 
 --// ============================================================
+--//  ⚡ EVENTO / REMOTE
+--//  EVENTO → CONFIGURAÇÕES → SELEÇÃO DOS ALVOS → GERAÇÃO DOS ARGUMENTOS → EXECUÇÃO
+--// ============================================================
+do
+    local MAX_FIRES_PER_SECOND, MAX_TARGETS, MAX_PENDING_INVOKES = 60, 100, 8
+    local ARG_OPTIONS = {"Player", "Character", "HumanoidRootPart", "Position", "LookVector", "CFrame", "Vector3", "Nome", "Model", "Part", "Texto fixo", "Número fixo"}
+    local TYPE_OPTIONS = {"Players", "NPCs", "Models", "Parts"}
+    local MODES = {
+        Players = {"Todos os jogadores", "Um jogador por vez", "Jogador selecionado", "Jogador mais próximo"},
+        NPCs = {"Todos os NPCs", "Um NPC por vez", "NPC selecionado", "NPC mais próximo"},
+        Models = {"Todos os Models", "Um Model por vez", "Model selecionado", "Model mais próximo"},
+        Parts = {"Todas as Parts", "Uma Part por vez", "Part selecionada", "Part mais próxima"},
+    }
+    local function modeIndex(value, list)
+        for i, v in ipairs(list) do
+            if v == value then
+                return i
+            end
+        end
+        return 1
+    end
+    local function num(v)
+        return tonumber(v) or 0
+    end
+    local EI = {} -- ponte entre o modo manual e o Event Intelligence (reset e "passar para o manual")
+
+    local main = tabRemote:AddSection("⚡ Evento / Remote", true)
+    main:AddLabel("Fluxo: EVENTO → CONFIGURAÇÕES → SELEÇÃO DOS ALVOS → GERAÇÃO DOS ARGUMENTOS → EXECUÇÃO. Os argumentos são montados a cada disparo, na ordem em que você os marcar. Limite de segurança: no máximo " .. MAX_FIRES_PER_SECOND .. " disparos por segundo.")
+
+    -- todas as subseções começam recolhidas (o usuário abre só a que precisa)
+    local sEvent = main:AddSubSection("🔌 EVENTO / REMOTE", false)
+    local sTargets = main:AddSubSection("🎯 ALVOS", false)
+    local sArgs = main:AddSubSection("🧩 ARGUMENTOS", false)
+    local sPos = main:AddSubSection("📍 POSIÇÃO / DIREÇÃO", false)
+    local sExec = main:AddSubSection("⚙️ EXECUÇÃO", false)
+
+    --// ---------------------------------------------------------- 🔌 EVENTO / REMOTE
+    local remoteCache = {path = nil, inst = nil}
+    local function resolveRemote()
+        local path = trim(F.ev_path)
+        if path == "" then
+            return nil, "informe o caminho do Remote"
+        end
+        local cached = remoteCache.inst
+        if cached and remoteCache.path == path and cached.Parent then
+            return cached
+        end
+        local inst = resolvePath(path) or resolvePath("game." .. path)
+        if not inst then -- a Tool muda de Backpack para Character quando é equipada
+            local alt = path
+            if path:find(".Backpack.", 1, true) then
+                alt = (path:gsub("%.Backpack%.", ".Character.", 1))
+            elseif path:find(".Character.", 1, true) then
+                alt = (path:gsub("%.Character%.", ".Backpack.", 1))
+            end
+            if alt ~= path then
+                inst = resolvePath(alt) or resolvePath("game." .. alt)
+            end
+        end
+        if inst and (inst:IsA("RemoteEvent") or inst:IsA("RemoteFunction")) then
+            remoteCache = {path = path, inst = inst}
+            return inst
+        end
+        if inst then
+            return nil, "o objeto encontrado é " .. inst.ClassName .. ", não um Remote"
+        end
+        return nil, "Remote não encontrado"
+    end
+
+    local function scanRemotes()
+        local out = {}
+        local RS = game:GetService("ReplicatedStorage")
+        local ok, list = pcall(RS.GetDescendants, RS)
+        if ok then
+            for _, d in ipairs(list) do
+                if d:IsA("RemoteEvent") or d:IsA("RemoteFunction") then
+                    out[#out + 1] = d:GetFullName()
+                    if #out >= 1000 then
+                        break
+                    end
+                end
+            end
+        end
+        return out
+    end
+
+    sEvent:AddInput({
+        Name = "Caminho do Remote", Flag = "ev_path", Default = "", Placeholder = "ReplicatedStorage.Remotes.Hit",
+        -- aceita também código colado: local Event = game:GetService("Players").LocalPlayer.Character.Tool.Event
+        Validate = function(raw)
+            local px = parsePathExpr(raw)
+            if px then
+                return table.concat(px.segs, ".")
+            end
+            return trim(raw)
+        end,
+        Callback = function()
+            remoteCache = {path = nil, inst = nil}
+        end,
+    })
+    local remotesDd
+    remotesDd = sEvent:AddMultiDropdown({
+        Name = "Remotes encontrados", Source = scanRemotes, Placeholder = "Toque para escolher",
+        Callback = function(_, info)
+            local picked = info and info.added and info.added[1]
+            if picked then
+                Win.Elements.ev_path:Set(picked, false)
+                remotesDd:Clear(true)
+                notify("Remote", "Caminho preenchido: " .. picked, "info")
+            end
+        end,
+    })
+    sEvent:AddDropdown({Name = "Tipo de chamada", Flag = "ev_kind", Options = {"Auto", "FireServer", "InvokeServer"}, Default = "Auto"})
+    sEvent:AddButton({Name = "Testar caminho", Callback = function()
+        local r, err = resolveRemote()
+        if r then
+            notify("Remote", r.ClassName .. " encontrado: " .. r:GetFullName(), "success")
+        else
+            notify("Remote", tostring(err), "warning")
+        end
+    end})
+
+    --// ---------------------------------------------------------- 🎯 ALVOS
+    local typesDd = sTargets:AddMultiDropdown({
+        Name = "Tipos de alvo", Flag = "ev_types", Options = TYPE_OPTIONS, Default = {"Players"},
+    })
+    sTargets:AddSlider({Name = "Distância máxima (0 = sem limite)", Flag = "ev_maxdist", Min = 0, Max = 2000, Default = 0, Step = 10})
+
+    local sP = sTargets:AddSubSection("👤 Players", false)
+    sP:AddDropdown({Name = "Modo", Flag = "ev_mode_players", Options = MODES.Players, Default = MODES.Players[1]})
+    local playersDd = sP:AddMultiDropdown({
+        Name = "Jogadores selecionados", Flag = "ev_players_sel",
+        Source = function()
+            local list = playerNameList()
+            if F.ev_p_self then -- com "Incluir meu personagem" ligado, dá para escolher a si mesmo
+                list[#list + 1] = LocalPlayer.Name
+            end
+            return list
+        end,
+    })
+    sP:AddToggle({Name = "Somente vivos", Flag = "ev_p_alive", Default = true, Feature = false})
+    sP:AddToggle({Name = "Ignorar aliados", Flag = "ev_p_ally", Default = true, Feature = false})
+    sP:AddToggle({
+        Name = "Incluir meu personagem", Flag = "ev_p_self", Default = false, Feature = false,
+        Callback = function()
+            pcall(playersDd.Refresh, playersDd)
+        end,
+    })
+
+    local function childNames(dirText, filter)
+        local out = {}
+        local dir = resolvePath(dirText)
+        if dir then
+            for _, c in ipairs(dir:GetChildren()) do
+                if filter(c) then
+                    out[#out + 1] = c.Name
+                end
+            end
+        end
+        return out
+    end
+    local isModel = function(c)
+        return c:IsA("Model") and not Players:GetPlayerFromCharacter(c)
+    end
+    local isPart = function(c)
+        return c:IsA("BasePart")
+    end
+
+    local sN = sTargets:AddSubSection("🧟 NPCs", false)
+    local npcDd
+    sN:AddInput({
+        Name = "Pasta de NPCs", Flag = "ev_npc_dir", Default = "", Placeholder = "Ex.: Workspace.NPCs",
+        Callback = function()
+            refreshMulti(npcDd, "NPC")
+        end,
+    })
+    sN:AddDropdown({Name = "Modo", Flag = "ev_mode_npcs", Options = MODES.NPCs, Default = MODES.NPCs[1]})
+    npcDd = sN:AddMultiDropdown({
+        Name = "NPCs selecionados", Flag = "ev_npcs_sel",
+        Source = function()
+            return npcNames(F.ev_npc_dir or "")
+        end,
+    })
+    sN:AddToggle({Name = "Somente vivos", Flag = "ev_n_alive", Default = true, Feature = false})
+
+    local sM = sTargets:AddSubSection("📦 Models", false)
+    local modelDd
+    sM:AddInput({
+        Name = "Pasta de Models", Flag = "ev_model_dir", Default = "", Placeholder = "Ex.: Workspace.Props",
+        Callback = function()
+            refreshMulti(modelDd, "Model")
+        end,
+    })
+    sM:AddDropdown({Name = "Modo", Flag = "ev_mode_models", Options = MODES.Models, Default = MODES.Models[1]})
+    modelDd = sM:AddMultiDropdown({
+        Name = "Models selecionados", Flag = "ev_models_sel",
+        Source = function()
+            return childNames(F.ev_model_dir or "", isModel)
+        end,
+    })
+
+    local sPt = sTargets:AddSubSection("🧱 Parts", false)
+    local partDd
+    sPt:AddInput({
+        Name = "Pasta de Parts", Flag = "ev_part_dir", Default = "", Placeholder = "Ex.: Workspace.Drops",
+        Callback = function()
+            refreshMulti(partDd, "Part")
+        end,
+    })
+    sPt:AddDropdown({Name = "Modo", Flag = "ev_mode_parts", Options = MODES.Parts, Default = MODES.Parts[1]})
+    partDd = sPt:AddMultiDropdown({
+        Name = "Parts selecionadas", Flag = "ev_parts_sel",
+        Source = function()
+            return childNames(F.ev_part_dir or "", isPart)
+        end,
+    })
+
+    task.defer(function()
+        npcDd:Refresh()
+        modelDd:Refresh()
+        partDd:Refresh()
+        playersDd:Refresh()
+    end)
+
+    --// ---------------------------------------------------------- 🧩 ARGUMENTOS
+    local argsDd = sArgs:AddMultiDropdown({
+        Name = "Argumentos (na ordem marcada)", Flag = "ev_args", Options = ARG_OPTIONS, Ordered = true,
+        Default = {"Character", "Position"}, Placeholder = "Sem argumentos",
+    })
+    sArgs:AddInput({Name = "Texto fixo", Flag = "ev_text", Default = "", Placeholder = 'Ex.: slash'})
+    sArgs:AddInput({Name = "Número fixo", Flag = "ev_number", Default = 0, Numeric = true, Min = -1e9, Max = 1e9})
+    sArgs:AddLabel("A ordem em que você marca vira a ordem dos argumentos (#1, #2...). Ex.: Character + Position envia (personagem do alvo, posição da parte de mira). Se um argumento não existir para um alvo, aquele alvo é pulado.")
+
+    --// ---------------------------------------------------------- 📍 POSIÇÃO / DIREÇÃO
+    sPos:AddDropdown({
+        Name = "Parte de mira", Flag = "ev_aim_part", Options = {"HumanoidRootPart", "Head", "Torso", "UpperTorso"},
+        Default = "HumanoidRootPart",
+    })
+    sPos:AddDropdown({
+        Name = "Origem do argumento Position", Flag = "ev_pos_source",
+        Options = {"Position do alvo", "Position do meu personagem", "Position fixa"}, Default = "Position do alvo",
+    })
+    sPos:AddDropdown({
+        Name = "Origem do argumento CFrame", Flag = "ev_cf_source",
+        Options = {"CFrame do alvo", "CFrame do meu personagem"}, Default = "CFrame do alvo",
+    })
+    sPos:AddDropdown({
+        Name = "Origem do argumento LookVector", Flag = "ev_look_source",
+        Options = {"LookVector do alvo", "LookVector do meu personagem", "Direção minha → alvo"}, Default = "LookVector do alvo",
+    })
+    sPos:AddDropdown({
+        Name = "Origem do argumento Vector3", Flag = "ev_vec_source",
+        Options = {"Fixo (X/Y/Z)", "Position do alvo", "Position do meu personagem", "LookVector do alvo", "LookVector do meu personagem", "Direção minha → alvo"},
+        Default = "Fixo (X/Y/Z)",
+    })
+    sPos:AddInput({Name = "Position fixa X", Flag = "ev_fix_x", Default = 0, Numeric = true, Min = -1e6, Max = 1e6})
+    sPos:AddInput({Name = "Position fixa Y", Flag = "ev_fix_y", Default = 0, Numeric = true, Min = -1e6, Max = 1e6})
+    sPos:AddInput({Name = "Position fixa Z", Flag = "ev_fix_z", Default = 0, Numeric = true, Min = -1e6, Max = 1e6})
+    sPos:AddInput({Name = "Vector3 personalizado X", Flag = "ev_vec_x", Default = 0, Numeric = true, Min = -1e6, Max = 1e6})
+    sPos:AddInput({Name = "Vector3 personalizado Y", Flag = "ev_vec_y", Default = 0, Numeric = true, Min = -1e6, Max = 1e6})
+    sPos:AddInput({Name = "Vector3 personalizado Z", Flag = "ev_vec_z", Default = 0, Numeric = true, Min = -1e6, Max = 1e6})
+
+    --// ---------------------------------------------------------- seleção dos alvos
+    local cursors = {Players = 0, NPCs = 0, Models = 0, Parts = 0}
+
+    local function finishEntry(e)
+        if e.kind == "Part" then
+            e.aim = e.inst
+        elseif e.model then
+            e.aim = getPart(e.model, F.ev_aim_part or "HumanoidRootPart") or e.model.PrimaryPart
+                or e.model:FindFirstChildWhichIsA("BasePart", true)
+        end
+        return e
+    end
+
+    local function entriesOf(typeName)
+        local out = {}
+        if typeName == "Players" then
+            for _, p in ipairs(Players:GetPlayers()) do
+                if (p == LocalPlayer and F.ev_p_self) or (p ~= LocalPlayer and not (F.ev_p_ally and isAlly(p))) then
+                    if not F.ev_p_alive or isAlive(p.Character) then
+                        out[#out + 1] = finishEntry({kind = "Player", inst = p, name = p.Name, player = p, model = p.Character})
+                    end
+                end
+            end
+        elseif typeName == "NPCs" then
+            for _, m in ipairs(getNPCs(F.ev_npc_dir or "")) do
+                if m.Parent and (not F.ev_n_alive or isAlive(m)) then
+                    out[#out + 1] = finishEntry({kind = "NPC", inst = m, name = m.Name, model = m})
+                end
+            end
+        elseif typeName == "Models" then
+            local dir = resolvePath(F.ev_model_dir)
+            for _, c in ipairs(dir and dir:GetChildren() or {}) do
+                if isModel(c) then
+                    out[#out + 1] = finishEntry({kind = "Model", inst = c, name = c.Name, model = c})
+                end
+            end
+        else
+            local dir = resolvePath(F.ev_part_dir)
+            for _, c in ipairs(dir and dir:GetChildren() or {}) do
+                if isPart(c) then
+                    out[#out + 1] = finishEntry({kind = "Part", inst = c, name = c.Name, model = c:FindFirstAncestorOfClass("Model")})
+                end
+            end
+        end
+        -- distância máxima
+        local maxd = tonumber(F.ev_maxdist) or 0
+        local me = getRoot()
+        if maxd > 0 then
+            local kept = {}
+            for _, e in ipairs(out) do
+                if me and e.aim and (e.aim.Position - me.Position).Magnitude <= maxd then
+                    kept[#kept + 1] = e
+                end
+            end
+            out = kept
+        end
+        return out
+    end
+
+    local function pickByMode(typeName, entries, selectedDd)
+        local idx = modeIndex(F["ev_mode_" .. typeName:lower()], MODES[typeName])
+        local set = entries
+        if idx == 3 then
+            local want = toSet(selectedDd:Get())
+            set = {}
+            for _, e in ipairs(entries) do
+                if want[e.name] then
+                    set[#set + 1] = e
+                end
+            end
+        end
+        if #set == 0 then
+            return {}
+        end
+        if idx == 4 then
+            local me = getRoot()
+            local best, bestD
+            for _, e in ipairs(set) do
+                local d = (me and e.aim) and (e.aim.Position - me.Position).Magnitude or math.huge
+                if not bestD or d < bestD then
+                    best, bestD = e, d
+                end
+            end
+            return {best}
+        elseif idx == 2 then
+            local i = (cursors[typeName] % #set) + 1
+            cursors[typeName] = cursors[typeName] + 1
+            return {set[i]}
+        end
+        return set
+    end
+
+    local function collectTargets()
+        local chosen = toSet(typesDd:Get())
+        if next(chosen) == nil then
+            return {{kind = "None", name = "(sem alvo)"}} -- só argumentos que não dependem de alvo
+        end
+        local out = {}
+        local function add(list)
+            for _, e in ipairs(list) do
+                out[#out + 1] = e
+            end
+        end
+        if chosen.Players then
+            add(pickByMode("Players", entriesOf("Players"), playersDd))
+        end
+        if chosen.NPCs then
+            add(pickByMode("NPCs", entriesOf("NPCs"), npcDd))
+        end
+        if chosen.Models then
+            add(pickByMode("Models", entriesOf("Models"), modelDd))
+        end
+        if chosen.Parts then
+            add(pickByMode("Parts", entriesOf("Parts"), partDd))
+        end
+        if #out > MAX_TARGETS then
+            Win:Log("WARNING", "Evento: " .. #out .. " alvos; usando só os " .. MAX_TARGETS .. " primeiros")
+            local cut = {}
+            for i = 1, MAX_TARGETS do
+                cut[i] = out[i]
+            end
+            out = cut
+        end
+        return out
+    end
+
+    --// ---------------------------------------------------------- geração dinâmica dos argumentos
+    local function resolveArg(name, e)
+        local me = getRoot()
+        if name == "Player" then
+            return e.player or (e.model and Players:GetPlayerFromCharacter(e.model)) or nil
+        elseif name == "Character" or name == "Model" then
+            return e.model
+        elseif name == "HumanoidRootPart" then
+            return e.model and (e.model:FindFirstChild("HumanoidRootPart") or e.model.PrimaryPart) or nil
+        elseif name == "Part" then
+            return e.aim
+        elseif name == "Nome" then
+            return e.name
+        elseif name == "Texto fixo" then
+            return tostring(F.ev_text or "")
+        elseif name == "Número fixo" then
+            return num(F.ev_number)
+        elseif name == "Vector3" then
+            local src = F.ev_vec_source
+            if src == "Position do alvo" then
+                return e.aim and e.aim.Position
+            elseif src == "Position do meu personagem" then
+                return me and me.Position
+            elseif src == "LookVector do alvo" then
+                return e.aim and e.aim.CFrame.LookVector
+            elseif src == "LookVector do meu personagem" then
+                return me and me.CFrame.LookVector
+            elseif src == "Direção minha → alvo" then
+                if me and e.aim then
+                    local d = e.aim.Position - me.Position
+                    if d.Magnitude > 1e-3 then
+                        return d.Unit
+                    end
+                end
+                return nil
+            end
+            return Vector3.new(num(F.ev_vec_x), num(F.ev_vec_y), num(F.ev_vec_z))
+        elseif name == "Position" then
+            local src = F.ev_pos_source
+            if src == "Position do meu personagem" then
+                return me and me.Position
+            elseif src == "Position fixa" then
+                return Vector3.new(num(F.ev_fix_x), num(F.ev_fix_y), num(F.ev_fix_z))
+            end
+            return e.aim and e.aim.Position
+        elseif name == "LookVector" then
+            local src = F.ev_look_source
+            if src == "LookVector do meu personagem" then
+                return me and me.CFrame.LookVector
+            elseif src == "Direção minha → alvo" then
+                if me and e.aim then
+                    local d = e.aim.Position - me.Position
+                    if d.Magnitude > 1e-3 then
+                        return d.Unit
+                    end
+                end
+                return nil
+            end
+            return e.aim and e.aim.CFrame.LookVector
+        elseif name == "CFrame" then
+            if F.ev_cf_source == "CFrame do meu personagem" then
+                return me and me.CFrame
+            end
+            return e.aim and e.aim.CFrame
+        end
+        return nil
+    end
+
+    -- devolve (args, n) ou (nil, nomeDoArgumentoIndisponível)
+    local function buildArgs(e)
+        local order = F.ev_args or {}
+        local args, n = {}, 0
+        for _, name in ipairs(order) do
+            local v = resolveArg(name, e)
+            if v == nil then
+                return nil, name
+            end
+            n = n + 1
+            args[n] = v
+        end
+        return args, n
+    end
+
+    local function describe(v)
+        local t = typeof(v)
+        if t == "Instance" then
+            return v.ClassName .. " '" .. v.Name .. "'"
+        elseif t == "Vector3" then
+            return string.format("Vector3(%.1f, %.1f, %.1f)", v.X, v.Y, v.Z)
+        elseif t == "CFrame" then
+            return string.format("CFrame(%.1f, %.1f, %.1f)", v.X, v.Y, v.Z)
+        elseif t == "string" then
+            return '"' .. v .. '"'
+        end
+        return tostring(v)
+    end
+
+    sArgs:AddButton({Name = "Pré-visualizar argumentos (1º alvo)", Callback = function()
+        local list = collectTargets()
+        local e = list[1]
+        if not e then
+            notify("Argumentos", "Nenhum alvo disponível com a configuração atual.", "warning")
+            return
+        end
+        local args, n = buildArgs(e)
+        if not args then
+            notify("Argumentos", "O argumento '" .. tostring(n) .. "' não existe para o alvo '" .. e.name .. "'.", "warning")
+            return
+        end
+        local parts = {}
+        for i = 1, n do
+            parts[i] = describe(args[i])
+        end
+        notify("Argumentos para " .. e.name, n == 0 and "(nenhum argumento)" or table.concat(parts, ", "), "info")
+    end})
+
+    --// ---------------------------------------------------------- ⚙️ EXECUÇÃO
+    local MODE_OPTIONS = {"Executar uma vez", "Loop"}
+    local PER_OPTIONS = {"Um alvo por vez", "Todos os alvos"}
+    sExec:AddDropdown({Name = "Modo", Flag = "ev_mode", Options = MODE_OPTIONS, Default = "Executar uma vez"})
+    sExec:AddDropdown({Name = "Alvos por execução", Flag = "ev_per", Options = PER_OPTIONS, Default = "Todos os alvos"})
+    sExec:AddInput({Name = "Intervalo entre execuções (s)", Flag = "ev_interval", Default = 0.1, Numeric = true, Min = 0.03, Max = 3600})
+    sExec:AddInput({Name = "Repetições (0 = infinito no loop)", Flag = "ev_reps", Default = 0, Numeric = true, Min = 0, Max = 1000000})
+    sExec:AddInput({Name = "Atraso entre alvos (s)", Flag = "ev_delay", Default = 0, Numeric = true, Min = 0, Max = 60})
+
+    local status = sExec:AddLabel("Parado.")
+    local session = {stop = false}
+    local lastFire, pending, perCycleCursor, lastStatus = 0, 0, 0, 0
+    local totals = {fired = 0, skipped = 0, cycles = 0}
+
+    local function setStatus(text, force)
+        local now = os.clock()
+        if force or now - lastStatus > 0.25 then
+            lastStatus = now
+            status:Set(text)
+        end
+    end
+
+    local function rateGate() -- nunca passa de MAX_FIRES_PER_SECOND
+        local gap = 1 / MAX_FIRES_PER_SECOND
+        local wait = lastFire + gap - os.clock()
+        if wait > 0 then
+            task.wait(wait)
+        end
+        lastFire = os.clock()
+    end
+
+    local function sendTo(remote, args, n)
+        local kind = F.ev_kind or "Auto"
+        local isFn = remote:IsA("RemoteFunction")
+        if kind == "FireServer" and isFn then
+            return false, "o objeto é RemoteFunction; use InvokeServer ou Auto"
+        end
+        if kind == "InvokeServer" and not isFn then
+            return false, "o objeto é RemoteEvent; use FireServer ou Auto"
+        end
+        if isFn then
+            if pending >= MAX_PENDING_INVOKES then
+                return false, "muitas chamadas InvokeServer aguardando resposta"
+            end
+            pending = pending + 1
+            task.spawn(function()
+                local ok, res = pcall(remote.InvokeServer, remote, table.unpack(args, 1, n))
+                pending = pending - 1
+                if ok then
+                    Win:Log("INFO", "Retorno de " .. remote.Name, describe(res))
+                else
+                    Win:Log("ERROR", "InvokeServer falhou em " .. remote.Name, tostring(res))
+                end
+            end)
+            return true
+        end
+        remote:FireServer(table.unpack(args, 1, n))
+        return true
+    end
+
+    -- um ciclo: resolve o remote, seleciona os alvos, gera os argumentos de cada um e envia
+    local function runCycle()
+        local remote, err = resolveRemote()
+        if not remote then
+            Mon.tick("event", tostring(err), true)
+            setStatus("Aguardando: " .. tostring(err), true)
+            return 0, 0, tostring(err)
+        end
+        local targets = collectTargets()
+        if #targets == 0 then
+            Mon.tick("event", "nenhum alvo disponível", true)
+            setStatus("Aguardando: nenhum alvo disponível", true)
+            return 0, 0, "nenhum alvo"
+        end
+        local list = targets
+        if F.ev_per == "Um alvo por vez" then
+            list = {targets[(perCycleCursor % #targets) + 1]}
+            perCycleCursor = perCycleCursor + 1
+        end
+        local fired, skipped, lastErr = 0, 0, nil
+        for i, e in ipairs(list) do
+            if session.stop then
+                break
+            end
+            local args, n = buildArgs(e)
+            if not args then
+                skipped = skipped + 1
+                Win:Log("WARNING", "Evento: argumento '" .. tostring(n) .. "' indisponível para '" .. tostring(e.name) .. "'; alvo pulado")
+            else
+                rateGate()
+                local ok, e2 = pcall(sendTo, remote, args, n)
+                if ok and e2 == true then
+                    fired = fired + 1
+                else
+                    lastErr = tostring(ok and e2 or e2)
+                    Win:Log("ERROR", "Evento: falha ao enviar para '" .. tostring(e.name) .. "'", lastErr)
+                end
+            end
+            local d = num(F.ev_delay)
+            if d > 0 and i < #list then
+                task.wait(math.max(d, 0.03))
+            end
+        end
+        totals.fired, totals.skipped, totals.cycles = totals.fired + fired, totals.skipped + skipped, totals.cycles + 1
+        Mon.tick("event", string.format("%d disparo(s), %d pulado(s) no último ciclo", fired, skipped), fired == 0)
+        setStatus(string.format("Ciclo %d: %d enviado(s), %d pulado(s). Total: %d enviado(s).", totals.cycles, fired, skipped, totals.fired))
+        return fired, skipped, lastErr
+    end
+
+    local function runOnce()
+        session.stop = false
+        local reps = math.max(math.floor(num(F.ev_reps)), 1)
+        local totalFired, totalSkipped = 0, 0
+        for i = 1, reps do
+            if session.stop then
+                break
+            end
+            local f, s2, e = runCycle()
+            totalFired, totalSkipped = totalFired + f, totalSkipped + s2
+            if e and f == 0 and s2 == 0 then
+                notify("Evento", "Nada foi enviado: " .. e, "warning")
+                return
+            end
+            if i < reps then
+                task.wait(math.max(num(F.ev_interval), 0.03))
+            end
+        end
+        -- "enviado" = pedido entregue ao servidor; o efeito no jogo depende do servidor
+        notify("Evento", string.format("%d disparo(s) enviado(s), %d alvo(s) pulado(s).", totalFired, totalSkipped), totalFired > 0 and "success" or "warning")
+    end
+
+    local loopCycles = 0
+    local function loopStep()
+        runCycle()
+        loopCycles = loopCycles + 1
+        local reps = math.floor(num(F.ev_reps))
+        if reps > 0 and loopCycles >= reps then
+            Win.Elements.ev_loop:Set(false, false)
+            Win:Log("SUCCESS", "Evento: loop concluído (" .. loopCycles .. " ciclo(s))")
+        end
+    end
+
+    sExec:AddToggle({
+        Name = "Loop ativo", Flag = "ev_loop", Default = false, NoSave = true,
+        Callback = function(on)
+            if on then
+                if F.ev_mode ~= "Loop" then
+                    notify("Evento", "Mude o Modo para Loop para usar o loop.", "warning")
+                    Win.Elements.ev_loop:Set(false, true)
+                    return
+                end
+                local remote, err = resolveRemote()
+                if not remote then
+                    notify("Evento", tostring(err), "warning")
+                    Win.Elements.ev_loop:Set(false, true)
+                    return
+                end
+                session.stop = false
+                loopCycles = 0
+                startLoop("event", loopStep, function()
+                    return math.max(num(F.ev_interval), 0.03)
+                end)
+            else
+                session.stop = true
+                stopLoop("event")
+                setStatus("Parado.", true)
+            end
+        end,
+    })
+    sExec:AddButton({Name = "Executar", Callback = function()
+        if F.ev_mode == "Loop" then
+            Win.Elements.ev_loop:Set(not F.ev_loop, false)
+        else
+            task.spawn(runOnce)
+        end
+    end})
+    sExec:AddButton({Name = "Parar tudo", Callback = function()
+        session.stop = true
+        if F.ev_loop then
+            Win.Elements.ev_loop:Set(false, false)
+        end
+        stopLoop("event")
+        setStatus("Parado.", true)
+    end})
+
+
+    --// ---------------------------------------------------------- ♻️ ZERAR ABA / 📥 RECEBER DO EVENT INTELLIGENCE
+    local EV_DEFAULTS = {
+        {"ev_path", ""}, {"ev_kind", "Auto"},
+        {"ev_types", {"Players"}}, {"ev_maxdist", 0},
+        {"ev_mode_players", MODES.Players[1]}, {"ev_players_sel", {}},
+        {"ev_p_alive", true}, {"ev_p_ally", true}, {"ev_p_self", false},
+        {"ev_npc_dir", ""}, {"ev_mode_npcs", MODES.NPCs[1]}, {"ev_npcs_sel", {}}, {"ev_n_alive", true},
+        {"ev_model_dir", ""}, {"ev_mode_models", MODES.Models[1]}, {"ev_models_sel", {}},
+        {"ev_part_dir", ""}, {"ev_mode_parts", MODES.Parts[1]}, {"ev_parts_sel", {}},
+        {"ev_args", {"Character", "Position"}}, {"ev_text", ""}, {"ev_number", 0},
+        {"ev_aim_part", "HumanoidRootPart"}, {"ev_pos_source", "Position do alvo"},
+        {"ev_cf_source", "CFrame do alvo"}, {"ev_look_source", "LookVector do alvo"},
+        {"ev_fix_x", 0}, {"ev_fix_y", 0}, {"ev_fix_z", 0},
+        {"ev_vec_x", 0}, {"ev_vec_y", 0}, {"ev_vec_z", 0}, {"ev_vec_source", "Fixo (X/Y/Z)"},
+        {"ev_mode", "Executar uma vez"}, {"ev_per", "Todos os alvos"},
+        {"ev_interval", 0.1}, {"ev_reps", 0}, {"ev_delay", 0},
+    }
+
+    local function setEv(flag, value, silent)
+        local el = Win.Elements[flag]
+        if not el then
+            return
+        end
+        local ok, err = pcall(el.Set, el, value, silent)
+        if not ok then
+            Win:Log("WARNING", "Evento: não foi possível ajustar '" .. flag .. "'", tostring(err))
+        end
+    end
+
+    local function refreshAllTargets()
+        for _, dd in ipairs({npcDd, modelDd, partDd, playersDd}) do
+            pcall(dd.Refresh, dd)
+        end
+    end
+
+    -- volta TODA a aba Evento ao estado original (manual + Event Intelligence)
+    local function resetEventTab()
+        session.stop = true
+        if F.ev_loop then
+            setEv("ev_loop", false, false)
+        end
+        stopLoop("event")
+        for _, d in ipairs(EV_DEFAULTS) do
+            setEv(d[1], d[2], true)
+        end
+        remoteCache = {path = nil, inst = nil}
+        cursors.Players, cursors.NPCs, cursors.Models, cursors.Parts = 0, 0, 0, 0
+        refreshAllTargets()
+        setStatus("Parado.", true)
+        if EI.reset then
+            local ok, err = pcall(EI.reset)
+            if not ok then
+                Win:Log("ERROR", "Evento: falha ao zerar o Event Intelligence", tostring(err))
+            end
+        end
+        setEv("ev_kind", "Auto", false) -- grava a configuração
+        notify("Evento", "Aba Evento zerada: voltou ao original, como nova.", "success")
+    end
+    EI.resetTab = resetEventTab
+
+    -- recebe do Event Intelligence: caminho, tipo de chamada, alvo e argumentos já montados
+    function EI.toManual(spec)
+        setEv("ev_path", spec.path, false)
+        setEv("ev_kind", spec.kind or "Auto", false)
+        local tg = spec.target
+        setEv("ev_types", tg and {tg.type} or {}, false)
+        if tg then
+            if tg.type == "Players" then
+                setEv("ev_p_self", tg.name == LocalPlayer.Name, false)
+                setEv("ev_p_ally", false, false) -- senão um aliado seria descartado
+                setEv("ev_mode_players", MODES.Players[3], false)
+                pcall(playersDd.Refresh, playersDd)
+                setEv("ev_players_sel", {tg.name}, false)
+            elseif tg.type == "NPCs" then
+                setEv("ev_npc_dir", tg.dir, true)
+                pcall(npcDd.Refresh, npcDd)
+                setEv("ev_mode_npcs", MODES.NPCs[3], false)
+                setEv("ev_npcs_sel", {tg.name}, false)
+            elseif tg.type == "Models" then
+                setEv("ev_model_dir", tg.dir, true)
+                pcall(modelDd.Refresh, modelDd)
+                setEv("ev_mode_models", MODES.Models[3], false)
+                setEv("ev_models_sel", {tg.name}, false)
+            elseif tg.type == "Parts" then
+                setEv("ev_part_dir", tg.dir, true)
+                pcall(partDd.Refresh, partDd)
+                setEv("ev_mode_parts", MODES.Parts[3], false)
+                setEv("ev_parts_sel", {tg.name}, false)
+            end
+        end
+        setEv("ev_args", spec.args or {}, false)
+        if spec.text ~= nil then
+            setEv("ev_text", spec.text, false)
+        end
+        if spec.number ~= nil then
+            setEv("ev_number", spec.number, false)
+        end
+        if spec.aimPart then
+            setEv("ev_aim_part", spec.aimPart, false)
+        end
+        if spec.posSource then
+            setEv("ev_pos_source", spec.posSource, false)
+        end
+        if spec.lookSource then
+            setEv("ev_look_source", spec.lookSource, false)
+        end
+        if spec.cfSource then
+            setEv("ev_cf_source", spec.cfSource, false)
+        end
+        if spec.vecSource then
+            setEv("ev_vec_source", spec.vecSource, false)
+        end
+        remoteCache = {path = nil, inst = nil}
+    end
+
+    sExec:AddButton({Name = "♻️ Zerar aba Evento (como nova)", Callback = function()
+        task.spawn(resetEventTab)
+    end})
+
+    --// ============================================================
+    --//  🧠 RN TEAM · EVENT INTELLIGENCE (opcional, independente do modo manual)
+    --//  RSPY (texto colado) → ANÁLISE POR ARGUMENTO → CONTROLES → MONITORAMENTO → ENVIO MANUAL
+    --//  Regra central: o que não é reconhecido com segurança é preservado, nunca alterado.
+    --//  O texto colado NUNCA é executado: é lido por um analisador próprio (sem loadstring).
+    --// ============================================================
+    ;(function()
+        local MAX_ARGS, MAX_PROFILES, MAX_QUEUE, MAX_SRC = 12, 20, 40, 30000
+        local SAVE_FILE = "RN_TEAM_EI.json"
+        local HOOK_KEY = "__RNTEAM_EI_HOOK"
+        local KEYWORDS = {
+            ["and"] = true, ["break"] = true, ["do"] = true, ["else"] = true, ["elseif"] = true, ["end"] = true,
+            ["for"] = true, ["function"] = true, ["if"] = true, ["in"] = true, ["local"] = true, ["not"] = true,
+            ["or"] = true, ["repeat"] = true, ["return"] = true, ["then"] = true, ["until"] = true, ["while"] = true,
+        }
+        local PROP_OK = {Character = true, PrimaryPart = true, Parent = true, CurrentCamera = true}
+        local ORIGINAL_OPT = "↩ Original"
+
+        local HAS_HOOK = type(hookmetamethod) == "function" and type(getnamecallmethod) == "function"
+        local HAS_CHECK = type(checkcaller) == "function"
+        local HAS_EIFS = type(writefile) == "function" and type(readfile) == "function" and type(isfile) == "function"
+
+        local function short(text, n)
+            text = tostring(text or ""):gsub("%s+", " ")
+            n = n or 70
+            if #text > n then
+                return text:sub(1, n - 1) .. "…"
+            end
+            return text
+        end
+
+        --// ---------------------------------------------------------- 1) LEITURA DO TEXTO (sem executar nada)
+        local function tokenize(src)
+            local toks, i, n = {}, 1, #src
+            local function push(t, v, s, e)
+                toks[#toks + 1] = {t = t, v = v, s = s, e = e}
+            end
+            local ESC = {n = "\n", t = "\t", r = "\r", ["\\"] = "\\", ['"'] = '"', ["'"] = "'", a = "\a", b = "\b", f = "\f", v = "\v"}
+            while i <= n do
+                local c = src:sub(i, i)
+                if c:match("%s") then
+                    i = i + 1
+                elseif c == "-" and src:sub(i, i + 1) == "--" then
+                    local eq = src:match("^%-%-%[(=*)%[", i)
+                    if eq then
+                        local _, e = src:find("]" .. eq .. "]", i, true)
+                        i = (e or n) + 1
+                    else
+                        local e = src:find("\n", i, true)
+                        i = (e or n) + 1
+                    end
+                elseif c:match("[%a_]") then
+                    local s, e = src:find("^[%w_]+", i)
+                    push("name", src:sub(s, e), s, e)
+                    i = e + 1
+                elseif c:match("%d") or (c == "." and src:sub(i + 1, i + 1):match("%d")) then
+                    local s, e = src:find("^0[xX]%x+", i)
+                    if not s then
+                        s, e = src:find("^%d*%.?%d*[eE][%+%-]?%d+", i)
+                    end
+                    if not s then
+                        s, e = src:find("^%d*%.?%d*", i)
+                    end
+                    local val = tonumber(src:sub(s, e))
+                    if not val then
+                        return nil, "número inválido na posição " .. i
+                    end
+                    push("num", val, s, e)
+                    i = e + 1
+                elseif c == '"' or c == "'" then
+                    local buf, j, closed = {}, i + 1, false
+                    while j <= n do
+                        local d = src:sub(j, j)
+                        if d == "\\" then
+                            local nx = src:sub(j + 1, j + 1)
+                            if nx:match("%d") then
+                                local digits = src:match("^%d%d?%d?", j + 1)
+                                buf[#buf + 1] = string.char(math.min(255, tonumber(digits)))
+                                j = j + 1 + #digits
+                            elseif nx == "x" and src:match("^x%x%x", j + 1) then
+                                buf[#buf + 1] = string.char(tonumber(src:sub(j + 2, j + 3), 16))
+                                j = j + 4
+                            elseif nx == "u" and src:match("^u{%x+}", j + 1) then
+                                local hex = src:match("^u{(%x+)}", j + 1)
+                                local okU, chr = pcall(utf8.char, tonumber(hex, 16))
+                                buf[#buf + 1] = okU and chr or "?"
+                                j = j + 4 + #hex
+                            elseif ESC[nx] then
+                                buf[#buf + 1] = ESC[nx]
+                                j = j + 2
+                            elseif nx == "\n" then
+                                buf[#buf + 1] = "\n"
+                                j = j + 2
+                            else
+                                buf[#buf + 1] = nx
+                                j = j + 2
+                            end
+                        elseif d == c then
+                            closed = true
+                            break
+                        else
+                            buf[#buf + 1] = d
+                            j = j + 1
+                        end
+                    end
+                    if not closed then
+                        return nil, "texto sem fechamento na posição " .. i
+                    end
+                    push("str", table.concat(buf), i, j)
+                    i = j + 1
+                elseif c == "[" and src:match("^%[=*%[", i) then
+                    local eq = src:match("^%[(=*)%[", i)
+                    local s0 = i + #eq + 2
+                    local cs, ce = src:find("]" .. eq .. "]", s0, true)
+                    if not cs then
+                        return nil, "texto longo sem fechamento na posição " .. i
+                    end
+                    local body = src:sub(s0, cs - 1)
+                    if body:sub(1, 1) == "\n" then
+                        body = body:sub(2)
+                    end
+                    push("str", body, i, ce)
+                    i = ce + 1
+                else
+                    local two = src:sub(i, i + 1)
+                    if src:sub(i, i + 2) == "..." then
+                        push("op", "...", i, i + 2)
+                        i = i + 3
+                    elseif two == ".." or two == "==" or two == "~=" or two == "<=" or two == ">=" then
+                        push("op", two, i, i + 1)
+                        i = i + 2
+                    else
+                        push("op", c, i, i)
+                        i = i + 1
+                    end
+                end
+                if #toks > 8000 then
+                    return nil, "entrada grande demais"
+                end
+            end
+            push("eof", "", n + 1, n)
+            return toks
+        end
+
+        -- devolve {calls = {...}, notes = {...}} ou nil, erro
+        local function parseRSpy(src)
+            local toks, terr = tokenize(src)
+            if not toks then
+                return nil, terr
+            end
+            local p = 1
+            local function peek(o)
+                return toks[p + (o or 0)] or toks[#toks]
+            end
+            local function nextTok()
+                local t = toks[p] or toks[#toks]
+                if p < #toks then
+                    p = p + 1
+                end
+                return t
+            end
+            local function isOp(v, o)
+                local t = peek(o)
+                return t.t == "op" and t.v == v
+            end
+            local function isName(v, o)
+                local t = peek(o)
+                return t.t == "name" and t.v == v
+            end
+            local function fail(msg)
+                error({parse = msg}, 0)
+            end
+            local function expectOp(v)
+                if isOp(v) then
+                    return nextTok()
+                end
+                fail("esperado '" .. v .. "'")
+            end
+
+            local parseExpr
+
+            local function skipBalanced() -- avança até ',' ou ')' no nível 0 e devolve o último token consumido
+                local depth, last = 0, nil
+                while true do
+                    local t = peek()
+                    if t.t == "eof" then
+                        return last
+                    end
+                    if t.t == "op" then
+                        if (t.v == "," or t.v == ")") and depth == 0 then
+                            return last
+                        end
+                        if t.v == "(" or t.v == "{" or t.v == "[" then
+                            depth = depth + 1
+                        elseif t.v == ")" or t.v == "}" or t.v == "]" then
+                            depth = depth - 1
+                        end
+                    end
+                    last = nextTok()
+                end
+            end
+
+            -- argumento de FireServer/InvokeServer: se não der para entender, o texto original é preservado como "raw"
+            local function parseArgTolerant()
+                local save = p
+                local startTok = peek()
+                local ok, node = pcall(parseExpr)
+                if ok and (isOp(",") or isOp(")")) then
+                    return node
+                end
+                p = save
+                local last = skipBalanced()
+                return {k = "raw", text = last and src:sub(startTok.s, last.e) or "", s = startTok.s, e = last and last.e or startTok.e}
+            end
+
+            local function parseCallArgs(tolerant)
+                expectOp("(")
+                local args = {}
+                while not isOp(")") do
+                    if peek().t == "eof" then
+                        fail("chamada não fechada")
+                    end
+                    if tolerant then
+                        args[#args + 1] = parseArgTolerant()
+                    else
+                        args[#args + 1] = parseExpr()
+                    end
+                    if isOp(",") then
+                        nextTok()
+                    elseif not isOp(")") then
+                        fail("esperado ',' ou ')'")
+                    end
+                end
+                return args, nextTok()
+            end
+
+            local function parseTable()
+                local startTok = nextTok()
+                local items, auto = {}, 0
+                while not isOp("}") do
+                    if peek().t == "eof" then
+                        fail("tabela não fechada")
+                    end
+                    local item
+                    if isOp("[") then
+                        nextTok()
+                        local k = parseExpr()
+                        expectOp("]")
+                        expectOp("=")
+                        item = {key = k, val = parseExpr()}
+                    elseif peek().t == "name" and isOp("=", 1) and not isOp("==", 1) then
+                        local k = nextTok()
+                        nextTok()
+                        item = {key = {k = "str", v = k.v}, val = parseExpr()}
+                    else
+                        auto = auto + 1
+                        item = {key = {k = "num", v = auto}, val = parseExpr()}
+                    end
+                    items[#items + 1] = item
+                    if isOp(",") or isOp(";") then
+                        nextTok()
+                    elseif not isOp("}") then
+                        fail("separador inválido na tabela")
+                    end
+                end
+                local endTok = nextTok()
+                return {k = "table", items = items, s = startTok.s, e = endTok.e}
+            end
+
+            local function parsePrimary()
+                local t = peek()
+                if t.t == "num" then
+                    nextTok()
+                    return {k = "num", v = t.v, s = t.s, e = t.e}
+                elseif t.t == "str" then
+                    nextTok()
+                    return {k = "str", v = t.v, s = t.s, e = t.e}
+                elseif t.t == "name" then
+                    if t.v == "true" or t.v == "false" then
+                        nextTok()
+                        return {k = "bool", v = (t.v == "true"), s = t.s, e = t.e}
+                    elseif t.v == "nil" then
+                        nextTok()
+                        return {k = "nil", s = t.s, e = t.e}
+                    elseif KEYWORDS[t.v] then
+                        fail("palavra reservada '" .. t.v .. "'")
+                    end
+                    nextTok()
+                    return {k = "name", v = t.v, s = t.s, e = t.e}
+                elseif t.t == "op" then
+                    if t.v == "{" then
+                        return parseTable()
+                    elseif t.v == "(" then
+                        nextTok()
+                        local e = parseExpr()
+                        expectOp(")")
+                        return e
+                    end
+                end
+                fail("expressão não reconhecida")
+            end
+
+            local function parsePostfix()
+                local node = parsePrimary()
+                while true do
+                    local t = peek()
+                    if t.t ~= "op" then
+                        break
+                    end
+                    if t.v == "." then
+                        nextTok()
+                        local nm = nextTok()
+                        if nm.t ~= "name" then
+                            fail("nome esperado após '.'")
+                        end
+                        node = {k = "index", obj = node, key = nm.v, s = node.s, e = nm.e}
+                    elseif t.v == "[" then
+                        nextTok()
+                        local kexp = parseExpr()
+                        local close = expectOp("]")
+                        if kexp.k == "str" then
+                            node = {k = "index", obj = node, key = kexp.v, s = node.s, e = close.e}
+                        else
+                            node = {k = "indexdyn", obj = node, keyexpr = kexp, s = node.s, e = close.e}
+                        end
+                    elseif t.v == ":" then
+                        nextTok()
+                        local nm = nextTok()
+                        if nm.t ~= "name" then
+                            fail("nome do método esperado")
+                        end
+                        local tolerant = (nm.v == "FireServer" or nm.v == "InvokeServer")
+                        local args, close = parseCallArgs(tolerant)
+                        node = {k = "method", obj = node, name = nm.v, args = args, s = node.s, e = close.e}
+                    elseif t.v == "(" then
+                        local args, close = parseCallArgs(false)
+                        node = {k = "call", fn = node, args = args, s = node.s, e = close.e}
+                    else
+                        break
+                    end
+                end
+                return node
+            end
+
+            function parseExpr()
+                local t = peek()
+                if t.t == "op" and t.v == "-" then
+                    nextTok()
+                    local inner = parseExpr()
+                    return {k = "unary", op = "-", e = inner.e, inner = inner, s = t.s}
+                end
+                return parsePostfix()
+            end
+
+            local calls, vars, notes = {}, {}, {}
+            while peek().t ~= "eof" do
+                local startP = p
+                local first = peek()
+                local ok = pcall(function()
+                    if first.t == "name" and first.v == "local" then
+                        nextTok()
+                        if isName("function") then
+                            fail("função local não suportada")
+                        end
+                        local names = {}
+                        repeat
+                            local nm = nextTok()
+                            if nm.t ~= "name" then
+                                fail("nome esperado")
+                            end
+                            names[#names + 1] = nm.v
+                            local more = isOp(",")
+                            if more then
+                                nextTok()
+                            end
+                        until not more
+                        if isOp("=") then
+                            nextTok()
+                            local vals = {}
+                            repeat
+                                vals[#vals + 1] = parseExpr()
+                                local more = isOp(",")
+                                if more then
+                                    nextTok()
+                                end
+                            until not more
+                            for i, nm in ipairs(names) do
+                                vars[nm] = vals[i] or {k = "nil"}
+                            end
+                        end
+                    else
+                        local e = parseExpr()
+                        if e.k == "method" and (e.name == "FireServer" or e.name == "InvokeServer") then
+                            local snap = {}
+                            for k2, v2 in pairs(vars) do
+                                snap[k2] = v2
+                            end
+                            calls[#calls + 1] = {
+                                remote = e.obj, method = e.name, args = e.args, vars = snap, src = src,
+                                text = src:sub(e.s, e.e),
+                            }
+                        elseif isOp("=") and e.k == "name" then
+                            nextTok()
+                            vars[e.v] = parseExpr()
+                        end
+                    end
+                    if isOp(";") then
+                        nextTok()
+                    end
+                end)
+                if not ok then
+                    notes[#notes + 1] = "um trecho não reconhecido foi ignorado (posição " .. tostring(first.s) .. ")"
+                    if p == startP then
+                        nextTok()
+                    end
+                    while peek().t ~= "eof" do
+                        local cur, prev = peek(), toks[p - 1]
+                        if cur.t == "name" and (cur.v == "local" or (prev and (
+                            (prev.t == "op" and (prev.v == ")" or prev.v == "}" or prev.v == "]"))
+                            or (prev.t == "name" and prev.v == "end")))) then
+                            break
+                        end
+                        nextTok()
+                    end
+                end
+            end
+            return {calls = calls, notes = notes}
+        end
+
+        --// ---------------------------------------------------------- 2) CAMINHOS E INSTÂNCIAS (resolução estrita)
+        local function pathText(path)
+            if #path.segs == 0 then
+                return "game"
+            end
+            return "game." .. table.concat(path.segs, ".")
+        end
+
+        local function copySegs(segs, extra)
+            local out = {}
+            for i, s in ipairs(segs) do
+                out[i] = s
+            end
+            if extra then
+                out[#out + 1] = extra
+            end
+            return out
+        end
+
+        local function pathOf(node, env, depth)
+            if depth > 24 then
+                return nil
+            end
+            local k = node.k
+            if k == "name" then
+                local bound = env.vars[node.v]
+                if bound then
+                    return pathOf(bound, env, depth + 1)
+                end
+                if node.v == "game" then
+                    return {segs = {}}
+                elseif node.v == "workspace" or node.v == "Workspace" then
+                    return {segs = {"Workspace"}}
+                end
+                return nil
+            elseif k == "index" then
+                local base = pathOf(node.obj, env, depth + 1)
+                if not base then
+                    return nil
+                end
+                return {segs = copySegs(base.segs, node.key)}
+            elseif k == "method" then
+                local base = pathOf(node.obj, env, depth + 1)
+                local a1 = node.args[1]
+                if not base or not a1 or a1.k ~= "str" then
+                    return nil
+                end
+                if node.name == "GetService" and #base.segs == 0 and #node.args == 1 then
+                    return {segs = {a1.v}}
+                elseif node.name == "WaitForChild" and (#node.args == 1 or (#node.args == 2 and node.args[2].k == "num")) then
+                    return {segs = copySegs(base.segs, a1.v)}
+                elseif node.name == "FindFirstChild" and #node.args == 1 then
+                    return {segs = copySegs(base.segs, a1.v)}
+                end
+                return nil
+            end
+            return nil
+        end
+
+        -- devolve a instância ou nil, motivo. Nomes repetidos no mesmo pai = ambíguo = não resolve.
+        local function resolveStrict(path)
+            local cur = game
+            for _, seg in ipairs(path.segs) do
+                local nxt
+                local okf, found = pcall(function()
+                    return cur:FindFirstChild(seg)
+                end)
+                if okf and found then
+                    local count = 0
+                    local okc, kids = pcall(function()
+                        return cur:GetChildren()
+                    end)
+                    if okc then
+                        for _, kid in ipairs(kids) do
+                            if kid.Name == seg then
+                                count = count + 1
+                            end
+                        end
+                    end
+                    if count > 1 then
+                        return nil, "nome repetido '" .. seg .. "' dentro de '" .. cur.Name .. "' (ambíguo)"
+                    end
+                    nxt = found
+                elseif cur == game then
+                    local oks, svc = pcall(game.GetService, game, seg)
+                    if oks and svc then
+                        nxt = svc
+                    end
+                end
+                if not nxt and cur == Players and seg == "LocalPlayer" then
+                    nxt = LocalPlayer
+                end
+                if not nxt and PROP_OK[seg] then
+                    local okp, v = pcall(function()
+                        return cur[seg]
+                    end)
+                    if okp and typeof(v) == "Instance" then
+                        nxt = v
+                    end
+                end
+                if not nxt then
+                    return nil, "'" .. seg .. "' não encontrado"
+                end
+                cur = nxt
+            end
+            return cur
+        end
+
+        local function parsePathInput(text)
+            local px = parsePathExpr(text)
+            if px then
+                return {segs = px.segs}
+            end
+            local segs = {}
+            for part in tostring(text or ""):gmatch("[^%./\\]+") do
+                segs[#segs + 1] = trim(part)
+            end
+            if segs[1] and segs[1]:lower() == "game" then
+                table.remove(segs, 1)
+            elseif segs[1] and segs[1]:lower() == "workspace" then
+                segs[1] = "Workspace"
+            end
+            if #segs == 0 then
+                return nil
+            end
+            return {segs = segs}
+        end
+
+        -- instância real → caminho (nomes a partir do game); nil se não estiver dentro do jogo
+        local function pathFromInstance(inst)
+            local segs, cur = {}, inst
+            for _ = 1, 40 do
+                if cur == game then
+                    local n = #segs
+                    if n == 0 then
+                        return nil
+                    end
+                    local out = {}
+                    for i = n, 1, -1 do
+                        out[#out + 1] = segs[i]
+                    end
+                    return {segs = out}
+                end
+                if typeof(cur) ~= "Instance" then
+                    return nil
+                end
+                segs[#segs + 1] = cur.Name
+                local par = cur.Parent
+                if par == nil then
+                    return nil
+                end
+                cur = par
+            end
+            return nil
+        end
+
+        -- uma Tool troca de Backpack para Character ao ser equipada: devolve o caminho "do outro lado"
+        local function toolAlt(path)
+            local segs = path.segs
+            if segs[1] == "Players" and (segs[3] == "Backpack" or segs[3] == "Character") then
+                local out = {}
+                for i, s in ipairs(segs) do
+                    out[i] = s
+                end
+                out[3] = (segs[3] == "Backpack") and "Character" or "Backpack"
+                return {segs = out}
+            end
+            return nil
+        end
+
+        --// ---------------------------------------------------------- 3) DESCRITORES (valor lido, nunca executado)
+        local function evalNode(node, env, depth)
+            depth = depth or 0
+            if depth > 24 then
+                return {t = "raw", text = "profundidade excedida"}
+            end
+            local k = node.k
+            local function textOf()
+                if env.src and node.s and node.e then
+                    return env.src:sub(node.s, node.e)
+                end
+                return node.text or "?"
+            end
+            if k == "num" then
+                return {t = "number", v = node.v}
+            elseif k == "str" then
+                return {t = "string", v = node.v}
+            elseif k == "bool" then
+                return {t = "boolean", v = node.v}
+            elseif k == "nil" then
+                return {t = "nil"}
+            elseif k == "raw" then
+                return {t = "raw", text = node.text}
+            elseif k == "unary" then
+                local d = evalNode(node.inner, env, depth + 1)
+                if d.t == "number" then
+                    return {t = "number", v = -d.v}
+                end
+                return {t = "raw", text = textOf()}
+            elseif k == "name" then
+                local bound = env.vars[node.v]
+                if bound then
+                    return evalNode(bound, env, depth + 1)
+                end
+                if node.v == "game" or node.v == "workspace" or node.v == "Workspace" then
+                    local path = pathOf(node, env, 0)
+                    return {t = "instance", path = path, text = pathText(path)}
+                end
+                return {t = "raw", text = textOf(), why = "variável desconhecida '" .. node.v .. "'"}
+            elseif k == "table" then
+                local entries = {}
+                for _, it in ipairs(node.items) do
+                    entries[#entries + 1] = {k = evalNode(it.key, env, depth + 1), v = evalNode(it.val, env, depth + 1)}
+                end
+                return {t = "table", entries = entries}
+            end
+
+            local path = pathOf(node, env, 0)
+            if path then
+                return {t = "instance", path = path, text = pathText(path)}
+            end
+            if k == "index" and node.obj.k == "index" and node.obj.obj.k == "name" and node.obj.obj.v == "Enum" and not env.vars.Enum then
+                local okE, item = pcall(function()
+                    return Enum[node.obj.key][node.key]
+                end)
+                if okE and item then
+                    return {t = "Enum", enum = node.obj.key, item = node.key}
+                end
+            end
+            if k == "call" and node.fn.k == "index" and node.fn.obj.k == "name" and not env.vars[node.fn.obj.v] then
+                local lib, fn = node.fn.obj.v, node.fn.key
+                local nums = {}
+                for _, a in ipairs(node.args) do
+                    local d = evalNode(a, env, depth + 1)
+                    if d.t ~= "number" then
+                        nums = nil
+                        break
+                    end
+                    nums[#nums + 1] = d.v
+                end
+                if lib == "Vector3" and fn == "new" and nums and #nums == 3 then
+                    return {t = "Vector3", x = nums[1], y = nums[2], z = nums[3]}
+                elseif lib == "Vector2" and fn == "new" and nums and #nums == 2 then
+                    return {t = "Vector2", x = nums[1], y = nums[2]}
+                elseif lib == "CFrame" and fn == "new" then
+                    if nums and #nums == 3 then
+                        return {t = "CFrame", x = nums[1], y = nums[2], z = nums[3]}
+                    elseif nums and #nums == 12 then
+                        return {t = "CFrame", x = nums[1], y = nums[2], z = nums[3], comps = nums}
+                    elseif #node.args == 1 then
+                        local d1 = evalNode(node.args[1], env, depth + 1)
+                        if d1.t == "Vector3" then
+                            return {t = "CFrame", x = d1.x, y = d1.y, z = d1.z}
+                        end
+                    end
+                elseif lib == "Color3" and (fn == "fromRGB" or fn == "new") and nums and #nums == 3 then
+                    return {t = "Color3", r = nums[1], g = nums[2], b = nums[3], fn = fn}
+                end
+            end
+            return {t = "raw", text = textOf()}
+        end
+
+        local ids, idN = setmetatable({}, {__mode = "k"}), 0
+        local function idOf(o)
+            local i = ids[o]
+            if not i then
+                idN = idN + 1
+                i = idN
+                ids[o] = i
+            end
+            return i
+        end
+
+        local function descKey(d, depth)
+            depth = depth or 0
+            local t = d.t
+            if t == "number" then
+                return "n:" .. string.format("%.17g", d.v)
+            elseif t == "string" then
+                return "s:" .. #d.v .. ":" .. d.v
+            elseif t == "boolean" then
+                return "b:" .. tostring(d.v)
+            elseif t == "nil" then
+                return "nil"
+            elseif t == "Vector3" then
+                return string.format("v3:%.9g,%.9g,%.9g", d.x, d.y, d.z)
+            elseif t == "Vector2" then
+                return string.format("v2:%.9g,%.9g", d.x, d.y)
+            elseif t == "CFrame" then
+                if d.comps then
+                    local parts = {}
+                    for i, c in ipairs(d.comps) do
+                        parts[i] = string.format("%.9g", c)
+                    end
+                    return "cf:" .. table.concat(parts, ",")
+                end
+                return string.format("cf:%.9g,%.9g,%.9g", d.x, d.y, d.z)
+            elseif t == "Color3" then
+                return string.format("c3:%.6g,%.6g,%.6g", d.r, d.g, d.b)
+            elseif t == "Enum" then
+                return "e:" .. d.enum .. "." .. d.item
+            elseif t == "instance" then
+                if d.inst then
+                    return "i:" .. idOf(d.inst)
+                end
+                return "ip:" .. tostring(d.text)
+            elseif t == "table" then
+                if depth > 4 then
+                    return "t:deep"
+                end
+                local parts = {}
+                for _, e in ipairs(d.entries) do
+                    parts[#parts + 1] = descKey(e.k, depth + 1) .. "=" .. descKey(e.v, depth + 1)
+                end
+                table.sort(parts)
+                return "t{" .. table.concat(parts, ";") .. "}"
+            end
+            return "raw:" .. tostring(d.text)
+        end
+
+        -- valor real observado no jogo → descritor
+        local function descFromValue(v, depth)
+            depth = depth or 0
+            local t = typeof(v)
+            if t == "number" or t == "string" or t == "boolean" then
+                return {t = t, v = v}
+            elseif t == "nil" then
+                return {t = "nil"}
+            elseif t == "Vector3" then
+                return {t = "Vector3", x = v.X, y = v.Y, z = v.Z}
+            elseif t == "Vector2" then
+                return {t = "Vector2", x = v.X, y = v.Y}
+            elseif t == "CFrame" then
+                local c = {v:GetComponents()}
+                return {t = "CFrame", x = c[1], y = c[2], z = c[3], comps = c}
+            elseif t == "Color3" then
+                return {t = "Color3", r = v.R, g = v.G, b = v.B, fn = "new"}
+            elseif t == "EnumItem" then
+                return {t = "Enum", enum = tostring(v.EnumType), item = v.Name}
+            elseif t == "Instance" then
+                local okN, full = pcall(v.GetFullName, v)
+                local okPath, pth = pcall(pathFromInstance, v) -- permite achar o objeto de novo se ele for recriado (respawn)
+                return {t = "instance", inst = v, text = okN and full or v.Name, path = okPath and pth or nil}
+            elseif t == "table" then
+                if depth >= 3 then
+                    return {t = "raw", text = "tabela muito profunda"}
+                end
+                local entries, count = {}, 0
+                for key, val in pairs(v) do
+                    count = count + 1
+                    if count > 50 then
+                        return {t = "raw", text = "tabela com mais de 50 itens"}
+                    end
+                    local kt = type(key)
+                    if kt ~= "number" and kt ~= "string" then
+                        return {t = "raw", text = "tabela com chave de tipo não suportado"}
+                    end
+                    entries[#entries + 1] = {k = {t = kt, v = key}, v = descFromValue(val, depth + 1)}
+                end
+                table.sort(entries, function(a, b)
+                    local ka, kb = a.k.v, b.k.v
+                    if type(ka) == type(kb) then
+                        return ka < kb
+                    end
+                    return type(ka) == "number"
+                end)
+                return {t = "table", entries = entries}
+            end
+            return {t = "raw", text = "<" .. t .. ">"}
+        end
+
+        -- descritor → valor do Roblox. Devolve true, valor  |  false, motivo
+        local function realize(d)
+            local t = d.t
+            if t == "number" or t == "string" or t == "boolean" then
+                return true, d.v
+            elseif t == "nil" then
+                return true, nil
+            elseif t == "Vector3" then
+                return true, Vector3.new(d.x, d.y, d.z)
+            elseif t == "Vector2" then
+                return true, Vector2.new(d.x, d.y)
+            elseif t == "CFrame" then
+                if d.comps and #d.comps == 12 then
+                    return true, CFrame.new(table.unpack(d.comps, 1, 12))
+                end
+                return true, CFrame.new(d.x, d.y, d.z)
+            elseif t == "Color3" then
+                if d.fn == "fromRGB" then
+                    return true, Color3.fromRGB(d.r, d.g, d.b)
+                end
+                return true, Color3.new(d.r, d.g, d.b)
+            elseif t == "Enum" then
+                local okE, item = pcall(function()
+                    return Enum[d.enum][d.item]
+                end)
+                if okE and item then
+                    return true, item
+                end
+                return false, "Enum " .. tostring(d.enum) .. "." .. tostring(d.item) .. " indisponível"
+            elseif t == "instance" then
+                if d.dyn == "player" then
+                    local plr
+                    if d.who == "@me" then
+                        plr = LocalPlayer
+                    else
+                        local f = Players:FindFirstChild(d.who)
+                        plr = f and f:IsA("Player") and f or nil
+                    end
+                    if not plr then
+                        return false, "jogador '" .. tostring(d.who) .. "' não está no servidor"
+                    end
+                    if d.as == "character" then
+                        if plr.Character then
+                            return true, plr.Character
+                        end
+                        return false, "o personagem de '" .. plr.Name .. "' não existe agora"
+                    end
+                    return true, plr
+                end
+                local inst = d.inst
+                if inst and (inst == game or inst.Parent ~= nil) then
+                    return true, inst
+                end
+                if d.path then
+                    local again, why = resolveStrict(d.path)
+                    if again then
+                        d.inst = again
+                        return true, again
+                    end
+                    return false, "instância não resolvida: " .. tostring(why)
+                end
+                return false, "a instância não existe mais"
+            elseif t == "table" then
+                local out = {}
+                for _, e in ipairs(d.entries) do
+                    local okk, kk = realize(e.k)
+                    if not okk then
+                        return false, kk
+                    end
+                    local okv, vv = realize(e.v)
+                    if not okv then
+                        return false, vv
+                    end
+                    if kk == nil then
+                        return false, "chave nula na tabela"
+                    end
+                    out[kk] = vv
+                end
+                return true, out
+            end
+            return false, "argumento não interpretado (original preservado; não pode ser enviado sem análise manual)"
+        end
+
+        local function showValue(v)
+            local t = typeof(v)
+            if t == "Instance" then
+                return v.ClassName .. " '" .. v.Name .. "'"
+            elseif t == "Vector3" then
+                return string.format("Vector3(%.2f, %.2f, %.2f)", v.X, v.Y, v.Z)
+            elseif t == "CFrame" then
+                return string.format("CFrame(%.2f, %.2f, %.2f)", v.X, v.Y, v.Z)
+            elseif t == "string" then
+                return '"' .. short(v, 40) .. '"'
+            elseif t == "table" then
+                local c = 0
+                for _ in pairs(v) do
+                    c = c + 1
+                end
+                return "{" .. c .. " item(ns)}"
+            end
+            return tostring(v)
+        end
+
+        --// ---------------------------------------------------------- 4) ANÁLISE POR ARGUMENTO (confiança individual)
+        local function table3(d)
+            if d.t ~= "table" or #d.entries ~= 3 then
+                return nil
+            end
+            local arr, xyz = {}, {}
+            for _, e in ipairs(d.entries) do
+                if e.v.t ~= "number" then
+                    return nil
+                end
+                if e.k.t == "number" and e.k.v >= 1 and e.k.v <= 3 and e.k.v % 1 == 0 then
+                    arr[e.k.v] = e.v.v
+                elseif e.k.t == "string" then
+                    local lk = e.k.v:lower()
+                    if lk == "x" or lk == "y" or lk == "z" then
+                        xyz[lk] = {key = e.k.v, v = e.v.v}
+                    end
+                end
+            end
+            if arr[1] and arr[2] and arr[3] then
+                return {style = "array", v = {arr[1], arr[2], arr[3]}}
+            end
+            if xyz.x and xyz.y and xyz.z then
+                return {style = "xyz", keys = {xyz.x.key, xyz.y.key, xyz.z.key}, v = {xyz.x.v, xyz.y.v, xyz.z.v}}
+            end
+            return nil
+        end
+
+        local function typeTag(d)
+            if d.t == "table" then
+                return "table(" .. #d.entries .. ")"
+            end
+            return d.t
+        end
+
+        local INTERPS = {
+            playername = {label = "Nome de jogador (continua texto)", need = function(d) return d.t == "string" end},
+            userid = {label = "UserId de jogador (continua número)", need = function(d) return d.t == "number" end},
+            coords3 = {label = "Coordenadas {x,y,z} (continua tabela)", need = function(d) return table3(d) ~= nil end},
+        }
+        local function interpFor(d)
+            if d.t == "string" then
+                return "playername"
+            elseif d.t == "number" then
+                return "userid"
+            elseif table3(d) then
+                return "coords3"
+            end
+            return nil
+        end
+
+        local function hintFor(d)
+            if d.t == "string" then
+                for _, pl in ipairs(Players:GetPlayers()) do
+                    if pl.Name == d.v or pl.DisplayName == d.v then
+                        return "coincide com o nome do jogador " .. pl.Name .. " (não presumido)"
+                    end
+                end
+            elseif d.t == "number" then
+                for _, pl in ipairs(Players:GetPlayers()) do
+                    if pl.UserId == d.v then
+                        return "coincide com o UserId de " .. pl.Name .. " (não presumido)"
+                    end
+                end
+            end
+            return nil
+        end
+
+        -- {kind, conf, reason, reqClass}; conf: alta | confirmada | baixa | desconhecida
+        local function analyze(d, interp)
+            local t = d.t
+            if interp and INTERPS[interp] and INTERPS[interp].need(d) then
+                return {kind = interp, conf = "confirmada", reason = "você confirmou: " .. INTERPS[interp].label}
+            end
+            if t == "Vector3" then
+                return {kind = "vector3", conf = "alta", reason = "valor Vector3 real (X, Y, Z)"}
+            elseif t == "CFrame" then
+                return {kind = "cframe", conf = "alta", reason = "CFrame real (posição X, Y, Z; rotação preservada)"}
+            elseif t == "instance" then
+                local inst = d.inst
+                if not inst then
+                    return {kind = "unresolved", conf = "baixa", reason = "referência a objeto não resolvida agora (" .. short(d.err or d.text, 80) .. "); preservada"}
+                end
+                local okC, res = pcall(function()
+                    if inst:IsA("Player") then
+                        return {kind = "player", conf = "alta", reason = "referência real a um jogador (" .. inst.Name .. ")", reqClass = "Player"}
+                    end
+                    if inst:IsA("Model") then
+                        local owner = Players:GetPlayerFromCharacter(inst)
+                        if owner then
+                            return {kind = "character", conf = "alta", reason = "personagem real de " .. owner.Name, reqClass = "Model"}
+                        end
+                        return {kind = "model", conf = "alta", reason = "Model real '" .. inst.Name .. "'", reqClass = "Model"}
+                    end
+                    if inst:IsA("BasePart") then
+                        return {kind = "part", conf = "alta", reason = "Part real '" .. inst.Name .. "'", reqClass = "BasePart"}
+                    end
+                    return {kind = "instance", conf = "alta", reason = inst.ClassName .. " real '" .. inst.Name .. "'", reqClass = inst.ClassName}
+                end)
+                if okC then
+                    return res
+                end
+                return {kind = "unresolved", conf = "baixa", reason = "objeto inacessível; preservado"}
+            elseif t == "number" then
+                return {kind = "number", conf = "desconhecida", reason = "número (significado desconhecido; valor original preservado)"}
+            elseif t == "string" then
+                return {kind = "string", conf = "desconhecida", reason = "texto (significado desconhecido; valor original preservado)"}
+            elseif t == "boolean" then
+                return {kind = "boolean", conf = "desconhecida", reason = "booleano (significado desconhecido; valor original preservado)"}
+            elseif t == "nil" then
+                return {kind = "nil", conf = "desconhecida", reason = "nil preservado"}
+            elseif t == "table" then
+                if table3(d) then
+                    return {kind = "table", conf = "desconhecida", reason = "tabela com 3 números: pode ser coordenadas, mas isso não foi presumido"}
+                end
+                return {kind = "table", conf = "desconhecida", reason = "tabela preservada (" .. #d.entries .. " item(ns))"}
+            elseif t == "Enum" or t == "Vector2" or t == "Color3" then
+                return {kind = t, conf = "desconhecida", reason = t .. " preservado (sem controle dedicado)"}
+            end
+            return {kind = "raw", conf = "desconhecida", reason = "expressão não interpretada, preservada: " .. short(d.why or d.text, 60)}
+        end
+
+        local CONF_TXT = {
+            alta = "confiança ALTA", confirmada = "CONFIRMADO por você", baixa = "confiança BAIXA",
+            desconhecida = "significado DESCONHECIDO",
+        }
+
+        --// ---------------------------------------------------------- 5) PERFIS (observado ≠ interpretado ≠ configuração do usuário)
+        local syncWatch, refreshInfo, onLearned
+        local profiles = {}   -- lista de perfis
+        local byLabel = {}
+        local saved = {}      -- interpretações confirmadas, lidas do arquivo
+        local ui = {playerDds = {}}
+        local enabled = false
+        local sending = false
+        local lastSend = 0
+        local hookError
+
+        local function loadSaved()
+            if not HAS_EIFS then
+                return
+            end
+            local ok, raw = pcall(function()
+                if isfile(SAVE_FILE) then
+                    return readfile(SAVE_FILE)
+                end
+            end)
+            if ok and type(raw) == "string" and raw ~= "" then
+                local ok2, data = pcall(function()
+                    return HttpService:JSONDecode(raw)
+                end)
+                if ok2 and type(data) == "table" and type(data.interps) == "table" then
+                    saved = data.interps
+                end
+            end
+        end
+        local function writeSaved()
+            if not HAS_EIFS then
+                return false
+            end
+            return (pcall(function()
+                writefile(SAVE_FILE, HttpService:JSONEncode({v = 1, interps = saved}))
+            end))
+        end
+
+        local function signature(p)
+            local tags = {}
+            for i, s in ipairs(p.slots) do
+                tags[i] = typeTag(s.original)
+            end
+            return tostring(p.key) .. "|" .. p.n .. "|" .. table.concat(tags, ",")
+        end
+
+        local function newSlot(i, d)
+            return {idx = i, original = d, analysis = analyze(d, nil), changes = 0, edited = false}
+        end
+
+        local function profileFromCall(call)
+            local env = {src = call.src, vars = call.vars}
+            local p = {method = call.method, slots = {}, n = 0, notes = {}, srcText = short(call.text, 400),
+                follow = true, monitor = true, obs = {count = 0}}
+            local rpath = pathOf(call.remote, env, 0)
+            if rpath and #rpath.segs > 0 then
+                p.path = rpath
+                p.key = pathText(rpath)
+                local inst, why = resolveStrict(rpath)
+                if inst and (inst:IsA("RemoteEvent") or inst:IsA("RemoteFunction")) then
+                    p.remote = inst
+                elseif inst then
+                    p.manual = "o objeto encontrado é " .. inst.ClassName .. ", não um Remote"
+                else
+                    p.manual = "Remote não encontrado agora (" .. tostring(why) .. ")"
+                    p.manualRemote = true
+                end
+            else
+                p.key = short(call.src:sub(call.remote.s or 1, call.remote.e or 1), 80)
+                p.manual = "caminho do Remote não reconhecido: " .. p.key
+            end
+            if p.remote then
+                if p.method == "FireServer" and not p.remote:IsA("RemoteEvent") then
+                    p.manual = "a chamada usa FireServer, mas o objeto é RemoteFunction"
+                elseif p.method == "InvokeServer" and not p.remote:IsA("RemoteFunction") then
+                    p.manual = "a chamada usa InvokeServer, mas o objeto é RemoteEvent"
+                end
+            end
+
+            -- expande unpack(tabela literal) somente quando a estrutura é inequívoca
+            local nodes = call.args
+            if #nodes == 1 and nodes[1].k == "call" then
+                local a, f = nodes[1], nodes[1].fn
+                local isUnpack = (f.k == "name" and f.v == "unpack" and not env.vars.unpack)
+                    or (f.k == "index" and f.obj.k == "name" and f.obj.v == "table" and f.key == "unpack")
+                if isUnpack then
+                    local why
+                    local expanded
+                    if #a.args ~= 1 then
+                        why = "unpack com intervalo ou argumentos extras"
+                    else
+                        local tnode = a.args[1]
+                        if tnode.k == "name" and env.vars[tnode.v] then
+                            tnode = env.vars[tnode.v]
+                        end
+                        if tnode.k ~= "table" then
+                            why = "unpack de algo que não é uma tabela literal"
+                        else
+                            local byIdx, maxI, cnt = {}, 0, 0
+                            for _, it in ipairs(tnode.items) do
+                                local kd = it.key and it.key.k == "num" and it.key.v
+                                if not kd or kd < 1 or kd % 1 ~= 0 or byIdx[kd] then
+                                    why = "tabela do unpack com chaves que não são 1..N"
+                                    break
+                                end
+                                byIdx[kd] = it.val
+                                cnt = cnt + 1
+                                if kd > maxI then
+                                    maxI = kd
+                                end
+                            end
+                            if not why and maxI ~= cnt then
+                                why = "tabela do unpack com buracos"
+                            end
+                            if not why then
+                                expanded = {}
+                                for i = 1, maxI do
+                                    expanded[i] = byIdx[i]
+                                end
+                            end
+                        end
+                    end
+                    if expanded then
+                        nodes = expanded
+                    else
+                        p.manual = p.manual or ("argumentos via unpack não reconhecidos: " .. tostring(why))
+                        nodes = {{k = "raw", text = call.src:sub(a.s, a.e)}}
+                    end
+                end
+            end
+            if #nodes > MAX_ARGS then
+                p.manual = p.manual or ("mais de " .. MAX_ARGS .. " argumentos")
+                local cut = {}
+                for i = 1, MAX_ARGS do
+                    cut[i] = nodes[i]
+                end
+                nodes = cut
+            end
+            for i, node in ipairs(nodes) do
+                local d = evalNode(node, env, 0)
+                if d.t == "instance" and d.path then
+                    d.inst, d.err = resolveStrict(d.path)
+                end
+                p.slots[i] = newSlot(i, d)
+            end
+            p.n = #nodes
+            p.sig = signature(p)
+            local keys = {}
+            for i, s in ipairs(p.slots) do
+                keys[i] = descKey(s.original)
+            end
+            p.callKey = p.key .. "|" .. p.method .. "|" .. table.concat(keys, "|")
+            return p
+        end
+
+        local function applySaved(p)
+            local sv = saved[p.key]
+            if type(sv) ~= "table" then
+                return
+            end
+            if sv.sig ~= p.sig then
+                Win:Log("INFO", "Event Intelligence: interpretação salva de '" .. short(p.key, 50) .. "' ignorada (estrutura diferente da chamada atual)")
+                return
+            end
+            local applied = 0
+            for i, s in ipairs(p.slots) do
+                local rec = type(sv.slots) == "table" and sv.slots[tostring(i)]
+                if type(rec) == "table" and rec.t == typeTag(s.original) and INTERPS[rec.interp] and INTERPS[rec.interp].need(s.original) then
+                    s.interp = rec.interp
+                    s.analysis = analyze(s.original, s.interp)
+                    applied = applied + 1
+                end
+            end
+            if applied > 0 then
+                Win:Log("INFO", "Event Intelligence: " .. applied .. " interpretação(ões) salva(s) reaplicada(s) em '" .. short(p.key, 50) .. "' (estrutura compatível)")
+            end
+        end
+
+        local function profileLabel(p)
+            local base = tostring(p.key):match("([^%.]+)$") or p.key
+            if p.learning then
+                return base .. " · aprendendo…"
+            end
+            return base .. " · " .. p.method .. " (" .. p.n .. ")"
+        end
+
+        --// ---------------------------------------------------------- 5b) MODO SÓ CAMINHO (a estrutura vem da 1ª chamada real observada)
+        -- Só o caminho do Remote é informado. Nada é inventado: os argumentos só passam a existir
+        -- depois que o próprio jogo chama o evento e o monitoramento lê essa chamada.
+        local function remoteKind(inst)
+            return inst:IsA("RemoteFunction") and "InvokeServer" or "FireServer"
+        end
+
+        local function profileFromPath(text)
+            local path = parsePathInput(text)
+            if not path then
+                return nil, "informe o caminho do evento"
+            end
+            local p = {
+                method = "FireServer", slots = {}, n = 0, notes = {}, srcText = short(text, 400),
+                follow = true, monitor = true, obs = {count = 0},
+                pathOnly = true, learning = true, toolAware = true,
+                path = path, key = pathText(path),
+            }
+            local inst = resolveStrict(path)
+            if not inst then
+                local alt = toolAlt(path)
+                inst = alt and resolveStrict(alt) or nil
+            end
+            if inst and (inst:IsA("RemoteEvent") or inst:IsA("RemoteFunction")) then
+                p.remote = inst
+                p.method = remoteKind(inst)
+            elseif inst then
+                return nil, "o objeto encontrado é " .. inst.ClassName .. ", não um Remote"
+            end -- não achou agora: o perfil fica esperando o item/objeto existir
+            p.sig = signature(p)
+            p.callKey = p.key .. "|auto"
+            return p
+        end
+
+        -- transforma a 1ª chamada observada na estrutura do perfil
+        local function learnFrom(p, descs, n, method)
+            local cap = math.min(n, MAX_ARGS)
+            local slots = {}
+            for i = 1, cap do
+                slots[i] = newSlot(i, descs[i])
+            end
+            p.slots, p.n = slots, cap
+            p.method = method or p.method
+            p.learning, p.learned = false, true
+            if n > MAX_ARGS then
+                p.manual = "mais de " .. MAX_ARGS .. " argumentos"
+            end
+            p.sig = signature(p)
+            applySaved(p)
+            p.notes[#p.notes + 1] = "Estrutura aprendida sozinha pela 1ª chamada real do jogo (" .. cap .. " argumento(s)). 'Seguir valores observados' está ligado: o envio repete os valores da chamada mais recente."
+        end
+
+        local function getRemote(p)
+            if p.remote and p.remote.Parent then
+                return p.remote
+            end
+            if p.path then
+                local inst = resolveStrict(p.path)
+                if not inst and p.toolAware then
+                    local alt = toolAlt(p.path)
+                    inst = alt and resolveStrict(alt) or nil
+                end
+                if inst and (inst:IsA("RemoteEvent") or inst:IsA("RemoteFunction")) then
+                    p.remote = inst
+                    return inst
+                end
+            end
+            p.remote = nil
+            return nil
+        end
+
+        --// ---------------------------------------------------------- 6) MONITORAMENTO EM TEMPO REAL (somente o que o executor permite)
+        local hookState = ENV[HOOK_KEY]
+        if type(hookState) ~= "table" then
+            hookState = {installed = false}
+            ENV[HOOK_KEY] = hookState
+        end
+        hookState.handler = nil -- uma reexecução assume o gancho já instalado, sem instalar outro
+
+        local watched = {}
+        local watchedCount = 0
+        local queue, qn, scheduled, dropped = {}, 0, false, 0
+
+        local function ensureHook()
+            if not HAS_HOOK then
+                return false, "o executor não oferece hookmetamethod/getnamecallmethod"
+            end
+            if hookState.installed then
+                return true
+            end
+            local ok, err = pcall(function()
+                local old
+                local wrap = type(newcclosure) == "function" and newcclosure or function(f)
+                    return f
+                end
+                old = hookmetamethod(game, "__namecall", wrap(function(self, ...)
+                    local h = hookState.handler
+                    if h then
+                        local method = getnamecallmethod()
+                        if method == "FireServer" or method == "InvokeServer" then
+                            h(self, method, ...)
+                        end
+                    end
+                    return old(self, ...)
+                end))
+                hookState.installed = true
+            end)
+            if not ok then
+                return false, tostring(err)
+            end
+            return true
+        end
+
+        local onObserved
+        local function processQueue()
+            scheduled = false
+            local batch, count = queue, qn
+            queue, qn = {}, 0
+            for i = 1, count do
+                local ok, err = pcall(onObserved, batch[i])
+                if not ok then
+                    Win:Log("ERROR", "Event Intelligence: falha ao processar chamada observada", tostring(err))
+                end
+            end
+        end
+
+        -- roda dentro do __namecall: sem chamadas de método, sem yield; só guarda e adia
+        local function handler(self, method, ...)
+            local list = watched[self]
+            if not list or sending then
+                return
+            end
+            if HAS_CHECK and checkcaller() then
+                return
+            end
+            for i = 1, #list do -- mais de um perfil pode acompanhar o mesmo Remote
+                if qn >= MAX_QUEUE then
+                    dropped = dropped + 1
+                    return
+                end
+                qn = qn + 1
+                queue[qn] = {prof = list[i], method = method, n = select("#", ...), args = {...}, t = os.clock()}
+            end
+            if not scheduled then
+                scheduled = true
+                task.defer(processQueue)
+            end
+        end
+
+        local function monitorStatus(p)
+            if not enabled then
+                return "Event Intelligence desativado (nada é monitorado; configurações preservadas)"
+            end
+            if not p.monitor then
+                return "monitoramento desligado para este evento; valores = chamada colada"
+            end
+            if not HAS_HOOK then
+                return "SEM monitoramento em tempo real: o executor não oferece hookmetamethod/getnamecallmethod (valores = chamada colada)"
+            end
+            if hookError then
+                return "SEM monitoramento: falha ao instalar o gancho (" .. short(hookError, 60) .. ")"
+            end
+            if not p.remote or not p.remote.Parent then
+                return "SEM monitoramento: o Remote não foi encontrado (use 'Atualizar')"
+            end
+            return "monitoramento ATIVO: acompanhando chamadas feitas pelos scripts do jogo"
+        end
+
+        function syncWatch()
+            watched, watchedCount = {}, 0
+            if enabled then
+                for _, p in ipairs(profiles) do
+                    if p.monitor then
+                        local r = getRemote(p)
+                        if r then
+                            local list = watched[r]
+                            if not list then
+                                list = {}
+                                watched[r] = list
+                                watchedCount = watchedCount + 1
+                            end
+                            list[#list + 1] = p
+                        end
+                    end
+                end
+            end
+            if watchedCount > 0 then
+                local ok, err = ensureHook()
+                if ok then
+                    hookError = nil
+                    hookState.handler = handler
+                else
+                    hookError = err
+                    hookState.handler = nil
+                    watched, watchedCount = {}, 0
+                end
+            else
+                hookState.handler = nil
+                queue, qn = {}, 0
+            end
+        end
+
+        local infoPending = false
+        local function scheduleInfo()
+            if infoPending then
+                return
+            end
+            infoPending = true
+            task.delay(0.3, function()
+                infoPending = false
+                if refreshInfo then
+                    pcall(refreshInfo)
+                end
+            end)
+        end
+
+        function onObserved(item)
+            local p = item.prof
+            local n = item.n
+            local descs = {}
+            local cap = math.min(n, MAX_ARGS)
+            for i = 1, cap do
+                descs[i] = descFromValue(item.args[i])
+            end
+            if p.learning then -- modo só caminho: a 1ª chamada real define a estrutura
+                local okL, errL = pcall(learnFrom, p, descs, n, item.method)
+                if okL then
+                    local cb = onLearned
+                    if cb then
+                        pcall(cb, p)
+                    end
+                else
+                    Win:Log("ERROR", "Event Intelligence: falha ao aprender '" .. short(p.key, 50) .. "'", tostring(errL))
+                end
+            end
+            local o = p.obs
+            local first = o.count == 0
+            o.count = o.count + 1
+            o.last = os.clock()
+            o.dropped = dropped
+            if o.n ~= nil and o.n ~= n then
+                o.structChanges = (o.structChanges or 0) + 1
+                if o.structChanges <= 3 then
+                    Win:Log("WARNING", "Event Intelligence: a estrutura de '" .. short(p.key, 50) .. "' mudou (" .. o.n .. " → " .. n .. " argumento(s))")
+                end
+            end
+            if first and n ~= p.n then
+                Win:Log("WARNING", "Event Intelligence: a 1ª chamada observada de '" .. short(p.key, 50) .. "' tem " .. n .. " argumento(s); a chamada colada tinha " .. p.n)
+            end
+            o.n = n
+            o.maxN = math.max(o.maxN or 0, n)
+            local prev = p.lastObs
+            for i = 1, cap do
+                local s = p.slots[i]
+                if s and prev and prev[i] then
+                    if descKey(prev[i]) ~= descKey(descs[i]) then
+                        s.changes = s.changes + 1
+                        s.varies = true
+                    end
+                    if prev[i].t ~= descs[i].t then
+                        s.typeVaries = true
+                    end
+                end
+                if s and first and s.original.t ~= descs[i].t then
+                    s.typeVaries = true
+                end
+            end
+            p.lastObs = descs
+            if first then
+                Win:Log("INFO", "Event Intelligence: primeira chamada observada de '" .. short(p.key, 50) .. "'")
+            end
+            scheduleInfo()
+        end
+
+        --// ---------------------------------------------------------- 7) MONTAGEM E ENVIO (só quando o usuário pede)
+        local function slotDesc(p, s)
+            local d = s.original
+            if p.follow and not s.edited and p.lastObs and p.lastObs[s.idx] then
+                local o = p.lastObs[s.idx]
+                if o.t == d.t and (d.t ~= "table" or #o.entries == #d.entries) then
+                    d = o
+                end
+            end
+            if s.override then
+                d = s.override
+            end
+            return d
+        end
+
+        local function buildArgs(p)
+            local args = {}
+            for i = 1, p.n do
+                local ok, v = realize(slotDesc(p, p.slots[i]))
+                if not ok then
+                    return nil, i, v
+                end
+                args[i] = v
+            end
+            return args
+        end
+
+        local function previewArgs(p)
+            if p.learning then
+                notify("Event Intelligence", "Ainda aprendendo: faça a ação no jogo uma vez para eu ler os argumentos.", "warning")
+                return
+            end
+            local args, bad, why = buildArgs(p)
+            if not args then
+                notify("Event Intelligence", "Argumento #" .. bad .. " não pode ser montado: " .. tostring(why), "warning")
+                return
+            end
+            local parts = {}
+            for i = 1, p.n do
+                parts[i] = "#" .. i .. " " .. showValue(args[i])
+            end
+            notify("Argumentos de " .. short(p.key, 30), p.n == 0 and "(nenhum argumento)" or table.concat(parts, " · "), "info")
+        end
+
+        local function sendNow(p)
+            if not enabled then
+                notify("Event Intelligence", "Ative o Event Intelligence para enviar.", "warning")
+                return
+            end
+            if p.learning then
+                notify("Event Intelligence", "Ainda aprendendo: faça a ação no jogo uma vez para eu ler os argumentos. Nada foi enviado.", "warning")
+                return
+            end
+            if p.manual then
+                notify("Event Intelligence", "Este evento precisa de análise manual: " .. p.manual, "warning")
+                return
+            end
+            local remote = getRemote(p)
+            if not remote then
+                notify("Event Intelligence", "Remote não encontrado agora. Nada foi enviado.", "warning")
+                return
+            end
+            if os.clock() - lastSend < 0.1 then
+                notify("Event Intelligence", "Aguarde um instante entre os envios.", "warning")
+                return
+            end
+            local args, bad, why = buildArgs(p)
+            if not args then
+                notify("Event Intelligence", "Nada foi enviado. Argumento #" .. bad .. ": " .. tostring(why), "warning")
+                return
+            end
+            lastSend = os.clock()
+            if remote:IsA("RemoteFunction") then
+                if p.invoking then
+                    notify("Event Intelligence", "Ainda aguardando a resposta do envio anterior.", "warning")
+                    return
+                end
+                p.invoking = true
+                task.spawn(function()
+                    sending = true
+                    local ok, res = pcall(function()
+                        return remote:InvokeServer(table.unpack(args, 1, p.n))
+                    end)
+                    sending = false
+                    p.invoking = false
+                    if ok then
+                        Win:Log("INFO", "Retorno de " .. remote.Name, showValue(res))
+                    else
+                        Win:Log("ERROR", "InvokeServer falhou em " .. remote.Name, tostring(res))
+                    end
+                end)
+                notify("Event Intelligence", "InvokeServer enviado para " .. remote.Name .. ".", "success")
+            else
+                sending = true
+                local ok, err = pcall(function()
+                    remote:FireServer(table.unpack(args, 1, p.n))
+                end)
+                sending = false
+                if ok then
+                    notify("Event Intelligence", "Enviado para " .. remote.Name .. " (o efeito depende do servidor).", "success")
+                else
+                    notify("Event Intelligence", "Falha ao enviar: " .. tostring(err), "error")
+                end
+            end
+        end
+
+        --// ---------------------------------------------------------- 8) INTERFACE
+        local sec = main:AddSubSection("🧠 RN TEAM · Event Intelligence", false)
+        local selected -- perfil exibido
+        local buildPanel, applyEnabled
+        local function playerOptions(withOriginal)
+            local out = {}
+            if withOriginal then
+                out[#out + 1] = ORIGINAL_OPT
+            end
+            out[#out + 1] = "Eu"
+            local names = {}
+            for _, pl in ipairs(Players:GetPlayers()) do
+                if pl ~= LocalPlayer then
+                    names[#names + 1] = pl.Name
+                end
+            end
+            table.sort(names)
+            for _, nm in ipairs(names) do
+                out[#out + 1] = nm
+            end
+            return out
+        end
+
+        local function headerText(p)
+            local lines = {}
+            if p.pathOnly and p.learning then
+                lines[1] = "Remote: " .. tostring(p.key)
+                if p.remote then
+                    lines[2] = "🧲 APRENDENDO: faça a ação no jogo uma vez (ex.: usar o item). A 1ª chamada real será lida e os argumentos aparecem aqui, sozinhos."
+                else
+                    lines[2] = "🧲 AGUARDANDO O REMOTE: ele não existe agora (o item pode não estar no Backpack/Character). Assim que aparecer, passa a ser observado."
+                end
+                return table.concat(lines, "\n")
+            end
+            lines[#lines + 1] = "Remote: " .. tostring(p.key) .. " · " .. p.method .. " · " .. p.n .. " argumento(s)"
+            if p.manual then
+                lines[#lines + 1] = "⚠ PRECISA DE ANÁLISE MANUAL: " .. p.manual .. ". O evento foi mantido intacto e não será enviado."
+            end
+            for i, s in ipairs(p.slots) do
+                local conf = s.analysis.conf
+                if s.typeVaries then
+                    conf = "baixa"
+                end
+                lines[#lines + 1] = "#" .. i .. " [" .. s.analysis.kind .. "] " .. CONF_TXT[conf] .. " — " .. s.analysis.reason
+                    .. (s.typeVaries and " · o tipo varia entre chamadas observadas" or "")
+                    .. (hintFor(s.original) and (" · " .. hintFor(s.original)) or "")
+            end
+            for _, nt in ipairs(p.notes) do
+                lines[#lines + 1] = "ℹ " .. nt
+            end
+            return table.concat(lines, "\n")
+        end
+
+        local function observedText(p)
+            local o = p.obs
+            local lines = {"Monitoramento: " .. monitorStatus(p)}
+            if o.count > 0 then
+                local age = o.last and math.floor(os.clock() - o.last) or 0
+                lines[#lines + 1] = "Observado: " .. o.count .. " chamada(s); a última há " .. age .. "s; " .. tostring(o.n) .. " argumento(s) na última"
+                if o.structChanges and o.structChanges > 0 then
+                    lines[#lines + 1] = "A estrutura mudou " .. o.structChanges .. " vez(es) entre chamadas."
+                end
+                if o.maxN and o.maxN > p.n then
+                    lines[#lines + 1] = "Apareceram argumentos além dos colados (até #" .. o.maxN .. "); eles não foram adicionados nem alterados."
+                end
+                local var = {}
+                for i, s in ipairs(p.slots) do
+                    if s.varies then
+                        var[#var + 1] = "#" .. i .. " (" .. s.changes .. "x)"
+                    end
+                end
+                if #var > 0 then
+                    lines[#lines + 1] = "Valores que mudam entre chamadas: " .. table.concat(var, ", ")
+                end
+                if o.dropped and o.dropped > 0 then
+                    lines[#lines + 1] = "Chamadas descartadas por excesso de volume: " .. o.dropped
+                end
+            elseif enabled and p.monitor then
+                lines[#lines + 1] = "Ainda nenhuma chamada observada. Só são vistas as chamadas dos scripts do jogo que passam pelo __namecall."
+            end
+            return table.concat(lines, "\n")
+        end
+
+        local function clearPanel()
+            local body = ui.panel._frame
+            for _, c in ipairs(body:GetChildren()) do
+                if not c:IsA("UIListLayout") then
+                    c:Destroy()
+                end
+            end
+            ui.panel._order = 0
+            ui.playerDds = {}
+            ui.obsLabel = nil
+            ui.statusLabel = nil
+        end
+
+        function refreshInfo()
+            if ui.status then
+                if not enabled then
+                    ui.status:Set("Desativado. O modo manual continua funcionando normalmente; nada é analisado nem monitorado.")
+                else
+                    local cap = HAS_HOOK and "monitoramento em tempo real disponível" or "SEM monitoramento em tempo real neste executor (só análise do texto colado)"
+                    ui.status:Set("Ativo · " .. #profiles .. " evento(s) analisado(s) · " .. cap)
+                end
+            end
+            if ui.obsLabel and selected then
+                ui.obsLabel:Set(observedText(selected))
+            end
+        end
+
+        --// ---------------------------------------------------------- 📥 PASSAR PARA O MANUAL
+        -- Traduz o que o Event Intelligence juntou (Remote, chamada, alvo, argumentos) para os campos do modo manual.
+        local function segsRelative(inst, anc, prefix)
+            local rev, cur = {}, inst
+            for _ = 1, 40 do
+                if cur == anc then
+                    local out = {}
+                    for _, s in ipairs(prefix) do
+                        out[#out + 1] = s
+                    end
+                    for i = #rev, 1, -1 do
+                        out[#out + 1] = rev[i]
+                    end
+                    return out
+                end
+                if cur == nil or cur == game then
+                    return nil
+                end
+                rev[#rev + 1] = cur.Name
+                cur = cur.Parent
+            end
+            return nil
+        end
+
+        local function manualPathFor(p)
+            if p.path and p.path.segs and #p.path.segs > 0 then
+                return table.concat(p.path.segs, ".")
+            end
+            local r = p.remote
+            if r and r.Parent then
+                local segs = segsRelative(r, LocalPlayer, {"Players", "LocalPlayer"})
+                if not segs and LocalPlayer.Character then
+                    segs = segsRelative(r, LocalPlayer.Character, {"Players", "LocalPlayer", "Character"})
+                end
+                if not segs then
+                    local pf = pathFromInstance(r)
+                    segs = pf and pf.segs
+                end
+                if segs then
+                    return table.concat(segs, ".")
+                end
+            end
+            return nil
+        end
+
+        local function dirTextOf(inst)
+            local par = inst.Parent
+            if not par then
+                return nil
+            end
+            local pf = pathFromInstance(par)
+            if pf then
+                return table.concat(pf.segs, ".")
+            end
+            return nil
+        end
+
+        local AIM_PARTS = {"HumanoidRootPart", "Head", "Torso", "UpperTorso"}
+        local NEAR = 15 -- até quantos studs uma coordenada ainda é considerada "a posição de alguém"
+
+        local function manualSpecFor(p)
+            local spec = {args = {}, notes = {}}
+            local skipped = {}
+            local tType, tName, tDir, tObj
+            local pending = {} -- Vector3/CFrame: resolvidos depois, quando o alvo já é conhecido
+            local function skip(i, why)
+                skipped[#skipped + 1] = "#" .. i .. " (" .. why .. ")"
+            end
+            local function useArg(i, name)
+                for _, a in ipairs(spec.args) do
+                    if a == name then
+                        skip(i, "'" .. name .. "' repetido")
+                        return false
+                    end
+                end
+                spec.args[#spec.args + 1] = name
+                return true
+            end
+            local function useTarget(i, ttype, name, dir, obj)
+                if tType and (tType ~= ttype or tName ~= name) then
+                    skip(i, "alvo diferente do primeiro")
+                    return false
+                end
+                tType, tName, tDir, tObj = ttype, name, dir, obj
+                return true
+            end
+            local function handleSlot(i, d)
+                local t = d.t
+                if t == "instance" then
+                    local inst, plr, asChar
+                    if d.dyn == "player" then
+                        local f = (d.who == "@me") and LocalPlayer or Players:FindFirstChild(d.who)
+                        if not (f and f:IsA("Player")) then
+                            return skip(i, "jogador '" .. tostring(d.who) .. "' não está no servidor")
+                        end
+                        plr, asChar = f, d.as == "character"
+                    else
+                        inst = d.inst
+                        if not (inst and (inst == game or inst.Parent)) and d.path then
+                            inst = resolveStrict(d.path)
+                        end
+                        if not inst then
+                            return skip(i, "objeto não encontrado agora")
+                        end
+                        if inst:IsA("Player") then
+                            plr = inst
+                        elseif inst:IsA("Model") then
+                            local owner = Players:GetPlayerFromCharacter(inst)
+                            if owner then
+                                plr, asChar = owner, true
+                            end
+                        elseif inst:IsA("BasePart") and inst.Name == "HumanoidRootPart" then
+                            local mdl = inst:FindFirstAncestorOfClass("Model")
+                            local owner = mdl and Players:GetPlayerFromCharacter(mdl)
+                            if owner then
+                                if useTarget(i, "Players", owner.Name) then
+                                    useArg(i, "HumanoidRootPart")
+                                end
+                                return
+                            end
+                        end
+                    end
+                    if plr then
+                        if useTarget(i, "Players", plr.Name) then
+                            useArg(i, asChar and "Character" or "Player")
+                        end
+                        return
+                    end
+                    if inst:IsA("Model") then
+                        local dir = dirTextOf(inst)
+                        if not dir then
+                            return skip(i, "Model sem pasta conhecida")
+                        end
+                        local ttype = inst:FindFirstChildOfClass("Humanoid") and "NPCs" or "Models"
+                        if useTarget(i, ttype, inst.Name, dir, inst) then
+                            useArg(i, "Model")
+                        end
+                        return
+                    end
+                    if inst:IsA("BasePart") then
+                        local dir = dirTextOf(inst)
+                        if not dir then
+                            return skip(i, "Part sem pasta conhecida")
+                        end
+                        if useTarget(i, "Parts", inst.Name, dir, inst) then
+                            useArg(i, "Part")
+                        end
+                        return
+                    end
+                    return skip(i, inst.ClassName .. " sem equivalente")
+                elseif t == "Vector3" or t == "CFrame" then
+                    pending[#pending + 1] = {i = i, d = d}
+                elseif t == "string" then
+                    local f = d.v ~= "" and Players:FindFirstChild(d.v) or nil
+                    if f and f:IsA("Player") then
+                        if useTarget(i, "Players", f.Name) then
+                            useArg(i, "Nome")
+                        end
+                    elseif spec.text == nil then
+                        spec.text = d.v
+                        useArg(i, "Texto fixo")
+                    else
+                        skip(i, "segundo texto")
+                    end
+                elseif t == "number" then
+                    if spec.number == nil then
+                        spec.number = d.v
+                        useArg(i, "Número fixo")
+                    else
+                        skip(i, "segundo número")
+                    end
+                else
+                    skip(i, tostring(t) .. " sem equivalente")
+                end
+            end
+            for i = 1, p.n do
+                local s = p.slots[i]
+                local d = s and slotDesc(p, s)
+                if d then
+                    local ok, err = pcall(handleSlot, i, d)
+                    if not ok then
+                        skip(i, "erro ao ler")
+                        Win:Log("ERROR", "Event Intelligence: argumento #" .. i .. " não pôde ser passado ao manual", tostring(err))
+                    end
+                else
+                    skip(i, "sem dados")
+                end
+            end
+
+            --// COORDENADAS AUTOMÁTICAS: nada de número fixo. Descobre de onde o valor veio
+            --// (posição do alvo, minha posição ou direção) e deixa o manual recalcular a cada disparo.
+            local function targetModel()
+                if tType == "Players" then
+                    local pl = (tName == LocalPlayer.Name) and LocalPlayer or Players:FindFirstChild(tName)
+                    return (pl and pl:IsA("Player")) and pl.Character or nil
+                end
+                return tObj
+            end
+            local function candidates(tm)
+                local out, seen = {}, {}
+                if not tm then
+                    return out
+                end
+                if tm:IsA("BasePart") then
+                    out[1] = {name = tm.Name, part = tm}
+                    return out
+                end
+                for _, nm in ipairs(AIM_PARTS) do
+                    local part = getPart(tm, nm, true)
+                    if part and not seen[part] then
+                        seen[part] = true
+                        out[#out + 1] = {name = nm, part = part}
+                    end
+                end
+                return out
+            end
+            for _, it in ipairs(pending) do
+                local i, d = it.i, it.d
+                local ok, err = pcall(function()
+                    local v = Vector3.new(d.x, d.y, d.z)
+                    local me = getRoot()
+                    local isDir = d.t == "Vector3" and math.abs(v.Magnitude - 1) < 0.02
+                    if not isDir and not tType then
+                        -- nenhum alvo nos argumentos: vê se a coordenada é a posição de algum jogador
+                        local bestPl, bestD
+                        for _, pl in ipairs(Players:GetPlayers()) do
+                            if pl ~= LocalPlayer and pl.Character then
+                                for _, c in ipairs(candidates(pl.Character)) do
+                                    local dd = (c.part.Position - v).Magnitude
+                                    if not bestD or dd < bestD then
+                                        bestPl, bestD = pl, dd
+                                    end
+                                end
+                            end
+                        end
+                        if bestPl and bestD <= NEAR and useTarget(i, "Players", bestPl.Name) then
+                            spec.notes[#spec.notes + 1] = "alvo detectado pela coordenada #" .. i .. ": " .. bestPl.Name
+                        end
+                    end
+                    local bestC, dT
+                    for _, c in ipairs(candidates(targetModel())) do
+                        local dd = (c.part.Position - v).Magnitude
+                        if not dT or dd < dT then
+                            bestC, dT = c, dd
+                        end
+                    end
+                    local dM = me and (me.Position - v).Magnitude or nil
+                    if isDir then
+                        local best, bestDot = nil, 0.95
+                        local function try(src, dir)
+                            local dt = dir:Dot(v)
+                            if dt > bestDot then
+                                best, bestDot = src, dt
+                            end
+                        end
+                        if me then
+                            try("LookVector do meu personagem", me.CFrame.LookVector)
+                        end
+                        if bestC then
+                            try("LookVector do alvo", bestC.part.CFrame.LookVector)
+                        end
+                        if me and bestC then
+                            local diff = bestC.part.Position - me.Position
+                            if diff.Magnitude > 1e-3 then
+                                try("Direção minha → alvo", diff.Unit)
+                            end
+                        end
+                        local exact = best ~= nil
+                        if not best then
+                            best = (me and bestC) and "Direção minha → alvo" or "LookVector do meu personagem"
+                        end
+                        local placed
+                        if not spec.lookSource then
+                            if useArg(i, "LookVector") then
+                                spec.lookSource, placed = best, true
+                            end
+                        elseif not spec.vecSource then
+                            if useArg(i, "Vector3") then
+                                spec.vecSource, placed = best, true
+                            end
+                        else
+                            skip(i, "vetor de direção extra")
+                        end
+                        if placed then
+                            spec.notes[#spec.notes + 1] = "#" .. i .. " → " .. best .. (exact and "" or " (aprox.)")
+                        end
+                    else
+                        local who, exact
+                        if bestC and dT <= NEAR and (not dM or dT <= dM) then
+                            who, exact = "target", true
+                        elseif dM and dM <= NEAR then
+                            who, exact = "me", true
+                        elseif bestC then
+                            who, exact = "target", false
+                        else
+                            who, exact = "me", false
+                        end
+                        if d.t == "CFrame" then
+                            local src = (who == "target") and "CFrame do alvo" or "CFrame do meu personagem"
+                            if useArg(i, "CFrame") then
+                                spec.cfSource = src
+                                spec.notes[#spec.notes + 1] = "#" .. i .. " → " .. src .. (exact and "" or " (aprox.)")
+                            end
+                        else
+                            local src = (who == "target") and "Position do alvo" or "Position do meu personagem"
+                            local placed
+                            if not spec.posSource then
+                                if useArg(i, "Position") then
+                                    spec.posSource, placed = src, true
+                                end
+                            elseif not spec.vecSource then
+                                if useArg(i, "Vector3") then
+                                    spec.vecSource, placed = src, true
+                                end
+                            else
+                                skip(i, "terceira posição")
+                            end
+                            if placed then
+                                if who == "target" and exact and bestC and tType ~= "Parts" and not spec.aimPart then
+                                    spec.aimPart = bestC.name
+                                end
+                                spec.notes[#spec.notes + 1] = "#" .. i .. " → " .. src .. (exact and "" or " (aprox.)")
+                            end
+                        end
+                    end
+                end)
+                if not ok then
+                    skip(i, "erro ao ler")
+                    Win:Log("ERROR", "Event Intelligence: coordenada #" .. i .. " não pôde ser automatizada", tostring(err))
+                end
+            end
+
+            spec.target = tType and {type = tType, name = tName, dir = tDir} or nil
+            spec.skipped = skipped
+            spec.path = manualPathFor(p)
+            spec.kind = p.method
+            return spec
+        end
+
+        local function toManual(p)
+            if p.learning then
+                notify("Event Intelligence", "Ainda aprendendo: faça a ação no jogo uma vez para eu ler os argumentos.", "warning")
+                return
+            end
+            local spec = manualSpecFor(p)
+            if not spec.path then
+                notify("Event Intelligence", "Não consegui descobrir o caminho do Remote deste evento.", "warning")
+                return
+            end
+            EI.toManual(spec)
+            Win:Log("INFO", "Event Intelligence → manual: " .. spec.path .. " · " .. tostring(spec.kind), "argumentos: " .. table.concat(spec.args, ", "))
+            notify("Event Intelligence", "Passado para o modo manual: caminho, tipo de chamada, alvo e " .. #spec.args .. " argumento(s). Veja em ⚡ Evento / Remote.", "success")
+            if #spec.notes > 0 then
+                notify("Event Intelligence", "Coordenadas automáticas (seguem o alvo/você em tempo real): " .. table.concat(spec.notes, " · "), "info")
+            end
+            if #spec.skipped > 0 then
+                notify("Event Intelligence", "Sem equivalente no manual: " .. table.concat(spec.skipped, ", ") .. ". Confira antes de executar.", "warning")
+            end
+        end
+
+        local function slotLabelFor(s)
+            local conf = s.analysis.conf
+            if s.typeVaries then
+                conf = "baixa"
+            end
+            return "#" .. s.idx .. " " .. s.analysis.kind .. " · " .. CONF_TXT[conf]
+        end
+
+        local function addSlotControls(p, s)
+            local panel = ui.panel
+            local kind = s.analysis.kind
+            panel:AddLabel(slotLabelFor(s) .. " — " .. s.analysis.reason)
+
+            if kind == "vector3" or kind == "cframe" then
+                local cur = s.override or s.original
+                local comps = {x = cur.x, y = cur.y, z = cur.z}
+                local function commit()
+                    local o = {}
+                    for k2, v2 in pairs(s.original) do
+                        o[k2] = v2
+                    end
+                    o.x, o.y, o.z = comps.x, comps.y, comps.z
+                    if kind == "cframe" and s.original.comps then
+                        local c = {}
+                        for i, v2 in ipairs(s.original.comps) do
+                            c[i] = v2
+                        end
+                        c[1], c[2], c[3] = comps.x, comps.y, comps.z
+                        o.comps = c
+                    end
+                    s.override = o
+                    s.edited = true
+                end
+                for _, axis in ipairs({"x", "y", "z"}) do
+                    panel:AddInput({
+                        Name = "#" .. s.idx .. " · " .. axis:upper(), Numeric = true, Min = -1e9, Max = 1e9,
+                        Default = comps[axis], Feature = false,
+                        Callback = function(v)
+                            comps[axis] = v
+                            commit()
+                        end,
+                    })
+                end
+
+            elseif kind == "player" or kind == "character" then
+                local who = "@orig"
+                local ov = s.override
+                if ov and ov.dyn == "player" then
+                    who = ov.who
+                end
+                local default = ORIGINAL_OPT
+                if who == "@me" then
+                    default = "Eu"
+                elseif who ~= "@orig" then
+                    default = who
+                end
+                local dd = panel:AddDropdown({
+                    Name = "#" .. s.idx .. (kind == "player" and " jogador" or " personagem de"),
+                    Options = playerOptions(true), Default = default, Feature = false,
+                    Callback = function(v)
+                        if v == nil or v == ORIGINAL_OPT then
+                            s.override, s.edited = nil, false
+                        else
+                            s.override = {t = "instance", dyn = "player", who = (v == "Eu") and "@me" or v, as = kind}
+                            s.edited = true
+                        end
+                    end,
+                })
+                ui.playerDds[#ui.playerDds + 1] = dd
+
+            elseif kind == "model" or kind == "part" or kind == "instance" or kind == "unresolved" then
+                local shown = (s.override and s.override.text) or s.original.text or ""
+                local el
+                el = panel:AddInput({
+                    Name = "#" .. s.idx .. " caminho", Default = shown, Placeholder = "game.Workspace.Objeto", Feature = false,
+                    Callback = function(txt)
+                        local path = parsePathInput(txt)
+                        local inst, why
+                        if path then
+                            inst, why = resolveStrict(path)
+                        end
+                        local req = s.analysis.reqClass
+                        if inst and (not req or inst:IsA(req)) then
+                            s.override = {t = "instance", inst = inst, path = path, text = pathText(path)}
+                            s.edited = true
+                            notify("Event Intelligence", "Argumento #" .. s.idx .. " agora aponta para " .. inst:GetFullName(), "success")
+                        else
+                            notify("Event Intelligence", "Caminho não aceito (" .. tostring(why or "tipo incompatível com o original") .. "). Valor anterior mantido.", "warning")
+                            el:Set(shown, true)
+                        end
+                    end,
+                })
+
+            elseif kind == "playername" or kind == "userid" then
+                local default = ORIGINAL_OPT
+                if s.override then
+                    for _, pl in ipairs(Players:GetPlayers()) do
+                        if (kind == "playername" and pl.Name == s.override.v) or (kind == "userid" and pl.UserId == s.override.v) then
+                            default = (pl == LocalPlayer) and "Eu" or pl.Name
+                        end
+                    end
+                end
+                local dd = panel:AddDropdown({
+                    Name = "#" .. s.idx .. (kind == "playername" and " nome do jogador" or " UserId do jogador"),
+                    Options = playerOptions(true), Default = default, Feature = false,
+                    Callback = function(v)
+                        if v == nil or v == ORIGINAL_OPT then
+                            s.override, s.edited = nil, false
+                            return
+                        end
+                        local plr = (v == "Eu") and LocalPlayer or Players:FindFirstChild(v)
+                        if not plr or not plr:IsA("Player") then
+                            notify("Event Intelligence", "Esse jogador não está mais no servidor. Original mantido.", "warning")
+                            s.override, s.edited = nil, false
+                            return
+                        end
+                        if kind == "playername" then
+                            s.override = {t = "string", v = plr.Name}
+                        else
+                            s.override = {t = "number", v = plr.UserId}
+                        end
+                        s.edited = true
+                    end,
+                })
+                ui.playerDds[#ui.playerDds + 1] = dd
+
+            elseif kind == "coords3" then
+                local info = table3(s.original)
+                local cur = {info.v[1], info.v[2], info.v[3]}
+                local prevOv = s.override and table3(s.override)
+                if prevOv then
+                    cur = {prevOv.v[1], prevOv.v[2], prevOv.v[3]}
+                end
+                local function commit()
+                    local entries = {}
+                    for i = 1, 3 do
+                        local key
+                        if info.style == "array" then
+                            key = {t = "number", v = i}
+                        else
+                            key = {t = "string", v = info.keys[i]}
+                        end
+                        entries[i] = {k = key, v = {t = "number", v = cur[i]}}
+                    end
+                    s.override = {t = "table", entries = entries}
+                    s.edited = true
+                end
+                for i, axis in ipairs({"X", "Y", "Z"}) do
+                    panel:AddInput({
+                        Name = "#" .. s.idx .. " · " .. axis, Numeric = true, Min = -1e9, Max = 1e9, Default = cur[i], Feature = false,
+                        Callback = function(v)
+                            cur[i] = v
+                            commit()
+                        end,
+                    })
+                end
+
+            elseif kind == "number" then
+                panel:AddInput({
+                    Name = "#" .. s.idx .. " número", Numeric = true, Min = -1e12, Max = 1e12,
+                    Default = (s.override or s.original).v, Feature = false,
+                    Callback = function(v)
+                        s.override, s.edited = {t = "number", v = v}, true
+                    end,
+                })
+            elseif kind == "string" then
+                panel:AddInput({
+                    Name = "#" .. s.idx .. " texto", Default = (s.override or s.original).v, Feature = false,
+                    Callback = function(v)
+                        s.override, s.edited = {t = "string", v = tostring(v)}, true
+                    end,
+                })
+            elseif kind == "boolean" then
+                panel:AddToggle({
+                    Name = "#" .. s.idx .. " valor", Default = (s.override or s.original).v, Feature = false,
+                    Callback = function(v)
+                        s.override, s.edited = {t = "boolean", v = v}, true
+                    end,
+                })
+            else
+                panel:AddLabel("🔒 #" .. s.idx .. " preservado exatamente como veio; sem controle (análise manual).")
+            end
+
+            -- interpretação confirmada pelo usuário (nunca muda o tipo do valor)
+            local id = interpFor(s.original)
+            if id and (s.original.t == "string" or s.original.t == "number" or s.original.t == "table") then
+                local meta = INTERPS[id]
+                if meta.need(s.original) then
+                    panel:AddDropdown({
+                        Name = "#" .. s.idx .. " interpretar como", Feature = false,
+                        Options = {"Manter original (padrão)", meta.label},
+                        Default = s.interp == id and meta.label or "Manter original (padrão)",
+                        Callback = function(v)
+                            s.interp = (v == meta.label) and id or nil
+                            s.analysis = analyze(s.original, s.interp)
+                            s.override, s.edited = nil, false
+                            task.defer(buildPanel, p)
+                        end,
+                    })
+                end
+            end
+        end
+
+        function buildPanel(p)
+            clearPanel()
+            selected = p
+            local panel = ui.panel
+            if not p then
+                panel:AddLabel("Nenhum evento selecionado. Informe só o caminho e toque em Aprender, ou cole uma chamada do RSpy e toque em Analisar.")
+                return
+            end
+            panel:AddLabel(headerText(p))
+            ui.obsLabel = panel:AddLabel(observedText(p))
+            panel:AddToggle({
+                Name = "Monitorar em tempo real", Default = p.monitor, Feature = false,
+                Callback = function(on)
+                    p.monitor = on
+                    syncWatch()
+                    if on and not HAS_HOOK then
+                        notify("Event Intelligence", "Este executor não permite observar chamadas do jogo. Só a chamada colada é usada.", "warning")
+                    end
+                    refreshInfo()
+                end,
+            })
+            panel:AddToggle({
+                Name = "Seguir valores observados", Default = p.follow, Feature = false,
+                Callback = function(on)
+                    p.follow = on
+                end,
+            })
+            panel:AddLabel("'Seguir' usa o último valor observado nos argumentos que você não editou (somente se o tipo for o mesmo). Desligado, vale o valor original colado.")
+            for _, s in ipairs(p.slots) do
+                addSlotControls(p, s)
+            end
+            panel:AddButton({Name = "🚀 Enviar uma vez", Callback = function() sendNow(p) end})
+            panel:AddButton({Name = "📥 Passar tudo para o manual", Callback = function() toManual(p) end})
+            panel:AddButton({Name = "♻️ Zerar aba Evento (como nova)", Callback = function()
+                if EI.resetTab then
+                    task.spawn(EI.resetTab)
+                end
+            end})
+            -- o resto fica guardado aqui, recolhido
+            local adv = panel:AddSubSection("🔧 Avançado", false)
+            adv:AddButton({Name = "👁 Pré-visualizar argumentos", Callback = function() previewArgs(p) end})
+            if p.pathOnly then
+                adv:AddButton({Name = "🧲 Reaprender na próxima chamada", Callback = function()
+                    p.learning, p.learned = true, false
+                    p.slots, p.n, p.notes, p.manual = {}, 0, {}, nil
+                    p.lastObs, p.obs = nil, {count = 0}
+                    p.sig = signature(p)
+                    syncWatch()
+                    ui.rebuildList(p)
+                    refreshInfo()
+                    notify("Event Intelligence", "Faça a ação no jogo uma vez: a próxima chamada real redefine os argumentos.", "info")
+                end})
+            end
+            adv:AddButton({Name = "🔄 Atualizar (Remote e jogadores)", Callback = function()
+                local r = getRemote(p)
+                local rebuild = p.learning == true
+                if p.manual and p.manualRemote and r then
+                    if (p.method == "FireServer" and r:IsA("RemoteEvent")) or (p.method == "InvokeServer" and r:IsA("RemoteFunction")) then
+                        p.manual, p.manualRemote = nil, nil
+                        rebuild = true
+                    end
+                end
+                for _, s in ipairs(p.slots) do
+                    if s.analysis.kind == "unresolved" and s.original.path then
+                        local inst, why = resolveStrict(s.original.path)
+                        s.original.inst, s.original.err = inst, why
+                        if inst then
+                            s.analysis = analyze(s.original, nil)
+                            rebuild = true
+                        end
+                    end
+                end
+                if rebuild then
+                    task.defer(buildPanel, p)
+                end
+                syncWatch()
+                for _, dd in ipairs(ui.playerDds) do
+                    dd:Refresh(playerOptions(true))
+                end
+                refreshInfo()
+            end})
+            adv:AddButton({Name = "↩ Restaurar valores originais", Callback = function()
+                for _, s in ipairs(p.slots) do
+                    s.override, s.edited = nil, false
+                end
+                p.follow = false
+                task.defer(buildPanel, p)
+                notify("Event Intelligence", "Valores originais restaurados.", "info")
+            end})
+            adv:AddButton({Name = "💾 Salvar interpretações confirmadas", Callback = function()
+                local rec, count = {}, 0
+                for i, s in ipairs(p.slots) do
+                    if s.interp then
+                        rec[tostring(i)] = {interp = s.interp, t = typeTag(s.original)}
+                        count = count + 1
+                    end
+                end
+                if count == 0 then
+                    notify("Event Intelligence", "Não há interpretação confirmada por você neste evento.", "warning")
+                    return
+                end
+                saved[p.key] = {sig = p.sig, slots = rec}
+                if writeSaved() then
+                    notify("Event Intelligence", count .. " interpretação(ões) salva(s). Só serão reaplicadas se a estrutura for idêntica.", "success")
+                else
+                    notify("Event Intelligence", "O executor não permite salvar arquivos; vale só nesta sessão.", "warning")
+                end
+            end})
+            adv:AddButton({Name = "🧽 Esquecer interpretação salva", Callback = function()
+                if saved[p.key] then
+                    saved[p.key] = nil
+                    writeSaved()
+                    notify("Event Intelligence", "Interpretação salva removida.", "info")
+                else
+                    notify("Event Intelligence", "Não havia interpretação salva para este evento.", "info")
+                end
+            end})
+            adv:AddButton({Name = "🗑 Remover este evento da análise", Callback = function()
+                for i, q in ipairs(profiles) do
+                    if q == p then
+                        table.remove(profiles, i)
+                        break
+                    end
+                end
+                syncWatch()
+                ui.rebuildList(nil)
+                refreshInfo()
+            end})
+        end
+
+        local function rebuildList(pick)
+            byLabel = {}
+            local labels = {}
+            for _, p in ipairs(profiles) do
+                local base, label, k = profileLabel(p), nil, 1
+                label = base
+                while byLabel[label] do
+                    k = k + 1
+                    label = base .. " #" .. k
+                end
+                p.label = label
+                byLabel[label] = p
+                labels[#labels + 1] = label
+            end
+            ui.list:Refresh(labels)
+            if pick and pick.label then
+                ui.list:Set(pick.label, true)
+            end
+            buildPanel(pick)
+        end
+        ui.rebuildList = rebuildList
+
+        -- chamado quando um perfil "só caminho" acaba de aprender a estrutura
+        onLearned = function(p)
+            local short1 = tostring(p.key):match("([^%.]+)$") or tostring(p.key)
+            Win:Log("INFO", "Event Intelligence: '" .. short(p.key, 50) .. "' aprendido (" .. p.n .. " argumento(s), " .. p.method .. ")")
+            notify("Event Intelligence", "Aprendi " .. short(short1, 24) .. ": " .. p.n .. " argumento(s). Os controles estão no painel; 'Enviar uma vez' repete a chamada mais recente.", "success")
+            rebuildList(selected or p)
+            refreshInfo()
+        end
+
+        local function learnByPath(text)
+            text = tostring(text or "")
+            if trim(text) == "" then
+                notify("Event Intelligence", "Digite o caminho do evento primeiro.", "warning")
+                return
+            end
+            if not HAS_HOOK then
+                notify("Event Intelligence", "Este executor não oferece hookmetamethod/getnamecallmethod, então não dá para aprender só pelo caminho. Cole a chamada do RSpy.", "warning")
+                return
+            end
+            if not enabled then -- o usuário só precisa do caminho: liga sozinho
+                applyEnabled(true)
+                if Win.Elements.ev_ei_on then
+                    Win.Elements.ev_ei_on:Set(true, true)
+                end
+            end
+            local okP, p, err = pcall(profileFromPath, text)
+            if not okP then
+                Win:Log("ERROR", "Event Intelligence: falha ao preparar o caminho", tostring(p))
+                notify("Event Intelligence", "Não foi possível usar esse caminho. Nada foi alterado.", "error")
+                return
+            end
+            if not p then
+                notify("Event Intelligence", tostring(err), "warning")
+                return
+            end
+            for _, q in ipairs(profiles) do
+                if q.callKey == p.callKey then
+                    rebuildList(q)
+                    notify("Event Intelligence", "Esse caminho já está na lista (configurações mantidas). Use 'Reaprender' para ler a estrutura de novo.", "info")
+                    return
+                end
+            end
+            if #profiles >= MAX_PROFILES then
+                notify("Event Intelligence", "Limite de " .. MAX_PROFILES .. " eventos analisados; remova algum para adicionar.", "warning")
+                return
+            end
+            profiles[#profiles + 1] = p
+            rebuildList(p)
+            syncWatch()
+            refreshInfo()
+            if p.remote then
+                notify("Event Intelligence", "Observando " .. p.remote.Name .. ". Faça a ação no jogo uma vez (ex.: usar o item) para eu aprender os argumentos.", "info")
+            else
+                notify("Event Intelligence", "Remote não encontrado agora; vou procurar de novo sozinho. Ele precisa existir para ser observado.", "warning")
+            end
+        end
+
+        local function analyzeText(text)
+            text = tostring(text or "")
+            if trim(text) == "" then
+                notify("Event Intelligence", "Cole uma chamada do RSpy antes de analisar.", "warning")
+                return
+            end
+            if #text > MAX_SRC then
+                notify("Event Intelligence", "Texto grande demais para análise segura. Nada foi alterado.", "warning")
+                return
+            end
+            local result, err = parseRSpy(text)
+            if not result then
+                Win:Log("WARNING", "Event Intelligence: não foi possível ler o texto", tostring(err))
+                notify("Event Intelligence", "Texto não pôde ser lido (" .. tostring(err) .. "). Nada foi alterado; faça a análise manual.", "warning")
+                return
+            end
+            if #result.calls == 0 then
+                notify("Event Intelligence", "Nenhuma chamada FireServer/InvokeServer reconhecida. O texto foi mantido intacto; use o modo manual.", "warning")
+                return
+            end
+            local added, same, last = 0, 0, nil
+            for _, call in ipairs(result.calls) do
+                local okP, p = pcall(profileFromCall, call)
+                if not okP then
+                    Win:Log("ERROR", "Event Intelligence: falha ao analisar uma chamada (mantida intacta)", tostring(p))
+                else
+                    local dup
+                    for _, q in ipairs(profiles) do
+                        if q.callKey == p.callKey then
+                            dup = q
+                            break
+                        end
+                    end
+                    if dup then
+                        same = same + 1
+                        last = dup
+                    elseif #profiles >= MAX_PROFILES then
+                        notify("Event Intelligence", "Limite de " .. MAX_PROFILES .. " eventos analisados; remova algum para adicionar.", "warning")
+                        break
+                    else
+                        for _, nt in ipairs(result.notes) do
+                            p.notes[#p.notes + 1] = nt
+                        end
+                        applySaved(p)
+                        profiles[#profiles + 1] = p
+                        added = added + 1
+                        last = p
+                    end
+                end
+            end
+            rebuildList(last)
+            syncWatch()
+            refreshInfo()
+            local manual = 0
+            for _, p in ipairs(profiles) do
+                if p.manual then
+                    manual = manual + 1
+                end
+            end
+            notify("Event Intelligence", string.format("%d evento(s) novo(s), %d já analisado(s) (configurações mantidas). %d precisam de análise manual.", added, same, manual), added > 0 and "success" or "info")
+        end
+
+        --// controles estáticos
+        sec:AddToggle({
+            Name = "Ativar Event Intelligence", Flag = "ev_ei_on", Default = false, Feature = false,
+            Callback = function(on)
+                task.defer(function()
+                    applyEnabled(on)
+                end)
+            end,
+        })
+        ui.status = sec:AddLabel("Desativado. O modo manual continua funcionando normalmente; nada é analisado nem monitorado.")
+        sec:AddLabel("🧲 MODO SÓ CAMINHO: informe apenas o caminho do evento. O Event Intelligence passa a observar esse evento e aprende os argumentos sozinho na 1ª chamada real do jogo (use o item/faça a ação uma vez). Não precisa colar nada do RSpy. Se a Tool estiver no Backpack ou no Character, ele acha nos dois.")
+        local pathBox = sec:AddInput({
+            Name = "Caminho do evento", Flag = "ev_ei_path", Default = "",
+            Placeholder = "Players.LocalPlayer.Backpack.DefaultSlap.Event", Feature = false,
+        })
+        sec:AddButton({Name = "🧲 Aprender só pelo caminho", Callback = function()
+            learnByPath(pathBox:Get())
+        end})
+        sec:AddLabel("Ou, se preferir, cole abaixo a chamada completa do RSpy.")
+        sec:AddLabel("Cole abaixo a chamada copiada do RSpy. O texto é apenas lido, nunca executado. O que não for reconhecido com segurança fica intacto e marcado para análise manual. Só são acompanhadas chamadas que o executor consegue observar.")
+
+        local inputRow = sec:_row(150)
+        local holder = new("ScrollingFrame", {
+            Position = UDim2.fromOffset(6, 6), Size = UDim2.new(1, -12, 1, -12), BackgroundColor3 = Theme.Background,
+            BorderSizePixel = 0, ScrollBarThickness = 4, CanvasSize = UDim2.new(0, 0, 0, 0),
+            AutomaticCanvasSize = Enum.AutomaticSize.Y, ClipsDescendants = true,
+        }, inputRow)
+        corner(holder, 6)
+        local box = new("TextBox", {
+            Size = UDim2.new(1, -8, 0, 130), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1,
+            MultiLine = true, ClearTextOnFocus = false, TextWrapped = true, Font = Enum.Font.Code, TextSize = 12,
+            TextColor3 = Theme.Text, PlaceholderText = "Cole aqui a chamada do RSpy...", PlaceholderColor3 = Theme.SubText,
+            TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top, Text = "",
+        }, holder)
+        padding(box, 6, 6, 6, 6)
+
+        sec:AddButton({Name = "🔍 Analisar chamada colada", Callback = function()
+            if not enabled then
+                notify("Event Intelligence", "Ative o Event Intelligence primeiro.", "warning")
+                return
+            end
+            analyzeText(box.Text)
+        end})
+        sec:AddButton({Name = "🧹 Limpar caixa de texto", Callback = function()
+            box.Text = ""
+        end})
+        ui.list = sec:AddDropdown({
+            Name = "Evento analisado", Options = {}, Placeholder = "Nenhum evento analisado", Feature = false,
+            Callback = function(v)
+                buildPanel(v and byLabel[v] or nil)
+            end,
+        })
+        ui.panel = sec:AddSubSection("🎛 Controles do evento selecionado", true)
+        buildPanel(nil)
+
+        function applyEnabled(on)
+            enabled = on == true
+            if enabled then
+                loadSaved()
+            end
+            syncWatch()
+            refreshInfo()
+            Win:Log("INFO", enabled and "Event Intelligence ativado" or "Event Intelligence desativado (configurações preservadas)")
+        end
+
+        local refreshPending = false
+        local function playersChanged()
+            if refreshPending then
+                return
+            end
+            refreshPending = true
+            task.delay(0.4, function()
+                refreshPending = false
+                for _, dd in ipairs(ui.playerDds) do
+                    pcall(dd.Refresh, dd, playerOptions(true))
+                end
+            end)
+        end
+        Win:Track(Players.PlayerAdded:Connect(playersChanged))
+        Win:Track(Players.PlayerRemoving:Connect(playersChanged))
+
+        -- perfis "só caminho": religa o Remote quando a Tool é recriada (respawn) ou aparece depois
+        task.spawn(function()
+            while Win:IsAlive() do
+                task.wait(2)
+                if enabled then
+                    local changed = false
+                    for _, p in ipairs(profiles) do
+                        if p.pathOnly and not (p.remote and p.remote.Parent) then
+                            local before = p.remote
+                            local r = getRemote(p)
+                            if r then
+                                if p.learning then
+                                    p.method = remoteKind(r)
+                                end
+                                changed = true
+                            elseif before then
+                                changed = true
+                            end
+                        end
+                    end
+                    if changed then
+                        pcall(syncWatch)
+                        pcall(refreshInfo)
+                        if selected and selected.pathOnly and selected.learning then
+                            pcall(buildPanel, selected)
+                        end
+                    end
+                end
+            end
+        end)
+
+        -- usado pelo botão "Zerar aba Evento": limpa eventos analisados, caixas de texto e desliga o Event Intelligence
+        EI.reset = function()
+            for i = #profiles, 1, -1 do
+                table.remove(profiles, i)
+            end
+            box.Text = ""
+            pcall(pathBox.Set, pathBox, "", true)
+            applyEnabled(false)
+            if Win.Elements.ev_ei_on then
+                pcall(Win.Elements.ev_ei_on.Set, Win.Elements.ev_ei_on, false, true)
+            end
+            syncWatch()
+            ui.rebuildList(nil)
+            refreshInfo()
+        end
+
+        Win:OnDestroy(function()
+            hookState.handler = nil
+            watched, watchedCount = {}, 0
+            queue, qn = {}, 0
+            enabled = false
+        end)
+    end)()
+
+    Win:OnDestroy(function()
+        session.stop = true
+        stopLoop("event")
+    end)
+end
+
+--// ============================================================
 --//  SONDAS: ligam cada controle ao que a função realmente executou
 --// ============================================================
 do
@@ -7321,9 +11509,9 @@ do
         mv_speed_on = "speed", mv_jump_on = "jump", fly_on = "fly", antivoid = "antivoid", grav_on = "grav",
         noclip = "noclip", bhop = "bhop", spin_on = "spin", antikb = "antikb",
         fb_on = "fb", nofog = "nofog", light_time_on = "ltime", light_bright_on = "lbright",
-        cam_fov_on = "camfov", zoom_on = "zoom", antiui = "antiui",
+        cam_fov_on = "camfov", zoom_on = "zoom", antiui = "antiui", fxclean = "fxclean",
         ia_loop_interact = "ia_interact", ia_loop_collect = "ia_collect", ia_loop_tp = "ia_tp",
-        route_rec = "rrec", route_play = "rplay",
+        route_rec = "rrec", route_play = "rplay", ev_loop = "event",
     }
     for flag, id in pairs(map) do
         Win:Monitor(flag, P(id))
