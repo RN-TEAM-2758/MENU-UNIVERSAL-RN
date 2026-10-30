@@ -16,6 +16,8 @@
       Sec:AddDropdown{Name, Flag, Options, Default, Multi, Placeholder, Callback}
       Sec:AddMultiDropdown{Name, Flag, Options, Default, Source, AutoRefresh, Callback(valores, info), Searchable, Sort}
          (AddDropdown{Multi = true} usa o mesmo motor; nomes repetidos viram uma opção com contagem)
+      Sec:AddTempDropdown{Name, Input, Open, Callback}  (lista TEMPORÁRIA de diretórios com ✕; Input = retorno de AddInput{PathHistory = true};
+         tocar num diretório substitui o texto da caixa; só vai para arquivo se o jogador tocar em "💾 Salvar lista")
       Sec:AddKeybind {Name, Flag, Default, Callback (ao pressionar), Changed (ao trocar)}
       Sec:AddLabel("texto")
       Win:Notify{Title, Content, Duration, Type = info/success/warning/error}
@@ -1173,6 +1175,88 @@ function Nova.CreateWindow(opts)
         return el
     end
 
+    --// ---------- Dropdown temporário de diretórios ----------
+    -- Todo diretório digitado numa caixa com PathHistory = true entra nesta lista (compartilhada por toda a UI).
+    -- É TEMPORÁRIA: ao sair do jogo ela some, a menos que o jogador toque em "💾 Salvar lista".
+    local PathStore = {items = {}, subs = {}, max = 30}
+    local PATH_FILE = (HAS_FOLDER and (CONFIG_FOLDER .. "/") or (CONFIG_FOLDER .. "_")) .. "PathHistory.json"
+
+    do -- só existe arquivo se o jogador salvou a lista antes
+        local data = loadConfig(PATH_FILE)
+        if type(data) == "table" then
+            for _, p in ipairs(data) do
+                if type(p) == "string" and p ~= "" and #PathStore.items < PathStore.max then
+                    table.insert(PathStore.items, p)
+                end
+            end
+        end
+    end
+
+    local function cleanPath(p)
+        return (tostring(p or ""):gsub("^%s+", ""):gsub("%s+$", ""))
+    end
+
+    function PathStore:Notify()
+        for _, fn in ipairs(self.subs) do
+            pcall(fn)
+        end
+    end
+
+    function PathStore:Add(path) -- mais recente primeiro, sem repetir
+        path = cleanPath(path)
+        if path == "" then
+            return
+        end
+        for i, p in ipairs(self.items) do
+            if p == path then
+                table.remove(self.items, i)
+                break
+            end
+        end
+        table.insert(self.items, 1, path)
+        while #self.items > self.max do
+            table.remove(self.items)
+        end
+        self:Notify()
+    end
+
+    function PathStore:Remove(path)
+        for i, p in ipairs(self.items) do
+            if p == path then
+                table.remove(self.items, i)
+                break
+            end
+        end
+        self:Notify()
+    end
+
+    function PathStore:Clear()
+        self.items = {}
+        self:Notify()
+    end
+
+    function PathStore:SaveFile()
+        if not HAS_FS then
+            return false
+        end
+        return (pcall(function()
+            writefile(PATH_FILE, HttpService:JSONEncode(self.items))
+        end))
+    end
+
+    function PathStore:DeleteFile()
+        if not HAS_FS then
+            return false
+        end
+        return (pcall(function()
+            if type(delfile) == "function" and isfile(PATH_FILE) then
+                delfile(PATH_FILE)
+            else
+                writefile(PATH_FILE, "[]")
+            end
+        end))
+    end
+
     function SectionMT:AddLabel(text)
         local lbl = makeLabel(self._frame, tostring(text or ""), {
             Size = UDim2.new(1, 0, 0, 0),
@@ -1495,9 +1579,207 @@ function Nova.CreateWindow(opts)
             else
                 el:Set(c, false)
             end
+            if opts2.PathHistory and type(value) == "string" then
+                PathStore:Add(value) -- diretório usado entra no Dropdown temporário
+            end
         end)
 
         return finalize(el, opts2)
+    end
+
+
+    -- Dropdown TEMPORÁRIO de diretórios: igual aos outros, mas cada item tem um ✕ para remover.
+    -- Tocar num diretório da lista substitui o texto da caixa ligada (opts2.Input, devolvida por AddInput).
+    -- Nada é gravado em arquivo, a menos que o jogador toque em "💾 Salvar lista".
+    function SectionMT:AddTempDropdown(opts2)
+        opts2 = opts2 or {}
+        local input = opts2.Input
+        local open = opts2.Open == true
+        local ITEM_H, MAX_ROWS = 30, 5
+        local DANGER = Color3.fromRGB(240, 90, 90)
+
+        local header = self:_row(ROW_H)
+        local title = makeLabel(header, "", {
+            Position = UDim2.fromOffset(12, 0),
+            Size = UDim2.new(1, -40, 1, 0),
+            TextTruncate = Enum.TextTruncate.AtEnd,
+        })
+        local arrow = makeLabel(header, "▾", {
+            AnchorPoint = Vector2.new(1, 0.5),
+            Position = UDim2.new(1, -10, 0.5, 0),
+            Size = UDim2.fromOffset(20, 20),
+            TextXAlignment = Enum.TextXAlignment.Center,
+            TextColor3 = Theme.SubText,
+            TextSize = 14,
+        })
+        local headBtn = new("TextButton", {
+            Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, AutoButtonColor = false, Text = "",
+        }, header)
+        hoverEffect(header, headBtn)
+
+        local body = new("Frame", {
+            BackgroundColor3 = Theme.Background, BackgroundTransparency = 0.35, BorderSizePixel = 0,
+            Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
+            LayoutOrder = self:_nextOrder(), Visible = open,
+        }, self._frame)
+        corner(body, 6)
+        stroke(body, Theme.Stroke, 1)
+        new("UIListLayout", {Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder}, body)
+        padding(body, 6, 6, 6, 6)
+
+        local listHolder = new("ScrollingFrame", {
+            Size = UDim2.new(1, 0, 0, ITEM_H), BackgroundTransparency = 1, BorderSizePixel = 0,
+            ScrollBarThickness = 3, CanvasSize = UDim2.new(0, 0, 0, 0),
+            AutomaticCanvasSize = Enum.AutomaticSize.Y, LayoutOrder = 1,
+        }, body)
+        new("UIListLayout", {Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder}, listHolder)
+
+        local footer = new("Frame", {
+            Size = UDim2.new(1, 0, 0, 28), BackgroundTransparency = 1, LayoutOrder = 2,
+        }, body)
+        new("UIListLayout", {
+            FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 6),
+            SortOrder = Enum.SortOrder.LayoutOrder,
+        }, footer)
+
+        local function footBtn(text, order, color, onClick)
+            local b = new("TextButton", {
+                Size = UDim2.new(0.5, -3, 1, 0), BackgroundColor3 = Theme.Element, BorderSizePixel = 0,
+                AutoButtonColor = false, Text = text, Font = FONT, TextSize = 12, TextColor3 = color or Theme.Text,
+                LayoutOrder = order,
+            }, footer)
+            corner(b, 5)
+            b.MouseEnter:Connect(function()
+                tween(b, 0.1, {BackgroundColor3 = Theme.ElementHover})
+            end)
+            b.MouseLeave:Connect(function()
+                tween(b, 0.1, {BackgroundColor3 = Theme.Element})
+            end)
+            b.MouseButton1Click:Connect(onClick)
+            return b
+        end
+
+        local hint = makeLabel(body, "Temporária: some ao sair do jogo, a menos que você toque em 💾 Salvar lista.", {
+            Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, TextWrapped = true,
+            TextSize = 11, TextColor3 = Theme.SubText, LayoutOrder = 3,
+        })
+
+        local function currentText()
+            if input and input.Get then
+                local ok, v = pcall(input.Get, input)
+                if ok then
+                    return cleanPath(v)
+                end
+            end
+            return ""
+        end
+
+        local function render()
+            title.Text = (opts2.Name or "📂 Diretórios usados") .. "  (" .. #PathStore.items .. ")"
+            arrow.Text = open and "▴" or "▾"
+            body.Visible = open
+            if not open then
+                return
+            end
+            for _, c in ipairs(listHolder:GetChildren()) do
+                if not c:IsA("UIListLayout") then
+                    c:Destroy()
+                end
+            end
+            local items = PathStore.items
+            if #items == 0 then
+                makeLabel(listHolder, "Nenhum diretório ainda. Digite um na caixa de texto e confirme.", {
+                    Size = UDim2.new(1, 0, 0, ITEM_H), TextSize = 12, TextColor3 = Theme.SubText,
+                    TextWrapped = true, LayoutOrder = 1,
+                })
+                listHolder.Size = UDim2.new(1, 0, 0, ITEM_H)
+                return
+            end
+            local now = currentText()
+            for i, path in ipairs(items) do
+                local line = new("Frame", {
+                    Size = UDim2.new(1, -6, 0, ITEM_H), BackgroundColor3 = Theme.Element,
+                    BorderSizePixel = 0, LayoutOrder = i,
+                }, listHolder)
+                corner(line, 5)
+                local pick = new("TextButton", {
+                    Size = UDim2.new(1, -34, 1, 0), BackgroundTransparency = 1, AutoButtonColor = false,
+                    Text = path, Font = FONT, TextSize = 12, TextXAlignment = Enum.TextXAlignment.Left,
+                    TextTruncate = Enum.TextTruncate.AtEnd,
+                    TextColor3 = (path == now) and Theme.Accent or Theme.Text,
+                }, line)
+                padding(pick, 8, 0, 4, 0)
+                pick.MouseEnter:Connect(function()
+                    tween(line, 0.1, {BackgroundColor3 = Theme.ElementHover})
+                end)
+                pick.MouseLeave:Connect(function()
+                    tween(line, 0.1, {BackgroundColor3 = Theme.Element})
+                end)
+                pick.MouseButton1Click:Connect(function()
+                    -- substitui o diretório da caixa de texto atual
+                    if input and input.Set then
+                        local ok, err = pcall(input.Set, input, path, false)
+                        if not ok then
+                            warn("[NovaUI] Dropdown temporário: " .. tostring(err))
+                        end
+                    end
+                    PathStore:Add(path) -- sobe para o topo (já dispara o redesenho)
+                    if opts2.Callback then
+                        fire(opts2.Callback, path)
+                    end
+                end)
+                local del = new("TextButton", {
+                    AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -4, 0.5, 0),
+                    Size = UDim2.fromOffset(26, ITEM_H - 6), BackgroundColor3 = Theme.Background,
+                    BorderSizePixel = 0, AutoButtonColor = false, Text = "✕", Font = FONT_BOLD,
+                    TextSize = 13, TextColor3 = DANGER,
+                }, line)
+                corner(del, 5)
+                del.MouseButton1Click:Connect(function()
+                    PathStore:Remove(path)
+                end)
+            end
+            listHolder.Size = UDim2.new(1, 0, 0, math.min(#items, MAX_ROWS) * (ITEM_H + 4))
+        end
+
+        footBtn("💾 Salvar lista", 1, nil, function()
+            if not HAS_FS then
+                Window:Notify({Title = "Diretórios", Content = "Este executor não permite gravar arquivos.", Type = "warning", Duration = 3})
+            elseif PathStore:SaveFile() then
+                Window:Notify({Title = "Diretórios", Content = #PathStore.items .. " diretório(s) salvo(s) para as próximas vezes.", Type = "success", Duration = 3})
+            else
+                Window:Notify({Title = "Diretórios", Content = "Não foi possível gravar a lista.", Type = "error", Duration = 3})
+            end
+        end)
+        footBtn("🗑 Limpar tudo", 2, DANGER, function()
+            PathStore:Clear()
+            PathStore:DeleteFile() -- também apaga o que tinha sido salvo antes
+        end)
+
+        headBtn.MouseButton1Click:Connect(function()
+            open = not open
+            render()
+        end)
+
+        table.insert(PathStore.subs, render)
+        bindAccent(render)
+        local el = {}
+        function el:Refresh()
+            render()
+        end
+        function el:Get()
+            return table.clone(PathStore.items)
+        end
+        function el:Add(p)
+            PathStore:Add(p)
+        end
+        function el:Remove(p)
+            PathStore:Remove(p)
+        end
+        function el:Clear()
+            PathStore:Clear()
+        end
+        return el
     end
 
 
@@ -4513,7 +4795,8 @@ end
 --// ---------------- ESP de objetos/NPCs + Espectador ----------------
 do
     local s = tabVisual:AddSection("ESP Objetos e NPCs")
-    s:AddInput({Name = "Diretório", Flag = "espo_dir", Default = "", Placeholder = "Ex.: Workspace.Itens"})
+    local espoDirBox = s:AddInput({Name = "Diretório", Flag = "espo_dir", Default = "", Placeholder = "Ex.: Workspace.Itens", PathHistory = true})
+    s:AddTempDropdown({Name = "📂 Diretórios usados", Input = espoDirBox})
     s:AddToggle({Name = "ESP de objetos / itens / modelos", Flag = "espo_on", Default = false})
     s:AddColorPicker({Name = "Cor do destaque", Flag = "espo_color", Default = "80, 220, 255"})
 
@@ -4610,7 +4893,8 @@ do
 
     -- Espectador universal
     local sp = tabVisual:AddSection("🎥 Espectador Universal")
-    sp:AddInput({Name = "Diretório dos NPCs", Flag = "spec_dir", Default = "", Placeholder = "Ex.: Workspace.NPCs"})
+    local specDirBox = sp:AddInput({Name = "Diretório dos NPCs", Flag = "spec_dir", Default = "", Placeholder = "Ex.: Workspace.NPCs", PathHistory = true})
+    sp:AddTempDropdown({Name = "📂 Diretórios usados", Input = specDirBox})
     local specIdx = 0
     local current -- Model sendo observado
 
@@ -4935,78 +5219,78 @@ do
 end
 
 --// ---------------- FX Clean Global (aba Visual) ----------------
--- Desliga (sem apagar) partículas, trails, beams, fumaça, fogo, luzes e pós-processamento.
--- Ao desligar o toggle, tudo volta ao valor original. "ballhit" e "slasheffect" são apagados de vez.
+-- APAGA DE VEZ (Destroy, sem restauração) todo efeito encontrado em TODAS as pastas do Workspace,
+-- em qualquer profundidade e mesmo desligado/escondido: partículas, trails, beams, fumaça, fogo,
+-- faíscas, explosões, luzes e efeitos de tela. Objetos novos que surgirem também são apagados enquanto
+-- o toggle estiver ligado. Desligar o toggle só para a limpeza (o que já foi apagado não volta).
+-- Só a qualidade gráfica é devolvida ao valor original ao desligar.
 do
     local fxs = tabVisual:AddSection("✨ FX Clean")
     local fxOn = false
-    local saved = setmetatable({}, {__mode = "k"}) -- instância -> valores originais
-    local savedCount = 0
+    local removedCount = 0
     local origQuality = nil
     local fxRun = 0
-    local fxConn1, fxConn2
 
     local DEL_NAMES = {"ballhit", "slasheffect"}
     local FX_CLASS = {
-        ParticleEmitter = {Enabled = false, Lifetime = NumberRange.new(0)},
-        Trail = {Enabled = false},
-        Beam = {Enabled = false},
-        Smoke = {Enabled = false},
-        Fire = {Enabled = false},
-        Sparkles = {Enabled = false},
-        Explosion = {Visible = false},
-        PointLight = {Enabled = false},
-        SpotLight = {Enabled = false},
-        SurfaceLight = {Enabled = false},
-        BloomEffect = {Enabled = false},
-        BlurEffect = {Enabled = false},
-        SunRaysEffect = {Enabled = false},
-        DepthOfFieldEffect = {Enabled = false},
-        ColorCorrectionEffect = {Enabled = false},
+        ParticleEmitter = true, Trail = true, Beam = true, Smoke = true, Fire = true, Sparkles = true,
+        Explosion = true, PointLight = true, SpotLight = true, SurfaceLight = true,
+        BloomEffect = true, BlurEffect = true, SunRaysEffect = true, DepthOfFieldEffect = true,
+        ColorCorrectionEffect = true,
     }
 
-    local function fxHit(inst)
-        if not fxOn or not inst or not inst.Parent then
+    -- always = true: limpeza manual (botão), vale mesmo com o toggle desligado
+    local function fxHit(inst, always)
+        if (not fxOn and not always) or not inst or not inst.Parent then
             return
         end
-        local okN, lname = pcall(function()
-            return inst.Name:lower()
-        end)
-        if okN and lname ~= "" then
-            for _, n in ipairs(DEL_NAMES) do
-                if lname == n or lname:find(n, 1, true) then
-                    if inst:IsDescendantOf(Workspace) then
-                        pcall(function()
-                            inst:Destroy()
-                        end)
+        local kill = FX_CLASS[inst.ClassName] == true
+        if not kill then
+            local okN, lname = pcall(function()
+                return inst.Name:lower()
+            end)
+            if okN and lname ~= "" and inst:IsDescendantOf(Workspace) then
+                for _, n in ipairs(DEL_NAMES) do
+                    if lname == n or lname:find(n, 1, true) then
+                        kill = true
+                        break
                     end
-                    return
                 end
             end
         end
-        local props = FX_CLASS[inst.ClassName]
-        if not props or saved[inst] then
-            return
-        end
-        local old = {}
-        for k, v in pairs(props) do
-            local ok, cur = pcall(function()
-                return inst[k]
+        if kill then
+            local ok = pcall(function()
+                inst:Destroy()
             end)
             if ok then
-                old[k] = cur
-                pcall(function()
-                    inst[k] = v
-                end)
+                removedCount = removedCount + 1
             end
         end
-        saved[inst] = old
-        savedCount = savedCount + 1
+    end
+
+    -- varre Workspace (todas as pastas e subpastas) e Lighting, em lotes para não travar o jogo
+    local function fxSweep(always)
+        fxRun = fxRun + 1
+        local myRun = fxRun
+        local n = 0
+        for _, root in ipairs({Workspace, Lighting}) do
+            local okD, list = pcall(root.GetDescendants, root)
+            if okD then
+                for _, d in ipairs(list) do
+                    if (not fxOn and not always) or myRun ~= fxRun then
+                        return
+                    end
+                    fxHit(d, always)
+                    n = n + 1
+                    if n % 400 == 0 then
+                        task.wait()
+                    end
+                end
+            end
+        end
     end
 
     local function fxApply()
-        fxRun = fxRun + 1
-        local myRun = fxRun
         if origQuality == nil then
             pcall(function()
                 local r = settings().Rendering
@@ -5014,37 +5298,11 @@ do
                 r.QualityLevel = Enum.QualityLevel.Level01
             end)
         end
-        local n = 0
-        for _, root in ipairs({Workspace, Lighting}) do
-            local okD, list = pcall(root.GetDescendants, root)
-            if okD then
-                for _, d in ipairs(list) do
-                    if not fxOn or myRun ~= fxRun then
-                        return
-                    end
-                    fxHit(d)
-                    n = n + 1
-                    if n % 400 == 0 then
-                        task.wait() -- varredura em lotes, sem travar o jogo
-                    end
-                end
-            end
-        end
+        fxSweep(false)
     end
 
-    local function fxRestore()
-        fxRun = fxRun + 1 -- cancela varredura em andamento
-        for inst, old in pairs(saved) do
-            if inst and inst.Parent then
-                for k, v in pairs(old) do
-                    pcall(function()
-                        inst[k] = v
-                    end)
-                end
-            end
-            saved[inst] = nil
-        end
-        savedCount = 0
+    local function fxStop()
+        fxRun = fxRun + 1 -- cancela a varredura em andamento (nada é restaurado, só a qualidade gráfica)
         if origQuality ~= nil then
             pcall(function()
                 settings().Rendering.QualityLevel = origQuality
@@ -5058,7 +5316,7 @@ do
         if fxOn then
             task.spawn(fxApply)
         else
-            task.spawn(fxRestore)
+            task.spawn(fxStop)
         end
     end
 
@@ -5068,15 +5326,22 @@ do
             fxSet(v)
         end,
     })
-    fxs:AddLabel("Desliga partículas, trails, beams, fumaça, fogo, luzes e efeitos de tela (bloom, blur...) e baixa a qualidade gráfica. Ao desligar, tudo volta ao normal.")
+    fxs:AddButton({Name = "🧹 Limpar agora (uma vez)", Callback = function()
+        local before = removedCount
+        task.spawn(function()
+            fxSweep(true)
+            notify("FX Clean", (removedCount - before) .. " efeito(s) apagado(s) do Workspace.", "success")
+        end)
+    end})
+    fxs:AddLabel("Apaga de vez (sem restauração) partículas, trails, beams, fumaça, fogo, luzes e efeitos de tela em todas as pastas do Workspace, inclusive os escondidos ou desligados. O que for apagado não volta.")
 
-    -- objetos novos também são limpos enquanto estiver ligado
-    fxConn1 = Win:Track(Workspace.DescendantAdded:Connect(function(inst)
+    -- objetos novos também são apagados enquanto estiver ligado
+    Win:Track(Workspace.DescendantAdded:Connect(function(inst)
         if fxOn then
             task.defer(fxHit, inst)
         end
     end))
-    fxConn2 = Win:Track(Lighting.DescendantAdded:Connect(function(inst)
+    Win:Track(Lighting.DescendantAdded:Connect(function(inst)
         if fxOn then
             task.defer(fxHit, inst)
         end
@@ -5091,14 +5356,14 @@ do
         end
         acc = 0
         if fxOn then
-            Mon.tick("fxclean", savedCount .. " efeito(s) desligado(s)")
+            Mon.tick("fxclean", removedCount .. " efeito(s) apagado(s)")
         end
     end, {"fxclean"})
 
     Win:OnDestroy(function()
         fxOn = false
         F.fxclean = false
-        pcall(fxRestore)
+        pcall(fxStop)
     end)
 end
 
@@ -5217,12 +5482,14 @@ do
     local dd
 
     s:AddToggle({Name = "Ativar farm", Flag = "fn_on", Default = false})
-    s:AddInput({
+    local fnDirBox = s:AddInput({
         Name = "Diretório dos NPCs", Flag = "fn_dir", Default = "", Placeholder = "Ex.: Workspace.Mobs",
+        PathHistory = true,
         Callback = function()
             refreshMulti(dd, "NPC")
         end,
     })
+    s:AddTempDropdown({Name = "📂 Diretórios usados", Input = fnDirBox})
     s:AddToggle({Name = "Farmar TODOS da Pasta", Flag = "fn_all", Default = false, Feature = false})
     dd = s:AddMultiDropdown({
         Name = "NPCs específicos", Flag = "fn_sel",
@@ -5355,12 +5622,14 @@ do
             end
         end,
     })
-    s:AddInput({
+    local fiDirBox = s:AddInput({
         Name = "Diretório dos itens", Flag = "fi_dir", Default = "", Placeholder = "Ex.: Workspace.Drops",
+        PathHistory = true,
         Callback = function()
             refreshMulti(dd, "item")
         end,
     })
+    s:AddTempDropdown({Name = "📂 Diretórios usados", Input = fiDirBox})
     s:AddToggle({Name = "Coletar Todos os Itens", Flag = "fi_all", Default = false, Feature = false})
     dd = s:AddMultiDropdown({
         Name = "Itens específicos", Flag = "fi_sel", Source = itemNames,
@@ -5987,12 +6256,14 @@ do
     end
 
     -- Card 1: só a interação (ClickDetector, ProximityPrompt, Toque, Remotes)
-    s:AddInput({
+    local iaDirBox = s:AddInput({
         Name = "Diretório dos objetos", Flag = "ia_dir", Default = "", Placeholder = "Ex.: Workspace.Coletaveis",
+        PathHistory = true,
         Callback = function()
             refreshMulti(dd, "objeto")
         end,
     })
+    s:AddTempDropdown({Name = "📂 Diretórios usados", Input = iaDirBox})
     s:AddDropdown({
         Name = "Método de interação", Flag = "ia_method",
         Options = {"ProximityPrompt", "ClickDetector", "Toque (TouchInterest)", "RemoteEvent (FireServer)", "RemoteFunction (InvokeServer)"},
@@ -6112,7 +6383,8 @@ do
 
     local ps = tabMisc:AddSection("🧭 Posições e Caminho")
     -- Caminho direto: aceita sufixo :GetChildren()[N]
-    local directBox = ps:AddInput({Name = "Caminho direto", Default = "", Placeholder = "Workspace.Pasta:GetChildren()[2]"})
+    local directBox = ps:AddInput({Name = "Caminho direto", Default = "", Placeholder = "Workspace.Pasta:GetChildren()[2]", PathHistory = true})
+    ps:AddTempDropdown({Name = "📂 Diretórios usados", Input = directBox})
     ps:AddButton({Name = "Teleportar ao caminho direto", Callback = function()
         local path = trim(directBox:Get())
         local idx = path:match(":GetChildren%(%)%[(%d+)%]")
@@ -8091,8 +8363,9 @@ do
         return out
     end
 
-    sEvent:AddInput({
+    local evPathBox = sEvent:AddInput({
         Name = "Caminho do Remote", Flag = "ev_path", Default = "", Placeholder = "ReplicatedStorage.Remotes.Hit",
+        PathHistory = true,
         -- aceita também código colado: local Event = game:GetService("Players").LocalPlayer.Character.Tool.Event
         Validate = function(raw)
             local px = parsePathExpr(raw)
@@ -8105,6 +8378,7 @@ do
             remoteCache = {path = nil, inst = nil}
         end,
     })
+    sEvent:AddTempDropdown({Name = "📂 Caminhos usados", Input = evPathBox})
     local remotesDd
     remotesDd = sEvent:AddMultiDropdown({
         Name = "Remotes encontrados", Source = scanRemotes, Placeholder = "Toque para escolher",
@@ -11368,7 +11642,9 @@ do
         local pathBox = sec:AddInput({
             Name = "Caminho do evento", Flag = "ev_ei_path", Default = "",
             Placeholder = "Players.LocalPlayer.Backpack.DefaultSlap.Event", Feature = false,
+            PathHistory = true,
         })
+        sec:AddTempDropdown({Name = "📂 Caminhos usados", Input = pathBox})
         sec:AddButton({Name = "🧲 Aprender só pelo caminho", Callback = function()
             learnByPath(pathBox:Get())
         end})
