@@ -16,8 +16,9 @@
       Sec:AddDropdown{Name, Flag, Options, Default, Multi, Placeholder, Callback}
       Sec:AddMultiDropdown{Name, Flag, Options, Default, Source, AutoRefresh, Callback(valores, info), Searchable, Sort}
          (AddDropdown{Multi = true} usa o mesmo motor; nomes repetidos viram uma opção com contagem)
-      Sec:AddTempDropdown{Name, Input, Open, Callback}  (lista TEMPORÁRIA de diretórios com ✕; Input = retorno de AddInput{PathHistory = true};
-         tocar num diretório substitui o texto da caixa; só vai para arquivo se o jogador tocar em "💾 Salvar lista")
+      Sec:AddTempDropdown{Name, Input, Multi, StartMulti, Open, Callback}  (lista TEMPORÁRIA de diretórios com ✕; Input = retorno de AddInput{PathHistory = true};
+         Um só: tocar substitui o texto da caixa. Vários (Multi = true): marca vários, guardados na caixa como "A | B" (use splitDirs/resolveDirs para ler);
+         fecha junto com a interface; só vai para arquivo se o jogador tocar em "💾 Salvar lista")
       Sec:AddKeybind {Name, Flag, Default, Callback (ao pressionar), Changed (ao trocar)}
       Sec:AddLabel("texto")
       Win:Notify{Title, Content, Duration, Type = info/success/warning/error}
@@ -118,6 +119,19 @@ local function naturalKey(text)
     return (foldText(text):gsub("%d+", function(d)
         return string.rep("0", math.max(0, 12 - #d)) .. d
     end))
+end
+
+-- vários diretórios na mesma caixa de texto: "Workspace.A | Workspace.B" (o "|" separa)
+local function splitDirs(text)
+    local out, seen = {}, {}
+    for part in tostring(text or ""):gmatch("[^|]+") do
+        part = (part:gsub("^%s+", ""):gsub("%s+$", ""))
+        if part ~= "" and not seen[part] then
+            seen[part] = true
+            out[#out + 1] = part
+        end
+    end
+    return out
 end
 
 local function roundTo(value, step)
@@ -1552,9 +1566,13 @@ function Nova.CreateWindow(opts)
         end
         box.Text = tostring(value)
 
+        local watchers = {}
         local el = {Default = value}
         function el:Get()
             return value
+        end
+        function el:Watch(fn) -- avisa quando o valor muda (usado pelo Dropdown temporário)
+            table.insert(watchers, fn)
         end
         function el:Set(v, silent)
             local c = coerce(v)
@@ -1565,6 +1583,9 @@ function Nova.CreateWindow(opts)
             value = c
             box.Text = tostring(value)
             setFlag(opts2.Flag, value)
+            for _, w in ipairs(watchers) do
+                pcall(w, value)
+            end
             if not silent then
                 fire(opts2.Callback, value)
                 queueSave()
@@ -1580,7 +1601,9 @@ function Nova.CreateWindow(opts)
                 el:Set(c, false)
             end
             if opts2.PathHistory and type(value) == "string" then
-                PathStore:Add(value) -- diretório usado entra no Dropdown temporário
+                for _, part in ipairs(splitDirs(value)) do
+                    PathStore:Add(part) -- cada diretório usado entra no Dropdown temporário
+                end
             end
         end)
 
@@ -1589,160 +1612,342 @@ function Nova.CreateWindow(opts)
 
 
     -- Dropdown TEMPORÁRIO de diretórios: igual aos outros, mas cada item tem um ✕ para remover.
-    -- Tocar num diretório da lista substitui o texto da caixa ligada (opts2.Input, devolvida por AddInput).
+    --   Input = caixa de texto ligada (retorno de AddInput{PathHistory = true}).
+    --   Multi = true: aparece o seletor "Um só | Vários". Em "Vários" cada toque marca/desmarca um diretório
+    --           e a caixa guarda todos separados por " | " (as funções do menu leem todos de uma vez).
+    --   Em "Um só", tocar num diretório substitui o texto da caixa.
     -- Nada é gravado em arquivo, a menos que o jogador toque em "💾 Salvar lista".
+    -- Fecha sozinho quando a interface é fechada.
     function SectionMT:AddTempDropdown(opts2)
         opts2 = opts2 or {}
         local input = opts2.Input
+        local canMulti = opts2.Multi == true
+        local multi = canMulti and opts2.StartMulti == true
         local open = opts2.Open == true
-        local ITEM_H, MAX_ROWS = 30, 5
+        local ITEM_H, MAX_ROWS = 42, 5
         local DANGER = Color3.fromRGB(240, 90, 90)
+        local WHITE = Color3.new(1, 1, 1)
 
+        --// cabeçalho
         local header = self:_row(ROW_H)
-        local title = makeLabel(header, "", {
+        local title = makeLabel(header, opts2.Name or "📂 Diretórios usados", {
             Position = UDim2.fromOffset(12, 0),
-            Size = UDim2.new(1, -40, 1, 0),
+            Size = UDim2.new(1, -104, 1, 0),
             TextTruncate = Enum.TextTruncate.AtEnd,
+            Font = FONT_BOLD,
+        })
+        local badge = new("Frame", {
+            AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -34, 0.5, 0),
+            Size = UDim2.fromOffset(52, 20), BackgroundColor3 = Theme.Background, BorderSizePixel = 0,
+        }, header)
+        corner(badge, 10)
+        local badgeTxt = makeLabel(badge, "0", {
+            Size = UDim2.fromScale(1, 1), TextXAlignment = Enum.TextXAlignment.Center,
+            TextSize = 11, Font = FONT_BOLD, TextColor3 = Theme.SubText,
         })
         local arrow = makeLabel(header, "▾", {
-            AnchorPoint = Vector2.new(1, 0.5),
-            Position = UDim2.new(1, -10, 0.5, 0),
-            Size = UDim2.fromOffset(20, 20),
-            TextXAlignment = Enum.TextXAlignment.Center,
-            TextColor3 = Theme.SubText,
-            TextSize = 14,
+            AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -10, 0.5, 0),
+            Size = UDim2.fromOffset(20, 20), TextXAlignment = Enum.TextXAlignment.Center,
+            TextColor3 = Theme.SubText, TextSize = 14,
         })
         local headBtn = new("TextButton", {
             Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, AutoButtonColor = false, Text = "",
         }, header)
         hoverEffect(header, headBtn)
 
+        --// corpo
         local body = new("Frame", {
-            BackgroundColor3 = Theme.Background, BackgroundTransparency = 0.35, BorderSizePixel = 0,
+            BackgroundColor3 = Theme.Surface, BackgroundTransparency = 0.1, BorderSizePixel = 0,
             Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
             LayoutOrder = self:_nextOrder(), Visible = open,
         }, self._frame)
-        corner(body, 6)
+        corner(body, 8)
         stroke(body, Theme.Stroke, 1)
-        new("UIListLayout", {Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder}, body)
-        padding(body, 6, 6, 6, 6)
+        new("UIListLayout", {Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder}, body)
+        padding(body, 8, 8, 8, 8)
 
-        local listHolder = new("ScrollingFrame", {
-            Size = UDim2.new(1, 0, 0, ITEM_H), BackgroundTransparency = 1, BorderSizePixel = 0,
-            ScrollBarThickness = 3, CanvasSize = UDim2.new(0, 0, 0, 0),
-            AutomaticCanvasSize = Enum.AutomaticSize.Y, LayoutOrder = 1,
-        }, body)
-        new("UIListLayout", {Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder}, listHolder)
-
-        local footer = new("Frame", {
-            Size = UDim2.new(1, 0, 0, 28), BackgroundTransparency = 1, LayoutOrder = 2,
-        }, body)
-        new("UIListLayout", {
-            FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 6),
-            SortOrder = Enum.SortOrder.LayoutOrder,
-        }, footer)
-
-        local function footBtn(text, order, color, onClick)
+        local function styledButton(parent, text, order, size)
             local b = new("TextButton", {
-                Size = UDim2.new(0.5, -3, 1, 0), BackgroundColor3 = Theme.Element, BorderSizePixel = 0,
-                AutoButtonColor = false, Text = text, Font = FONT, TextSize = 12, TextColor3 = color or Theme.Text,
-                LayoutOrder = order,
-            }, footer)
-            corner(b, 5)
+                Size = size, BackgroundColor3 = Theme.Element, BorderSizePixel = 0, AutoButtonColor = false,
+                Text = text, Font = FONT, TextSize = 12, TextColor3 = Theme.Text, LayoutOrder = order,
+            }, parent)
+            corner(b, 7)
+            stroke(b, Theme.Stroke, 1, 0.4)
             b.MouseEnter:Connect(function()
                 tween(b, 0.1, {BackgroundColor3 = Theme.ElementHover})
             end)
             b.MouseLeave:Connect(function()
                 tween(b, 0.1, {BackgroundColor3 = Theme.Element})
             end)
-            b.MouseButton1Click:Connect(onClick)
             return b
         end
 
-        local hint = makeLabel(body, "Temporária: some ao sair do jogo, a menos que você toque em 💾 Salvar lista.", {
+        local function rowOf(order, height)
+            local f = new("Frame", {
+                Size = UDim2.new(1, 0, 0, height), BackgroundTransparency = 1, LayoutOrder = order,
+            }, body)
+            new("UIListLayout", {
+                FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 6),
+                SortOrder = Enum.SortOrder.LayoutOrder,
+            }, f)
+            return f
+        end
+
+        -- seletor "Um só | Vários"
+        local segOne, segMulti
+        if canMulti then
+            local seg = new("Frame", {
+                Size = UDim2.new(1, 0, 0, 32), BackgroundColor3 = Theme.Background, BorderSizePixel = 0,
+                LayoutOrder = 1,
+            }, body)
+            corner(seg, 8)
+            padding(seg, 3, 3, 3, 3)
+            new("UIListLayout", {
+                FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 2),
+                SortOrder = Enum.SortOrder.LayoutOrder,
+            }, seg)
+            local function segBtn(text, order)
+                local b = new("TextButton", {
+                    Size = UDim2.new(0.5, -1, 1, 0), BackgroundTransparency = 1, BorderSizePixel = 0,
+                    AutoButtonColor = false, Text = text, Font = FONT_BOLD, TextSize = 12,
+                    TextColor3 = Theme.SubText, LayoutOrder = order,
+                }, seg)
+                corner(b, 6)
+                return b
+            end
+            segOne = segBtn("☝ Um só", 1)
+            segMulti = segBtn("☑ Vários", 2)
+        end
+
+        local listHolder = new("ScrollingFrame", {
+            Size = UDim2.new(1, 0, 0, ITEM_H), BackgroundTransparency = 1, BorderSizePixel = 0,
+            ScrollBarThickness = 3, ScrollBarImageColor3 = Theme.Accent, CanvasSize = UDim2.new(0, 0, 0, 0),
+            AutomaticCanvasSize = Enum.AutomaticSize.Y, LayoutOrder = 2,
+        }, body)
+        new("UIListLayout", {Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder}, listHolder)
+
+        -- marcar todos / desmarcar (só no modo Vários)
+        local selRow = rowOf(3, 28)
+        selRow.Visible = false
+        local allBtn = styledButton(selRow, "☑ Marcar todos", 1, UDim2.new(0.5, -3, 1, 0))
+        local noneBtn = styledButton(selRow, "☐ Desmarcar", 2, UDim2.new(0.5, -3, 1, 0))
+
+        local footer = rowOf(4, 28)
+        local saveBtn = styledButton(footer, "💾 Salvar lista", 1, UDim2.new(0.5, -3, 1, 0))
+        local clearBtn = styledButton(footer, "🗑 Limpar tudo", 2, UDim2.new(0.5, -3, 1, 0))
+        clearBtn.TextColor3 = DANGER
+
+        local hint = makeLabel(body, "", {
             Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, TextWrapped = true,
-            TextSize = 11, TextColor3 = Theme.SubText, LayoutOrder = 3,
+            TextSize = 11, TextColor3 = Theme.SubText, LayoutOrder = 5,
         })
 
+        --// lógica
         local function currentText()
             if input and input.Get then
                 local ok, v = pcall(input.Get, input)
                 if ok then
-                    return cleanPath(v)
+                    return tostring(v or "")
                 end
             end
             return ""
         end
 
-        local function render()
-            title.Text = (opts2.Name or "📂 Diretórios usados") .. "  (" .. #PathStore.items .. ")"
-            arrow.Text = open and "▴" or "▾"
+        local function apply(parts) -- escreve a seleção na caixa de texto ligada
+            if input and input.Set then
+                local ok, err = pcall(input.Set, input, table.concat(parts, " | "), false)
+                if not ok then
+                    warn("[NovaUI] Dropdown temporário: " .. tostring(err))
+                end
+            end
+            if opts2.Callback then
+                fire(opts2.Callback, table.concat(parts, " | "))
+            end
+        end
+
+        local function shortName(path)
+            return path:match("([^%./\\]+)%s*$") or path
+        end
+
+        local render
+        local function paint()
+            if segOne then
+                segOne.BackgroundTransparency = multi and 1 or 0
+                segOne.BackgroundColor3 = Theme.Accent
+                segOne.TextColor3 = multi and Theme.SubText or WHITE
+                segMulti.BackgroundTransparency = multi and 0 or 1
+                segMulti.BackgroundColor3 = Theme.Accent
+                segMulti.TextColor3 = multi and WHITE or Theme.SubText
+            end
+        end
+
+        function render()
+            local items = PathStore.items
+            local parts = splitDirs(currentText())
+            local chosen = {}
+            for _, p in ipairs(parts) do
+                chosen[p] = true
+            end
+            local nSel = 0
+            for _, p in ipairs(items) do
+                if chosen[p] then
+                    nSel = nSel + 1
+                end
+            end
+
+            -- cabeçalho
+            title.TextColor3 = open and Theme.Accent or Theme.Text
+            arrow.TextColor3 = open and Theme.Accent or Theme.SubText
+            tween(arrow, 0.15, {Rotation = open and 180 or 0})
+            if nSel > 0 then
+                badgeTxt.Text = "✓ " .. nSel
+                badgeTxt.TextColor3 = WHITE
+                badge.BackgroundColor3 = Theme.Accent
+            else
+                badgeTxt.Text = tostring(#items)
+                badgeTxt.TextColor3 = Theme.SubText
+                badge.BackgroundColor3 = Theme.Background
+            end
+
             body.Visible = open
             if not open then
                 return
             end
+            paint()
+            selRow.Visible = multi
+            if multi then
+                hint.Text = "Toque para marcar vários diretórios: todos serão usados ao mesmo tempo. Temporária: some ao sair do jogo, a menos que você toque em 💾 Salvar lista."
+            else
+                hint.Text = "Toque num diretório para colocá-lo na caixa de texto. Temporária: some ao sair do jogo, a menos que você toque em 💾 Salvar lista."
+            end
+
             for _, c in ipairs(listHolder:GetChildren()) do
                 if not c:IsA("UIListLayout") then
                     c:Destroy()
                 end
             end
-            local items = PathStore.items
             if #items == 0 then
-                makeLabel(listHolder, "Nenhum diretório ainda. Digite um na caixa de texto e confirme.", {
+                makeLabel(listHolder, "📭  Nenhum diretório ainda.\nDigite um na caixa de texto e confirme.", {
                     Size = UDim2.new(1, 0, 0, ITEM_H), TextSize = 12, TextColor3 = Theme.SubText,
-                    TextWrapped = true, LayoutOrder = 1,
+                    TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Center, LayoutOrder = 1,
                 })
                 listHolder.Size = UDim2.new(1, 0, 0, ITEM_H)
                 return
             end
-            local now = currentText()
+
             for i, path in ipairs(items) do
+                local on = chosen[path] == true
                 local line = new("Frame", {
-                    Size = UDim2.new(1, -6, 0, ITEM_H), BackgroundColor3 = Theme.Element,
-                    BorderSizePixel = 0, LayoutOrder = i,
+                    Size = UDim2.new(1, -6, 0, ITEM_H), BorderSizePixel = 0, LayoutOrder = i,
+                    BackgroundColor3 = on and Theme.Element:Lerp(Theme.Accent, 0.28) or Theme.Element,
                 }, listHolder)
-                corner(line, 5)
-                local pick = new("TextButton", {
-                    Size = UDim2.new(1, -34, 1, 0), BackgroundTransparency = 1, AutoButtonColor = false,
-                    Text = path, Font = FONT, TextSize = 12, TextXAlignment = Enum.TextXAlignment.Left,
-                    TextTruncate = Enum.TextTruncate.AtEnd,
-                    TextColor3 = (path == now) and Theme.Accent or Theme.Text,
+                corner(line, 8)
+                stroke(line, on and Theme.Accent or Theme.Stroke, 1, on and 0.2 or 0.6)
+
+                -- marcador: quadrado (Vários) ou círculo (Um só)
+                local mark = new("Frame", {
+                    AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.new(0, 10, 0.5, 0),
+                    Size = UDim2.fromOffset(18, 18), BorderSizePixel = 0,
+                    BackgroundColor3 = on and Theme.Accent or Theme.Background,
                 }, line)
-                padding(pick, 8, 0, 4, 0)
+                corner(mark, multi and 5 or 9)
+                stroke(mark, on and Theme.Accent or Theme.SubText, 1.5, on and 0 or 0.4)
+                if on then
+                    makeLabel(mark, multi and "✓" or "●", {
+                        Size = UDim2.fromScale(1, 1), TextXAlignment = Enum.TextXAlignment.Center,
+                        TextColor3 = WHITE, TextSize = multi and 13 or 9, Font = FONT_BOLD,
+                    })
+                end
+
+                local pick = new("TextButton", {
+                    Position = UDim2.fromOffset(36, 0), Size = UDim2.new(1, -72, 1, 0),
+                    BackgroundTransparency = 1, AutoButtonColor = false, Text = "",
+                }, line)
+                makeLabel(pick, shortName(path), {
+                    Position = UDim2.fromOffset(0, 5), Size = UDim2.new(1, 0, 0, 17),
+                    Font = FONT_BOLD, TextSize = 13, TextTruncate = Enum.TextTruncate.AtEnd,
+                    TextColor3 = on and WHITE or Theme.Text,
+                })
+                makeLabel(pick, path, {
+                    Position = UDim2.fromOffset(0, 22), Size = UDim2.new(1, 0, 0, 14),
+                    TextSize = 10, TextTruncate = Enum.TextTruncate.AtEnd,
+                    TextColor3 = on and Theme.Text or Theme.SubText,
+                })
                 pick.MouseEnter:Connect(function()
-                    tween(line, 0.1, {BackgroundColor3 = Theme.ElementHover})
+                    if not on then
+                        tween(line, 0.1, {BackgroundColor3 = Theme.ElementHover})
+                    end
                 end)
                 pick.MouseLeave:Connect(function()
-                    tween(line, 0.1, {BackgroundColor3 = Theme.Element})
+                    if not on then
+                        tween(line, 0.1, {BackgroundColor3 = Theme.Element})
+                    end
                 end)
                 pick.MouseButton1Click:Connect(function()
-                    -- substitui o diretório da caixa de texto atual
-                    if input and input.Set then
-                        local ok, err = pcall(input.Set, input, path, false)
-                        if not ok then
-                            warn("[NovaUI] Dropdown temporário: " .. tostring(err))
+                    local cur = splitDirs(currentText())
+                    if multi then
+                        local idx = table.find(cur, path)
+                        if idx then
+                            table.remove(cur, idx)
+                        else
+                            table.insert(cur, path)
                         end
+                        apply(cur) -- a lista não reordena enquanto você marca
+                    else
+                        apply({path}) -- substitui o diretório da caixa de texto
+                        PathStore:Add(path) -- mais usado sobe para o topo
                     end
-                    PathStore:Add(path) -- sobe para o topo (já dispara o redesenho)
-                    if opts2.Callback then
-                        fire(opts2.Callback, path)
-                    end
+                    render()
                 end)
+
                 local del = new("TextButton", {
-                    AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -4, 0.5, 0),
-                    Size = UDim2.fromOffset(26, ITEM_H - 6), BackgroundColor3 = Theme.Background,
+                    AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -8, 0.5, 0),
+                    Size = UDim2.fromOffset(26, 26), BackgroundColor3 = Theme.Background,
                     BorderSizePixel = 0, AutoButtonColor = false, Text = "✕", Font = FONT_BOLD,
-                    TextSize = 13, TextColor3 = DANGER,
+                    TextSize = 12, TextColor3 = DANGER,
                 }, line)
-                corner(del, 5)
+                corner(del, 13)
+                del.MouseEnter:Connect(function()
+                    tween(del, 0.1, {BackgroundColor3 = DANGER})
+                    del.TextColor3 = WHITE
+                end)
+                del.MouseLeave:Connect(function()
+                    tween(del, 0.1, {BackgroundColor3 = Theme.Background})
+                    del.TextColor3 = DANGER
+                end)
                 del.MouseButton1Click:Connect(function()
+                    local cur = splitDirs(currentText())
+                    local idx = table.find(cur, path)
+                    if idx then -- se estava marcado, sai da caixa de texto também
+                        table.remove(cur, idx)
+                        apply(cur)
+                    end
                     PathStore:Remove(path)
                 end)
             end
             listHolder.Size = UDim2.new(1, 0, 0, math.min(#items, MAX_ROWS) * (ITEM_H + 4))
         end
 
-        footBtn("💾 Salvar lista", 1, nil, function()
+        --// ligações
+        if segOne then
+            segOne.MouseButton1Click:Connect(function()
+                multi = false
+                render()
+            end)
+            segMulti.MouseButton1Click:Connect(function()
+                multi = true
+                render()
+            end)
+        end
+        allBtn.MouseButton1Click:Connect(function()
+            apply(table.clone(PathStore.items))
+            render()
+        end)
+        noneBtn.MouseButton1Click:Connect(function()
+            apply({})
+            render()
+        end)
+        saveBtn.MouseButton1Click:Connect(function()
             if not HAS_FS then
                 Window:Notify({Title = "Diretórios", Content = "Este executor não permite gravar arquivos.", Type = "warning", Duration = 3})
             elseif PathStore:SaveFile() then
@@ -1751,21 +1956,38 @@ function Nova.CreateWindow(opts)
                 Window:Notify({Title = "Diretórios", Content = "Não foi possível gravar a lista.", Type = "error", Duration = 3})
             end
         end)
-        footBtn("🗑 Limpar tudo", 2, DANGER, function()
+        clearBtn.MouseButton1Click:Connect(function()
             PathStore:Clear()
             PathStore:DeleteFile() -- também apaga o que tinha sido salvo antes
         end)
-
         headBtn.MouseButton1Click:Connect(function()
             open = not open
             render()
         end)
 
+        -- fecha junto com a interface (não fica aberto ali quando o menu é reaberto)
+        Main:GetPropertyChangedSignal("Visible"):Connect(function()
+            if not Main.Visible and open then
+                open = false
+                render()
+            end
+        end)
+
         table.insert(PathStore.subs, render)
+        if input and input.Watch then
+            input:Watch(render) -- destaca o que está na caixa, mesmo se for digitado à mão
+        end
         bindAccent(render)
+
         local el = {}
         function el:Refresh()
             render()
+        end
+        function el:Close()
+            if open then
+                open = false
+                render()
+            end
         end
         function el:Get()
             return table.clone(PathStore.items)
@@ -1781,7 +2003,6 @@ function Nova.CreateWindow(opts)
         end
         return el
     end
-
 
     function SectionMT:AddColorPicker(opts2)
         opts2 = opts2 or {}
@@ -3946,6 +4167,39 @@ local function resolvePath(text)
     return cur
 end
 
+-- vários diretórios ("A | B"): devolve as pastas encontradas (sem repetir); as que não existirem são ignoradas
+local function resolveDirs(text)
+    local out, seen = {}, {}
+    for _, p in ipairs(splitDirs(text)) do
+        local inst = resolvePath(p)
+        if inst and not seen[inst] then
+            seen[inst] = true
+            out[#out + 1] = inst
+        end
+    end
+    return out
+end
+
+local function childrenOf(dirs)
+    local out = {}
+    for _, d in ipairs(dirs) do
+        for _, c in ipairs(d:GetChildren()) do
+            out[#out + 1] = c
+        end
+    end
+    return out
+end
+
+local function descendantsOf(dirs)
+    local out = {}
+    for _, d in ipairs(dirs) do
+        for _, c in ipairs(d:GetDescendants()) do
+            out[#out + 1] = c
+        end
+    end
+    return out
+end
+
 local function posOf(inst)
     if not inst or not inst.Parent then
         return nil
@@ -4027,8 +4281,7 @@ local function getNPCs(dirText)
             end
         end
     end
-    local dir = resolvePath(dirText)
-    if dir then
+    for _, dir in ipairs(resolveDirs(dirText)) do
         walk(dir, 0)
     end
     npcCache[dirText] = {t = now, list = list}
@@ -4796,7 +5049,7 @@ end
 do
     local s = tabVisual:AddSection("ESP Objetos e NPCs")
     local espoDirBox = s:AddInput({Name = "Diretório", Flag = "espo_dir", Default = "", Placeholder = "Ex.: Workspace.Itens", PathHistory = true})
-    s:AddTempDropdown({Name = "📂 Diretórios usados", Input = espoDirBox})
+    s:AddTempDropdown({Name = "📂 Diretórios usados", Input = espoDirBox, Multi = true})
     s:AddToggle({Name = "ESP de objetos / itens / modelos", Flag = "espo_on", Default = false})
     s:AddColorPicker({Name = "Cor do destaque", Flag = "espo_color", Default = "80, 220, 255"})
 
@@ -4822,12 +5075,12 @@ do
     end
 
     local function refresh()
-        local dir = F.espo_on and resolvePath(F.espo_dir) or nil
+        local dirs = F.espo_on and resolveDirs(F.espo_dir) or {}
         local seen, count = {}, 0
-        if dir then
+        if #dirs > 0 then
             local color = toColor(F.espo_color, Color3.fromRGB(80, 220, 255))
             local camPos = Workspace.CurrentCamera and Workspace.CurrentCamera.CFrame.Position
-            for _, inst in ipairs(dir:GetChildren()) do
+            for _, inst in ipairs(childrenOf(dirs)) do
                 if (inst:IsA("Model") or inst:IsA("BasePart")) and count < 120 then
                     local ad = adorneeOf(inst)
                     if ad then
@@ -4871,7 +5124,7 @@ do
             end
         end
         if F.espo_on then
-            if dir then
+            if #dirs > 0 then
                 Mon.tick("espo", count .. " objeto(s) destacado(s)", count == 0)
             else
                 Mon.tick("espo", "diretório não encontrado", true)
@@ -4894,7 +5147,7 @@ do
     -- Espectador universal
     local sp = tabVisual:AddSection("🎥 Espectador Universal")
     local specDirBox = sp:AddInput({Name = "Diretório dos NPCs", Flag = "spec_dir", Default = "", Placeholder = "Ex.: Workspace.NPCs", PathHistory = true})
-    sp:AddTempDropdown({Name = "📂 Diretórios usados", Input = specDirBox})
+    sp:AddTempDropdown({Name = "📂 Diretórios usados", Input = specDirBox, Multi = true})
     local specIdx = 0
     local current -- Model sendo observado
 
@@ -5489,7 +5742,7 @@ do
             refreshMulti(dd, "NPC")
         end,
     })
-    s:AddTempDropdown({Name = "📂 Diretórios usados", Input = fnDirBox})
+    s:AddTempDropdown({Name = "📂 Diretórios usados", Input = fnDirBox, Multi = true})
     s:AddToggle({Name = "Farmar TODOS da Pasta", Flag = "fn_all", Default = false, Feature = false})
     dd = s:AddMultiDropdown({
         Name = "NPCs específicos", Flag = "fn_sel",
@@ -5556,10 +5809,10 @@ do
     local dd
 
     local function itemNames()
-        local dir = resolvePath(F.fi_dir)
+        local dirs = resolveDirs(F.fi_dir)
         local out = {}
-        if dir then
-            for _, it in ipairs(dir:GetChildren()) do
+        if #dirs > 0 then
+            for _, it in ipairs(childrenOf(dirs)) do
                 if it:IsA("BasePart") or it:IsA("Model") then
                     out[#out + 1] = it.Name -- repetidos são agrupados pelo MultiDropdown
                 end
@@ -5573,13 +5826,13 @@ do
         if not root or not isAlive(LocalPlayer.Character) then
             return
         end
-        local dir = resolvePath(F.fi_dir)
-        if not dir then
+        local dirs = resolveDirs(F.fi_dir)
+        if #dirs == 0 then
             Mon.tick("fi", "diretório dos itens não encontrado", true)
             return
         end
         local best, bestD
-        for _, it in ipairs(dir:GetChildren()) do
+        for _, it in ipairs(childrenOf(dirs)) do
             if (it:IsA("BasePart") or it:IsA("Model")) and (F.fi_all or selSet[it.Name]) then
                 local p = posOf(it)
                 if p then
@@ -5629,7 +5882,7 @@ do
             refreshMulti(dd, "item")
         end,
     })
-    s:AddTempDropdown({Name = "📂 Diretórios usados", Input = fiDirBox})
+    s:AddTempDropdown({Name = "📂 Diretórios usados", Input = fiDirBox, Multi = true})
     s:AddToggle({Name = "Coletar Todos os Itens", Flag = "fi_all", Default = false, Feature = false})
     dd = s:AddMultiDropdown({
         Name = "Itens específicos", Flag = "fi_sel", Source = itemNames,
@@ -6099,10 +6352,10 @@ do
     local tpIndex = 0
 
     local function objectList(onlySelected)
-        local dir = resolvePath(F.ia_dir)
+        local dirs = resolveDirs(F.ia_dir)
         local out = {}
-        if dir then
-            for _, o in ipairs(dir:GetChildren()) do
+        if #dirs > 0 then
+            for _, o in ipairs(childrenOf(dirs)) do
                 local isRemote = o:IsA("RemoteEvent") or o:IsA("RemoteFunction")
                 if (o:IsA("Model") or o:IsA("BasePart") or isRemote) and (isRemote or posOf(o)) then
                     if not onlySelected or selSet[o.Name] then
@@ -6193,10 +6446,10 @@ do
             return
         end
         if tostring(F.ia_method):find("Toque", 1, true) and type(firetouchinterest) == "function" then
-            local dir = resolvePath(F.ia_dir)
+            local dirs = resolveDirs(F.ia_dir)
             local n = 0
-            if dir then
-                for _, d in ipairs(dir:GetDescendants()) do
+            if #dirs > 0 then
+                for _, d in ipairs(descendantsOf(dirs)) do
                     if d:IsA("BasePart") then
                         n = n + 1
                         if n > 300 then
@@ -6207,7 +6460,7 @@ do
                     end
                 end
             end
-            Mon.tick("ia_collect", dir and (n .. " peça(s) tocada(s)") or "diretório não encontrado", dir == nil)
+            Mon.tick("ia_collect", #dirs > 0 and (n .. " peça(s) tocada(s)") or "diretório não encontrado", #dirs == 0)
             return
         end
         local home = root.CFrame
@@ -6263,7 +6516,7 @@ do
             refreshMulti(dd, "objeto")
         end,
     })
-    s:AddTempDropdown({Name = "📂 Diretórios usados", Input = iaDirBox})
+    s:AddTempDropdown({Name = "📂 Diretórios usados", Input = iaDirBox, Multi = true})
     s:AddDropdown({
         Name = "Método de interação", Flag = "ia_method",
         Options = {"ProximityPrompt", "ClickDetector", "Toque (TouchInterest)", "RemoteEvent (FireServer)", "RemoteFunction (InvokeServer)"},
