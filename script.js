@@ -1,37 +1,3 @@
---[[
-    NovaUI  -  Interface (UI) para Roblox em Luau
-    ---------------------------------------------------------------
-    Como usar:
-      * LocalScript (StarterPlayerScripts) ou executor, sem alterações.
-      * Reexecutar o script destrói a interface anterior (sem duplicar).
-
-    API resumida (veja o painel de demonstração no final do arquivo):
-      local Win = Nova.CreateWindow({Title, SubTitle, ConfigName, ToggleKey, Accent})
-      local Tab = Win:AddTab("Nome")
-      local Sec = Tab:AddSection("Nome")
-      Sec:AddToggle  {Name, Flag, Default, Callback, CallOnInit}
-      Sec:AddSlider  {Name, Flag, Min, Max, Default, Step, Suffix, Callback}
-      Sec:AddButton  {Name, Callback}
-      Sec:AddInput   {Name, Flag, Default, Placeholder, Numeric, Min, Max, Validate, Callback}
-      Sec:AddDropdown{Name, Flag, Options, Default, Multi, Placeholder, Callback}
-      Sec:AddMultiDropdown{Name, Flag, Options, Default, Source, AutoRefresh, Callback(valores, info), Searchable, Sort}
-         (AddDropdown{Multi = true} usa o mesmo motor; nomes repetidos viram uma opção com contagem)
-      Sec:AddTempDropdown{Name, Input, Multi, StartMulti, Open, Callback}  (lista TEMPORÁRIA de diretórios com ✕; Input = retorno de AddInput{PathHistory = true};
-         Um só: tocar substitui o texto da caixa. Vários (Multi = true): marca vários, guardados na caixa como "A | B" (use splitDirs/resolveDirs para ler);
-         fecha junto com a interface; só vai para arquivo se o jogador tocar em "💾 Salvar lista")
-      Sec:AddKeybind {Name, Flag, Default, Callback (ao pressionar), Changed (ao trocar)}
-      Sec:AddLabel("texto")
-      Win:Notify{Title, Content, Duration, Type = info/success/warning/error}
-
-    Observações:
-      * Elementos com "Flag" são salvos/restaurados automaticamente
-        (precisa de writefile/readfile; sem eles a UI funciona normalmente,
-        apenas sem persistência).
-      * O Callback é chamado quando o usuário altera o valor ou quando um
-        valor salvo é restaurado. Para também chamar com o valor Default
-        na criação, use CallOnInit = true.
-]]
-
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
 local TweenService = game:GetService("TweenService")
@@ -43,17 +9,13 @@ local Workspace = game:GetService("Workspace")
 
 local LocalPlayer = Players.LocalPlayer
 if not LocalPlayer then
-    warn("[NovaUI] Execute este script no cliente (LocalScript ou executor).")
+    warn("[RN TEAM] Execute este script no cliente (LocalScript ou executor).")
     return
 end
 
---// ============================================================
---//  Constantes e utilidades
---// ============================================================
-
-local ROOT_NAME = "NovaUI_Root"
-local INSTANCE_KEY = "__NOVAUI_INSTANCE"
-local CONFIG_FOLDER = "NovaUI"
+local ROOT_NAME = "RN_TEAM_Root"
+local INSTANCE_KEY = "__RN_TEAM_INSTANCE"
+local CONFIG_FOLDER = "RN_TEAM"
 local ENV = (type(getgenv) == "function" and getgenv()) or _G
 
 local DEFAULT_ACCENT = Color3.fromRGB(99, 102, 241)
@@ -83,21 +45,20 @@ if HAS_FS and type(isfolder) == "function" and type(makefolder) == "function" th
     end)
 end
 
-local errorSink = nil -- recebe os erros de callbacks (ligado à Central de Eventos pela janela)
+local errorSink = nil
 local function fire(callback, ...)
     if type(callback) ~= "function" then
         return
     end
     local ok, err = pcall(callback, ...)
     if not ok then
-        warn("[NovaUI] Erro em callback: " .. tostring(err))
+        warn("[RN TEAM] Erro em callback: " .. tostring(err))
         if errorSink then
             pcall(errorSink, tostring(err))
         end
     end
 end
 
--- pesquisa sem diferenciar maiúsculas/acentos ("Dragão" = "dragao")
 local FOLD = {
     {"á", "a"}, {"à", "a"}, {"â", "a"}, {"ã", "a"}, {"ä", "a"}, {"Á", "a"}, {"À", "a"}, {"Â", "a"}, {"Ã", "a"}, {"Ä", "a"},
     {"é", "e"}, {"è", "e"}, {"ê", "e"}, {"ë", "e"}, {"É", "e"}, {"È", "e"}, {"Ê", "e"}, {"Ë", "e"},
@@ -106,22 +67,21 @@ local FOLD = {
     {"ú", "u"}, {"ù", "u"}, {"û", "u"}, {"ü", "u"}, {"Ú", "u"}, {"Ù", "u"}, {"Û", "u"}, {"Ü", "u"},
     {"ç", "c"}, {"Ç", "c"}, {"ñ", "n"}, {"Ñ", "n"},
 }
+local FOLD_MAP = {}
+for _, p in ipairs(FOLD) do
+    FOLD_MAP[p[1]] = p[2]
+end
 local function foldText(text)
-    text = tostring(text):lower()
-    for _, p in ipairs(FOLD) do
-        text = text:gsub(p[1], p[2])
-    end
-    return text
+
+    return (tostring(text):lower():gsub("\195[\128-\191]", FOLD_MAP))
 end
 
--- ordem natural: "Zombie 2" vem antes de "Zombie 10"
 local function naturalKey(text)
     return (foldText(text):gsub("%d+", function(d)
         return string.rep("0", math.max(0, 12 - #d)) .. d
     end))
 end
 
--- vários diretórios na mesma caixa de texto: "Workspace.A | Workspace.B" (o "|" separa)
 local function splitDirs(text)
     local out, seen = {}, {}
     for part in tostring(text or ""):gmatch("[^|]+") do
@@ -244,10 +204,6 @@ local function hoverEffect(row, target)
     return state
 end
 
---// ============================================================
---//  Montagem do ScreenGui / limpeza de instâncias anteriores
---// ============================================================
-
 local function candidateParents()
     local list = {}
     if type(gethui) == "function" then
@@ -317,14 +273,10 @@ local function loadConfig(path)
         return data
     end
     if not ok then
-        return {}, tostring(data) -- arquivo existe mas está inválido
+        return {}, tostring(data)
     end
     return {}
 end
-
---// ============================================================
---//  Biblioteca
---// ============================================================
 
 local Nova = {}
 
@@ -361,7 +313,7 @@ function Nova.CreateWindow(opts)
     local function track(conn)
         table.insert(connections, conn)
         trackAdds = trackAdds + 1
-        if trackAdds >= 200 then -- descarta conexões de instâncias já destruídas (evita vazamento)
+        if trackAdds >= 200 then
             trackAdds = 0
             local keep = {}
             for _, c in ipairs(connections) do
@@ -382,12 +334,11 @@ function Nova.CreateWindow(opts)
         table.insert(accentUpdaters, fn)
     end
 
-    --// ---------- Central de Eventos (histórico interno) ----------
     local EVENT_MAX = 300
     local LEVELS = {INFO = true, SUCCESS = true, WARNING = true, ERROR = true}
     local SENSITIVE = {"password", "senha", "token", "secret", "apikey", "api_key", "cookie", "roblosecurity", "authorization"}
-    local loadErr = nil -- preenchido ao carregar o arquivo de configuração
-    local booting = true -- durante a montagem da interface não gera eventos de configuração
+    local loadErr = nil
+    local booting = true
     Window.Events = {}
     local eventListeners = {}
     local eventSeq = 0
@@ -401,7 +352,6 @@ function Nova.CreateWindow(opts)
         return string.format("+%ds", math.floor(os.clock()))
     end
 
-    -- nunca guarda senhas/chaves; limita o tamanho dos textos
     local function sanitize(text, limit)
         text = tostring(text == nil and "" or text)
         local low = text:lower()
@@ -420,7 +370,7 @@ function Nova.CreateWindow(opts)
     local function pushEvent(level, message, detail)
         local events = Window.Events
         local now = os.clock()
-        for i = #events, math.max(1, #events - 7), -1 do -- duplicados recentes viram contador
+        for i = #events, math.max(1, #events - 7), -1 do
             local e = events[i]
             if e.level == level and e.msg == message and e.detail == detail and now - e.clk < 5 then
                 e.count = e.count + 1
@@ -461,7 +411,7 @@ function Nova.CreateWindow(opts)
             end
         end
         rate.n = rate.n + 1
-        if rate.n > 25 then -- proteção contra loops de eventos
+        if rate.n > 25 then
             rate.dropped = rate.dropped + 1
             return nil
         end
@@ -475,7 +425,6 @@ function Nova.CreateWindow(opts)
     end
 
     errorSink = function(err)
-        Window:Log("ERROR", "Erro em callback de um controle", err)
     end
 
     function Window:OnEvent(fn)
@@ -505,7 +454,6 @@ function Nova.CreateWindow(opts)
         return c
     end
 
-    -- junta mudanças seguidas (ex.: arrastar um slider) em um único registro
     local pendingLogs, flushScheduled = {}, false
     local function logLater(key, level, message, detail)
         pendingLogs[key] = {level, message, detail}
@@ -516,15 +464,13 @@ function Nova.CreateWindow(opts)
                 local batch = pendingLogs
                 pendingLogs = {}
                 for _, p in pairs(batch) do
-                    Window:Log(p[1], p[2], p[3])
                 end
             end)
         end
     end
 
-    local multiSources = {} -- MultiDropdowns com Source (atualizados por um único laço compartilhado)
+    local multiSources = {}
 
-    --// ---------- Registro de recursos (Painel de Status) ----------
     Window.Features = {}
     local featureById, featureByFlag = {}, {}
     local featureListeners = {}
@@ -553,7 +499,6 @@ function Nova.CreateWindow(opts)
         return f
     end
 
-    -- liga uma "sonda" (estado real da execução) a um recurso já registrado
     function Window:Monitor(idOrFlag, probe)
         local f = featureById[idOrFlag] or featureByFlag[idOrFlag]
         if f and type(probe) == "function" then
@@ -567,7 +512,6 @@ function Nova.CreateWindow(opts)
         table.insert(featureListeners, fn)
     end
 
-    -- state: active | waiting | inactive | error | unmonitored (nunca presume que "ligado" = funcionando)
     function Window:GetFeatureState(f)
         local control = nil
         if f.Flag then
@@ -601,7 +545,6 @@ function Nova.CreateWindow(opts)
         return c
     end
 
-    --// ---------- Barramento de mudanças (compartilhado por Status, Eventos e MultiDropdown) ----------
     local changeListeners = {}
     local watch, lastState = {}, {}
 
@@ -637,7 +580,7 @@ function Nova.CreateWindow(opts)
             for _, fn in ipairs(changeListeners) do
                 local ok, err = pcall(fn, flag, value, old)
                 if not ok then
-                    warn("[NovaUI] observador de mudanças: " .. tostring(err))
+                    warn("[RN TEAM] observador de mudanças: " .. tostring(err))
                 end
             end
         end
@@ -652,23 +595,20 @@ function Nova.CreateWindow(opts)
         return sanitize(v, 40)
     end
 
-    -- registra alterações de configuração e pedidos de ativação/desativação
     table.insert(changeListeners, function(flag, value, old)
         if booting then
             return
         end
         local el = Window.Elements[flag]
         if el and el.NoLog then
-            return -- ex.: links, que não devem aparecer no histórico
+            return
         end
         local name = (el and el.Name) or flag
         local f = featureByFlag[flag]
         if f then
             local on = value == true
             if on then
-                Window:Log("INFO", f.Name .. ": ativação solicitada" .. (f.Probe and "" or " (sem monitoramento: execução não confirmável)"))
             else
-                Window:Log("INFO", f.Name .. ": desativação solicitada")
             end
             if f.Probe then
                 watch[f.Id] = {want = on and "on" or "off", since = os.clock()}
@@ -699,7 +639,6 @@ function Nova.CreateWindow(opts)
         end
     end)
 
-    -- confirma (ou não) que a função realmente passou a executar/parar
     local function pollFeatures()
         local now = os.clock()
         for _, f in ipairs(Window.Features) do
@@ -709,26 +648,21 @@ function Nova.CreateWindow(opts)
                 if w then
                     if w.want == "on" then
                         if state == "active" then
-                            Window:Log("SUCCESS", f.Name .. ": em execução", detail)
                             watch[f.Id] = nil
                         elseif state == "error" then
                             watch[f.Id] = nil
                         elseif now - w.since > 8 then
-                            Window:Log("WARNING", f.Name .. ": ligado, mas sem confirmação de execução", detail)
                             watch[f.Id] = nil
                         end
                     else
                         if state ~= "active" then
-                            Window:Log("SUCCESS", f.Name .. ": desativado e parado")
                             watch[f.Id] = nil
                         elseif now - w.since > 8 then
-                            Window:Log("WARNING", f.Name .. ": continua ativo após o pedido de desativação", detail)
                             watch[f.Id] = nil
                         end
                     end
                 end
                 if state == "error" and lastState[f.Id] ~= "error" then
-                    Window:Log("ERROR", f.Name .. ": erro em execução", detail)
                 end
                 lastState[f.Id] = state
             end
@@ -746,13 +680,10 @@ function Nova.CreateWindow(opts)
                 end
             end
         end
-        Window:Log("INFO", string.format("Interface iniciada: %d recurso(s) registrado(s), %d ligado(s) pela configuração salva.", #Window.Features, on))
         if loadErr then
-            Window:Log("WARNING", "Arquivo de configuração inválido; foram usados os valores padrão", loadErr)
         end
     end
 
-    --// ---------- Persistência ----------
     local configName = tostring(opts.ConfigName or "Default"):gsub("[^%w_%-]", "_")
     local configPath = (HAS_FOLDER and (CONFIG_FOLDER .. "/") or (CONFIG_FOLDER .. "_")) .. configName .. ".json"
     local savedConfig = {}
@@ -781,7 +712,6 @@ function Nova.CreateWindow(opts)
             writefile(configPath, HttpService:JSONEncode(data))
         end)
         if not ok then
-            Window:Log("ERROR", "Falha ao gravar as configurações", tostring(saveErr))
         end
         return ok
     end
@@ -799,7 +729,6 @@ function Nova.CreateWindow(opts)
         end)
     end
 
-    --// ---------- ScreenGui ----------
     local gui = new("ScreenGui", {
         Name = ROOT_NAME,
         ResetOnSpawn = false,
@@ -809,7 +738,7 @@ function Nova.CreateWindow(opts)
     })
     if not mountGui(gui) then
         gui:Destroy()
-        error("[NovaUI] Não foi possível anexar a interface à tela.")
+        error("[RN TEAM] Não foi possível anexar a interface à tela.")
     end
 
     local Root = new("Frame", {
@@ -831,8 +760,6 @@ function Nova.CreateWindow(opts)
         return s
     end
 
-    -- Posiciona um frame (em pixels) garantindo que fique dentro da tela.
-    -- Usa posição em escala, que não é afetada por UIScale.
     local function place(frame, x, y, size)
         local vp = viewport()
         x = math.clamp(x, 0, math.max(0, vp.X - size.X))
@@ -841,7 +768,6 @@ function Nova.CreateWindow(opts)
         return x, y
     end
 
-    --// ---------- Sistema de arraste (janela, botão flutuante, sliders) ----------
     local function beginDrag(input, onMove, onEnd)
         if activeDrag and activeDrag.onEnd then
             pcall(activeDrag.onEnd)
@@ -891,7 +817,7 @@ function Nova.CreateWindow(opts)
             local moved = false
             beginDrag(input, function(cur)
                 if canDrag and not canDrag() then
-                    return -- Auto-Lock: bloqueia só o arraste, o toque continua valendo
+                    return
                 end
                 local delta = Vector2.new(cur.Position.X, cur.Position.Y) - startPointer
                 if not moved and delta.Magnitude < 6 then
@@ -907,7 +833,6 @@ function Nova.CreateWindow(opts)
         end))
     end
 
-    --// ---------- Janela principal ----------
     local SIDEBAR_W = 150
     local TOPBAR_H = 40
 
@@ -1061,7 +986,6 @@ function Nova.CreateWindow(opts)
         return mainSize
     end)
 
-    --// ---------- Botão flutuante ----------
     local LAUNCHER_SIZE = Vector2.new(52, 52)
     local Launcher = new("ImageButton", {
         Name = "FloatClick",
@@ -1086,7 +1010,6 @@ function Nova.CreateWindow(opts)
         Launcher.BackgroundColor3 = Theme.Accent
     end)
 
-    --// ---------- Notificações ----------
     local notifHolder = new("Frame", {
         Name = "Notifications",
         AnchorPoint = Vector2.new(0.5, 0),
@@ -1101,7 +1024,6 @@ function Nova.CreateWindow(opts)
         HorizontalAlignment = Enum.HorizontalAlignment.Center,
     }, notifHolder)
 
-    --// ---------- Componentes ----------
     local SectionMT = {}
     SectionMT.__index = SectionMT
 
@@ -1110,7 +1032,6 @@ function Nova.CreateWindow(opts)
         return self._order
     end
 
-    -- Section dentro de Section (recolhível). Devolve um objeto com os mesmos métodos Add*.
     function SectionMT:AddSubSection(name, startOpen)
         local box = new("Frame", {
             Name = "Sub_" .. tostring(name), BackgroundColor3 = Theme.Background, BackgroundTransparency = 0.4,
@@ -1158,7 +1079,6 @@ function Nova.CreateWindow(opts)
         return row
     end
 
-    -- Registra o elemento, restaura valor salvo e conecta com a persistência.
     local function finalize(el, opts2)
         local flag = opts2.Flag
         el.Name = el.Name or opts2.Name
@@ -1169,12 +1089,12 @@ function Nova.CreateWindow(opts)
             Window.Elements[flag] = el
             local saved = savedConfig[flag]
             if opts2.NoSave then
-                saved = nil -- ações momentâneas (gravar/reproduzir) nunca iniciam sozinhas
+                saved = nil
             end
             if saved ~= nil then
                 local ok, err = pcall(el.Set, el, saved, false)
                 if not ok then
-                    warn("[NovaUI] Valor salvo inválido em '" .. flag .. "': " .. tostring(err))
+                    warn("[RN TEAM] Valor salvo inválido em '" .. flag .. "': " .. tostring(err))
                     setFlag(flag, el:Get())
                 end
             else
@@ -1189,13 +1109,10 @@ function Nova.CreateWindow(opts)
         return el
     end
 
-    --// ---------- Dropdown temporário de diretórios ----------
-    -- Todo diretório digitado numa caixa com PathHistory = true entra nesta lista (compartilhada por toda a UI).
-    -- É TEMPORÁRIA: ao sair do jogo ela some, a menos que o jogador toque em "💾 Salvar lista".
     local PathStore = {items = {}, subs = {}, max = 30}
     local PATH_FILE = (HAS_FOLDER and (CONFIG_FOLDER .. "/") or (CONFIG_FOLDER .. "_")) .. "PathHistory.json"
 
-    do -- só existe arquivo se o jogador salvou a lista antes
+    do
         local data = loadConfig(PATH_FILE)
         if type(data) == "table" then
             for _, p in ipairs(data) do
@@ -1216,7 +1133,7 @@ function Nova.CreateWindow(opts)
         end
     end
 
-    function PathStore:Add(path) -- mais recente primeiro, sem repetir
+    function PathStore:Add(path)
         path = cleanPath(path)
         if path == "" then
             return
@@ -1571,7 +1488,7 @@ function Nova.CreateWindow(opts)
         function el:Get()
             return value
         end
-        function el:Watch(fn) -- avisa quando o valor muda (usado pelo Dropdown temporário)
+        function el:Watch(fn)
             table.insert(watchers, fn)
         end
         function el:Set(v, silent)
@@ -1602,7 +1519,7 @@ function Nova.CreateWindow(opts)
             end
             if opts2.PathHistory and type(value) == "string" then
                 for _, part in ipairs(splitDirs(value)) do
-                    PathStore:Add(part) -- cada diretório usado entra no Dropdown temporário
+                    PathStore:Add(part)
                 end
             end
         end)
@@ -1610,14 +1527,6 @@ function Nova.CreateWindow(opts)
         return finalize(el, opts2)
     end
 
-
-    -- Dropdown TEMPORÁRIO de diretórios: igual aos outros, mas cada item tem um ✕ para remover.
-    --   Input = caixa de texto ligada (retorno de AddInput{PathHistory = true}).
-    --   Multi = true: aparece o seletor "Um só | Vários". Em "Vários" cada toque marca/desmarca um diretório
-    --           e a caixa guarda todos separados por " | " (as funções do menu leem todos de uma vez).
-    --   Em "Um só", tocar num diretório substitui o texto da caixa.
-    -- Nada é gravado em arquivo, a menos que o jogador toque em "💾 Salvar lista".
-    -- Fecha sozinho quando a interface é fechada.
     function SectionMT:AddTempDropdown(opts2)
         opts2 = opts2 or {}
         local input = opts2.Input
@@ -1628,7 +1537,6 @@ function Nova.CreateWindow(opts)
         local DANGER = Color3.fromRGB(240, 90, 90)
         local WHITE = Color3.new(1, 1, 1)
 
-        --// cabeçalho
         local header = self:_row(ROW_H)
         local title = makeLabel(header, opts2.Name or "📂 Diretórios usados", {
             Position = UDim2.fromOffset(12, 0),
@@ -1655,7 +1563,6 @@ function Nova.CreateWindow(opts)
         }, header)
         hoverEffect(header, headBtn)
 
-        --// corpo
         local body = new("Frame", {
             BackgroundColor3 = Theme.Surface, BackgroundTransparency = 0.1, BorderSizePixel = 0,
             Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
@@ -1693,7 +1600,6 @@ function Nova.CreateWindow(opts)
             return f
         end
 
-        -- seletor "Um só | Vários"
         local segOne, segMulti
         if canMulti then
             local seg = new("Frame", {
@@ -1726,7 +1632,6 @@ function Nova.CreateWindow(opts)
         }, body)
         new("UIListLayout", {Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder}, listHolder)
 
-        -- marcar todos / desmarcar (só no modo Vários)
         local selRow = rowOf(3, 28)
         selRow.Visible = false
         local allBtn = styledButton(selRow, "☑ Marcar todos", 1, UDim2.new(0.5, -3, 1, 0))
@@ -1742,7 +1647,6 @@ function Nova.CreateWindow(opts)
             TextSize = 11, TextColor3 = Theme.SubText, LayoutOrder = 5,
         })
 
-        --// lógica
         local function currentText()
             if input and input.Get then
                 local ok, v = pcall(input.Get, input)
@@ -1753,11 +1657,11 @@ function Nova.CreateWindow(opts)
             return ""
         end
 
-        local function apply(parts) -- escreve a seleção na caixa de texto ligada
+        local function apply(parts)
             if input and input.Set then
                 local ok, err = pcall(input.Set, input, table.concat(parts, " | "), false)
                 if not ok then
-                    warn("[NovaUI] Dropdown temporário: " .. tostring(err))
+                    warn("[RN TEAM] Dropdown temporário: " .. tostring(err))
                 end
             end
             if opts2.Callback then
@@ -1795,7 +1699,6 @@ function Nova.CreateWindow(opts)
                 end
             end
 
-            -- cabeçalho
             title.TextColor3 = open and Theme.Accent or Theme.Text
             arrow.TextColor3 = open and Theme.Accent or Theme.SubText
             tween(arrow, 0.15, {Rotation = open and 180 or 0})
@@ -1844,7 +1747,6 @@ function Nova.CreateWindow(opts)
                 corner(line, 8)
                 stroke(line, on and Theme.Accent or Theme.Stroke, 1, on and 0.2 or 0.6)
 
-                -- marcador: quadrado (Vários) ou círculo (Um só)
                 local mark = new("Frame", {
                     AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.new(0, 10, 0.5, 0),
                     Size = UDim2.fromOffset(18, 18), BorderSizePixel = 0,
@@ -1892,10 +1794,10 @@ function Nova.CreateWindow(opts)
                         else
                             table.insert(cur, path)
                         end
-                        apply(cur) -- a lista não reordena enquanto você marca
+                        apply(cur)
                     else
-                        apply({path}) -- substitui o diretório da caixa de texto
-                        PathStore:Add(path) -- mais usado sobe para o topo
+                        apply({path})
+                        PathStore:Add(path)
                     end
                     render()
                 end)
@@ -1918,7 +1820,7 @@ function Nova.CreateWindow(opts)
                 del.MouseButton1Click:Connect(function()
                     local cur = splitDirs(currentText())
                     local idx = table.find(cur, path)
-                    if idx then -- se estava marcado, sai da caixa de texto também
+                    if idx then
                         table.remove(cur, idx)
                         apply(cur)
                     end
@@ -1928,7 +1830,6 @@ function Nova.CreateWindow(opts)
             listHolder.Size = UDim2.new(1, 0, 0, math.min(#items, MAX_ROWS) * (ITEM_H + 4))
         end
 
-        --// ligações
         if segOne then
             segOne.MouseButton1Click:Connect(function()
                 multi = false
@@ -1958,14 +1859,13 @@ function Nova.CreateWindow(opts)
         end)
         clearBtn.MouseButton1Click:Connect(function()
             PathStore:Clear()
-            PathStore:DeleteFile() -- também apaga o que tinha sido salvo antes
+            PathStore:DeleteFile()
         end)
         headBtn.MouseButton1Click:Connect(function()
             open = not open
             render()
         end)
 
-        -- fecha junto com a interface (não fica aberto ali quando o menu é reaberto)
         Main:GetPropertyChangedSignal("Visible"):Connect(function()
             if not Main.Visible and open then
                 open = false
@@ -1975,7 +1875,7 @@ function Nova.CreateWindow(opts)
 
         table.insert(PathStore.subs, render)
         if input and input.Watch then
-            input:Watch(render) -- destaca o que está na caixa, mesmo se for digitado à mão
+            input:Watch(render)
         end
         bindAccent(render)
 
@@ -2148,12 +2048,9 @@ function Nova.CreateWindow(opts)
         return finalize(el, opts2)
     end
 
-    -- MultiDropdown v3: lista virtualizada (só as linhas visíveis existem), nomes repetidos agrupados com
-    -- contagem (ex.: 7 NPCs "Zombie" viram uma opção "Zombie ×7"), pesquisa sem acento, atualização
-    -- automática por Source e preservação/remoção segura das seleções.
     function SectionMT:AddMultiDropdown(opts2)
         opts2 = opts2 or {}
-        local compat = opts2._compat == true -- vindo de AddDropdown{Multi = true}: Refresh(lista) substitui tudo
+        local compat = opts2._compat == true
         local ITEM_H = UserInputService.TouchEnabled and 32 or 28
         local GAP = 2
         local STEP = ITEM_H + GAP
@@ -2163,7 +2060,6 @@ function Nova.CreateWindow(opts)
             sortList = opts2.Source ~= nil
         end
 
-        -- aceita strings (repetidas viram contagem), {Name=, Count=, Label=} ou {nome, ...}
         local function normalize(list)
             local names, set, cnt, fold, keys = {}, {}, {}, {}, {}
             if type(list) == "table" then
@@ -2239,14 +2135,14 @@ function Nova.CreateWindow(opts)
 
         local options, optionSet, counts, folded = normalize(opts2.Options)
         local selected = {}
-        local view = options -- opções visíveis (filtradas); sem pesquisa é a própria lista
+        local view = options
         local query = ""
         local isOpen = false
         local lastRefresh = os.clock()
         local lastCommitted = {}
         local dupGroups = 0
         local pool = {}
-        local ordered = opts2.Ordered == true -- guarda a ORDEM em que as opções foram marcadas
+        local ordered = opts2.Ordered == true
         local orderList, orderIdx = {}, {}
         local el = {IsMulti = true, Name = opts2.Name, AutoRefresh = tonumber(opts2.AutoRefresh)}
         local toggle, commit
@@ -2262,7 +2158,7 @@ function Nova.CreateWindow(opts)
         end
         countDuplicates()
 
-        local function valuesToList(values) -- lista (na ordem dada) a partir de lista, mapa ou texto
+        local function valuesToList(values)
             local out, seen = {}, {}
             if type(values) == "string" then
                 out[1] = values
@@ -2339,7 +2235,7 @@ function Nova.CreateWindow(opts)
                         out[#out + 1] = o
                     end
                 end
-            else -- lista vazia: as seleções salvas ficam pendentes (não dá para validá-las agora)
+            else
                 for name in pairs(selected) do
                     out[#out + 1] = name
                 end
@@ -2348,7 +2244,6 @@ function Nova.CreateWindow(opts)
             return out
         end
 
-        --// interface
         local wrapper = new("Frame", {
             BackgroundColor3 = Theme.Element,
             BackgroundTransparency = 0.2,
@@ -2502,7 +2397,6 @@ function Nova.CreateWindow(opts)
             end
         end
 
-        -- virtualização: só (linhas visíveis + 2) botões existem, mesmo com milhares de opções
         local function layoutRows(force)
             local need = math.ceil(listHeight() / STEP) + 2
             while #pool < need do
@@ -2628,7 +2522,6 @@ function Nova.CreateWindow(opts)
             commit(false)
         end
 
-        --// API do elemento
         function el:Get()
             return selectedList()
         end
@@ -2657,7 +2550,7 @@ function Nova.CreateWindow(opts)
         function el:Set(values, silent)
             selClear()
             for _, name in ipairs(valuesToList(values)) do
-                if #options == 0 or optionSet[name] then -- inexistente é ignorada (pendente se a lista está vazia)
+                if #options == 0 or optionSet[name] then
                     selAdd(name)
                 end
             end
@@ -2690,14 +2583,11 @@ function Nova.CreateWindow(opts)
             return commit(silent)
         end
 
-        -- Atualiza as opções sem recriar a interface. Sem argumento usa a Source.
-        -- Nada mudou = nada é redesenhado e nenhum callback é chamado.
         function el:Refresh(newOptions, force)
             local source = newOptions
             if source == nil and opts2.Source then
                 local ok, res = pcall(opts2.Source)
                 if not ok then
-                    Window:Log("ERROR", (opts2.Name or "Lista") .. ": erro ao atualizar as opções", tostring(res))
                     return false, #options
                 end
                 source = res
@@ -2752,7 +2642,6 @@ function Nova.CreateWindow(opts)
         end
         el.SetOptions = el.Refresh
 
-        --// eventos de interface
         local function setOpen(open)
             isOpen = open
             if open and opts2.Source then
@@ -2787,7 +2676,7 @@ function Nova.CreateWindow(opts)
             searchBox:GetPropertyChangedSignal("Text"):Connect(function()
                 token = token + 1
                 local my = token
-                task.delay(0.12, function() -- espera a pessoa terminar de digitar
+                task.delay(0.12, function()
                     if my ~= token or not alive then
                         return
                     end
@@ -2801,7 +2690,6 @@ function Nova.CreateWindow(opts)
             end)
         end
 
-        -- valor inicial (Default/Selected) e padrão para "restaurar"
         local initial = opts2.Default or opts2.Selected or {}
         for _, name in ipairs(valuesToList(initial)) do
             if #options == 0 or optionSet[name] then
@@ -2823,7 +2711,7 @@ function Nova.CreateWindow(opts)
 
     function SectionMT:AddDropdown(opts2)
         opts2 = opts2 or {}
-        if opts2.Multi == true then -- compatível: Get/Set/Refresh/Callback iguais, agora virtualizado e com pesquisa
+        if opts2.Multi == true then
             local o = {}
             for k, v in pairs(opts2) do
                 o[k] = v
@@ -3167,14 +3055,12 @@ function Nova.CreateWindow(opts)
         return finalize(el, opts2)
     end
 
-    --// ---------- Abas ----------
     function Window:SelectTab(tab)
         for _, t in ipairs(Window.Tabs) do
             t._setSelected(t == tab)
         end
     end
 
-    -- seções flutuantes seguem o Auto-Lock: só arrastam com o menu aberto (cliques sempre funcionam)
     local floatDragOK = Main.Visible
     track(Main:GetPropertyChangedSignal("Visible"):Connect(function()
         floatDragOK = Main.Visible
@@ -3303,7 +3189,6 @@ function Nova.CreateWindow(opts)
                 }, frame)
                 local bodyLayout = new("UIListLayout", {Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder}, body)
 
-                -- cabeçalho sem símbolo (a fonte não desenha setas): fica na cor de destaque quando aberto
                 local floating = false
                 local function renderHeader()
                     header.Text = floating and (tostring(secName) .. " (flutuando)") or tostring(secName)
@@ -3312,7 +3197,6 @@ function Nova.CreateWindow(opts)
                 renderHeader()
                 bindAccent(renderHeader)
 
-                -- abre/fecha com animação (altura), depois volta ao tamanho automático
                 local token, running = 0, nil
                 local function finish(show)
                     body.Visible = show
@@ -3320,7 +3204,7 @@ function Nova.CreateWindow(opts)
                     body.AutomaticSize = Enum.AutomaticSize.Y
                     body.Size = UDim2.new(1, 0, 0, 0)
                 end
-                -- transforma o card em janela flutuante (e volta ao menu)
+
                 local holder, scaleConn
                 local function dock()
                     if not floating then
@@ -3388,7 +3272,7 @@ function Nova.CreateWindow(opts)
                     local collapsedFloat = false
                     miniBtn.MouseButton1Click:Connect(function()
                         collapsedFloat = not collapsedFloat
-                        body.Visible = not collapsedFloat -- minimiza: fica só a barra de título
+                        body.Visible = not collapsedFloat
                     end)
                     body.Parent = holder
                     body.LayoutOrder = 1
@@ -3417,7 +3301,7 @@ function Nova.CreateWindow(opts)
 
                 header.MouseButton1Click:Connect(function()
                     if floating then
-                        dock() -- tocar no card "flutuando" traz de volta
+                        dock()
                         return
                     end
                     open = not open
@@ -3435,7 +3319,7 @@ function Nova.CreateWindow(opts)
                         body.Visible = true
                         task.spawn(function()
                             local tries = 0
-                            repeat -- espera o layout medir o conteúdo
+                            repeat
                                 task.wait()
                                 tries = tries + 1
                             until bodyLayout.AbsoluteContentSize.Y > 0 or tries >= 6
@@ -3494,7 +3378,6 @@ function Nova.CreateWindow(opts)
         return Tab
     end
 
-    --// ---------- Métodos da janela ----------
     function Window:SetVisible(v)
         visible = v == true
         Main.Visible = visible
@@ -3574,7 +3457,7 @@ function Nova.CreateWindow(opts)
         }
         local color = colors[o.Type or "info"] or Theme.Accent
 
-        if not o.Force then -- evita repetir a mesma mensagem em sequência (loops de aviso)
+        if not o.Force then
             local key = tostring(o.Title) .. "\0" .. tostring(o.Content)
             local now = os.clock()
             if notifySeen[key] and now - notifySeen[key] < 1.5 then
@@ -3599,7 +3482,7 @@ function Nova.CreateWindow(opts)
         table.sort(live, function(a, b)
             return a.LayoutOrder < b.LayoutOrder
         end)
-        while #live >= 5 do -- no máximo 5 na tela: a mais antiga sai
+        while #live >= 5 do
             table.remove(live, 1):Destroy()
         end
 
@@ -3690,7 +3573,6 @@ function Nova.CreateWindow(opts)
         end
     end
 
-    --// ---------- Entrada global (teclas) ----------
     track(UserInputService.InputBegan:Connect(function(input, processed)
         if input.UserInputType ~= Enum.UserInputType.Keyboard then
             return
@@ -3719,7 +3601,6 @@ function Nova.CreateWindow(opts)
         end
     end))
 
-    --// ---------- Ações finais de montagem ----------
     minBtn.MouseButton1Click:Connect(function()
         minimized = not minimized
         Sidebar.Visible = not minimized
@@ -3766,13 +3647,12 @@ function Nova.CreateWindow(opts)
         launcherPos.x, launcherPos.y = place(Launcher, launcherPos.x, launcherPos.y, LAUNCHER_SIZE)
     end))
 
-    -- laços compartilhados: confirmação de estado dos recursos e atualização das listas abertas
     task.spawn(function()
         while alive do
             task.wait(0.5)
             local ok, err = pcall(pollFeatures)
             if not ok then
-                warn("[NovaUI] status: " .. tostring(err))
+                warn("[RN TEAM] status: " .. tostring(err))
             end
             local now = os.clock()
             for _, m in ipairs(multiSources) do
@@ -3802,13 +3682,8 @@ function Nova.CreateWindow(opts)
     return Window
 end
 
---// ============================================================
---//  RN TEAM  -  recursos (construídos sobre a NovaUI acima)
---//  Configurações: arquivo RN_TEAM_SAVE.json (tabela ENV.RN_Data.Config)
---// ============================================================
-
-local MenuBackgroundImageId = "107573785014146" -- fundo do MenuBackground
-local FLOAT_IMAGE_ID = "133657192115931" -- FloatClick.Image (definido na biblioteca)
+local MenuBackgroundImageId = "107573785014146"
+local FLOAT_IMAGE_ID = "133657192115931"
 
 local Win = Nova.CreateWindow({
     Title = "RN TEAM",
@@ -3817,12 +3692,11 @@ local Win = Nova.CreateWindow({
     ToggleKey = Enum.KeyCode.RightShift,
     Accent = Color3.fromRGB(0, 200, 120),
 })
-local F = Win.Flags -- valores atuais de todos os controles
+local F = Win.Flags
 ENV.RN_Data = {Config = F}
 
 local Gui, Root, MainFrame, FloatClick = Win.Gui, Win.Root, Win.Main, Win.Launcher
 
--- Abas, na ordem do menu (cards recolhíveis; duas colunas onde há muitos cards)
 local tabCombat = Win:AddTab("⚔️ Combate", {Columns = 2})
 local tabFarm = Win:AddTab("🌾 Farm", {Columns = 2})
 local tabVisual = Win:AddTab("👁 Visual", {Columns = 2})
@@ -3833,10 +3707,8 @@ local tabExec = Win:AddTab("💻 Executor", {Collapsible = false})
 local tabStatus = Win:AddTab("📊 Status", {Columns = 1})
 local tabEvents = Win:AddTab("📜 Eventos", {Collapsible = false})
 local tabCfg = Win:AddTab("⚙️ Config", {Columns = 1})
-local createFloatButton -- definido na aba Misc (botões flutuantes)
+local createFloatButton
 
---// ---------------- migração do save antigo (RN_TEAM_SAVE.json na raiz) ----------------
--- Só roda quando ainda não existe save novo; copia os valores antigos para as flags novas.
 do
     if Win.CanSave and next(Win.Saved) == nil and type(isfile) == "function" then
         local ok, legacy = pcall(function()
@@ -3914,16 +3786,13 @@ end
 
 FloatClick.Image = "rbxassetid://" .. FLOAT_IMAGE_ID
 
---// ---------------- utilidades gerais ----------------
-
--- Monitoramento de execução: cada função informa o que REALMENTE rodou (usado pelo Painel de Status)
 local Mon = {t = {}, detail = {}, wait = {}, err = {}, conns = {}}
-function Mon.tick(id, detail, waiting) -- rodou agora (waiting = ligado, mas faltando uma condição)
+function Mon.tick(id, detail, waiting)
     Mon.t[id] = os.clock()
     Mon.detail[id] = detail
     Mon.wait[id] = waiting or nil
 end
-function Mon.beat(id) -- só prova que o laço está vivo
+function Mon.beat(id)
     Mon.t[id] = os.clock()
     Mon.detail[id] = Mon.detail[id] or "ciclo em execução"
 end
@@ -3937,32 +3806,30 @@ function Mon.probe(id, maxAge)
         local t = Mon.t[id]
         if control ~= true then
             if t and now - t < 0.6 then
-                return "active", "encerrando..."
+                return "active"
             end
             return "inactive"
         end
         local e = Mon.err[id]
         if e and now - e.t < 8 then
-            return "error", e.msg
+            return "error"
         end
         if t and now - t < maxAge then
             if Mon.wait[id] then
-                return "waiting", Mon.detail[id]
+                return "waiting"
             end
-            return "active", Mon.detail[id]
+            return "active"
         end
-        return "waiting", "sem execução confirmada"
+        return "waiting"
     end
 end
 
 local function notify(title, content, kind)
     kind = kind or "info"
     local level = ({success = "SUCCESS", warning = "WARNING", error = "ERROR"})[kind] or "INFO"
-    Win:Log(level, tostring(title) .. ": " .. tostring(content))
     Win:Notify({Title = title, Content = content, Type = kind, Duration = 3})
 end
 
--- ids: id (ou lista de ids) de recursos a marcar com erro quando o ciclo falhar
 local function connect(signal, fn, ids)
     return Win:Track(signal:Connect(function(...)
         local ok, err = pcall(fn, ...)
@@ -3974,7 +3841,6 @@ local function connect(signal, fn, ids)
             for _, id in ipairs(ids or {}) do
                 Mon.fail(id, err)
             end
-            Win:Log("ERROR", "Erro em " .. tostring(type(ids) == "table" and ids[1] or "ciclo interno"), tostring(err))
         end
     end))
 end
@@ -4016,12 +3882,6 @@ local function toColor(text, fallback)
     return Color3.fromRGB(tonumber(r), tonumber(g), tonumber(b))
 end
 
--- Lê caminhos escritos como CÓDIGO (o texto nunca é executado), por exemplo:
---   local Event = game:GetService("Players").LocalPlayer.Character.DefaultSlap.Event
---   game:GetService("Players").LocalPlayer.Character.DefaultSlap.Event
--- Aceita "local X =", ponto e vírgula, ["Nome"], :WaitForChild("Nome"), :FindFirstChild("Nome")
--- e ignora um :FireServer(...) / :InvokeServer(...) no final.
--- Devolve {segs = {...a partir do game...}, method = ...} ou nil quando é um caminho comum.
 local function parsePathExpr(text)
     text = tostring(text or "")
     if not text:find("[%(%[:=\"']") then
@@ -4119,8 +3979,6 @@ local function parsePathExpr(text)
     return {segs = segs, method = method}
 end
 
--- "Pasta.Sub.Pasta" ou "Workspace/Pasta"; sem prefixo, parte do Workspace.
--- Também entende código: game:GetService("Players").LocalPlayer.Character.Tool.Event
 local function resolvePath(text)
     text = trim(text)
     if text == "" then
@@ -4150,7 +4008,7 @@ local function resolvePath(text)
             local ok, svc = pcall(game.GetService, game, parts[i])
             nxt = ok and svc or nil
         end
-        -- Character não é "filho" do Player: é uma propriedade (Players.LocalPlayer.Character)
+
         if not nxt and (parts[i] == "Character" or parts[i] == "PrimaryPart" or parts[i] == "Parent") then
             local okp, v = pcall(function()
                 return cur[parts[i]]
@@ -4167,7 +4025,6 @@ local function resolvePath(text)
     return cur
 end
 
--- vários diretórios ("A | B"): devolve as pastas encontradas (sem repetir); as que não existirem são ignoradas
 local function resolveDirs(text)
     local out, seen = {}, {}
     for _, p in ipairs(splitDirs(text)) do
@@ -4257,7 +4114,6 @@ local function savedList(flag)
     return out
 end
 
--- NPCs (modelos com Humanoid que não são jogadores), com cache curto
 local npcCache = {}
 local function getNPCs(dirText)
     local now = os.clock()
@@ -4288,7 +4144,6 @@ local function getNPCs(dirText)
     return list
 end
 
--- um item por NPC (nomes repetidos ficam repetidos): o MultiDropdown agrupa e mostra "Nome ×7"
 local function npcNames(dirText)
     local out = {}
     for _, m in ipairs(getNPCs(dirText)) do
@@ -4297,7 +4152,6 @@ local function npcNames(dirText)
     return out
 end
 
--- Atualiza um MultiDropdown pela sua Source; avisa quando nada foi encontrado
 local function refreshMulti(dd, what)
     if not dd then
         return
@@ -4308,7 +4162,6 @@ local function refreshMulti(dd, what)
     end
 end
 
---// ---------------- gerenciador de loops ----------------
 local Loops = {}
 local function stopLoop(key)
     Loops[key] = nil
@@ -4324,11 +4177,10 @@ local function startLoop(key, fn, getInterval)
             if not ok then
                 warn("[RN TEAM] loop " .. tostring(key) .. ": " .. tostring(err))
                 Mon.fail(key, err)
-                Win:Log("ERROR", "Erro no loop '" .. tostring(key) .. "'", tostring(err))
             end
             local iv = tonumber(getInterval and getInterval()) or 0.5
             if iv <= 0 then
-                task.wait() -- intervalo 0 ou negativo: roda a cada frame (sempre cede, não trava o jogo)
+                task.wait()
             else
                 iv = math.min(iv, 3600)
                 local waited = 0
@@ -4343,8 +4195,6 @@ local function startLoop(key, fn, getInterval)
     end)
 end
 
---// ---------------- movimentação Tween (uma por vez) ----------------
--- Durante o Tween: sem colisão (atravessa paredes) e sem gravidade; tudo é desfeito ao terminar/cancelar.
 local Mover = {tween = nil, owner = nil, held = nil, bv = nil, conn = nil, touched = setmetatable({}, {__mode = "k"})}
 
 local function moverHelpersOn(root)
@@ -4352,14 +4202,37 @@ local function moverHelpersOn(root)
         Mover.bv = new("BodyVelocity", {Velocity = Vector3.zero, MaxForce = Vector3.new(1e6, 1e6, 1e6)}, root)
     end
     if not Mover.conn then
+
+        local parts, curChar, dirty = {}, nil, true
+        local function markDirty()
+            dirty = true
+        end
         Mover.conn = RunService.Stepped:Connect(function()
             local ch = LocalPlayer.Character
-            if ch then
-                for _, p in ipairs(ch:GetDescendants()) do
-                    if p:IsA("BasePart") and p.CanCollide then
-                        Mover.touched[p] = true
-                        p.CanCollide = false
+            if not ch then
+                return
+            end
+            if ch ~= curChar then
+                curChar, dirty = ch, true
+                if Mover.watch then
+                    Mover.watch:Disconnect()
+                end
+                Mover.watch = ch.DescendantAdded:Connect(markDirty)
+            end
+            if dirty then
+                dirty = false
+                parts = {}
+                for _, d in ipairs(ch:GetDescendants()) do
+                    if d:IsA("BasePart") then
+                        parts[#parts + 1] = d
                     end
+                end
+            end
+            for i = 1, #parts do
+                local p = parts[i]
+                if p.CanCollide then
+                    Mover.touched[p] = true
+                    p.CanCollide = false
                 end
             end
         end)
@@ -4370,6 +4243,10 @@ local function moverHelpersOff()
     if Mover.conn then
         Mover.conn:Disconnect()
         Mover.conn = nil
+    end
+    if Mover.watch then
+        Mover.watch:Disconnect()
+        Mover.watch = nil
     end
     if Mover.bv then
         pcall(function()
@@ -4385,7 +4262,7 @@ local function moverHelpersOff()
     end
 end
 
-function Mover.hold(owner, root) -- reserva o movimento (noclip + sem gravidade) para um andador contínuo
+function Mover.hold(owner, root)
     local cur = Mover.tween
     if cur and Mover.owner ~= owner and cur.PlaybackState == Enum.PlaybackState.Playing then
         return false
@@ -4429,10 +4306,10 @@ end
 function Mover.to(owner, root, pos, speed)
     local cur = Mover.tween
     if cur and Mover.owner ~= owner and cur.PlaybackState == Enum.PlaybackState.Playing then
-        return nil -- outro sistema está se movendo; não iniciar movimentos simultâneos
+        return nil
     end
     if Mover.held and Mover.held ~= owner then
-        return nil -- um andador contínuo (rota) está com o movimento
+        return nil
     end
     local dist = (root.Position - pos).Magnitude
     if dist <= 1 then
@@ -4475,8 +4352,6 @@ local function teleportTo(pos)
     return true
 end
 
---// ---------------- Auto-Lock dos botões flutuantes ----------------
--- isDraggingEnabled = MainFrame.Visible (uma única conexão, nunca recriada)
 local isDraggingEnabled = MainFrame.Visible
 Win:Track(MainFrame:GetPropertyChangedSignal("Visible"):Connect(function()
     isDraggingEnabled = MainFrame.Visible
@@ -4492,9 +4367,6 @@ local Overlay = new("Frame", {
 }, Root)
 local ESPFolder = new("Folder", {Name = "RN_ESP"}, Gui)
 
---// ============================================================
---//  ABA COMBATE: Aimbots e Hitbox
---// ============================================================
 local AIM_PARTS = {"Head", "HumanoidRootPart", "Torso", "UpperTorso"}
 local HB_PARTS = {"HumanoidRootPart", "Head", "Torso", "UpperTorso", "LowerTorso"}
 
@@ -4518,7 +4390,7 @@ do
 end
 
 do
-    -- Círculos de FOV (Frames, sem depender da Drawing API)
+
     local function makeCircle(name, color)
         local f = new("Frame", {
             Name = name,
@@ -4580,7 +4452,7 @@ do
     local function aimAt(part, smooth)
         local cam = Workspace.CurrentCamera
         local goal = CFrame.lookAt(cam.CFrame.Position, part.Position)
-        -- igual ao script original: o valor é a fração percorrida por frame (1 = instantâneo)
+
         local alpha = math.clamp(tonumber(smooth) or 0.8, 0, 1)
         cam.CFrame = cam.CFrame:Lerp(goal, math.max(alpha, 0.02))
     end
@@ -4642,13 +4514,23 @@ do
     end
 
     local bindName = "RN_Aim"
+    local aimIdle = false
     RunService:BindToRenderStep(bindName, Enum.RenderPriority.Camera.Value + 1, function()
+        if not (F.aim_on or F.aimn_on) then
+
+            if not aimIdle then
+                aimIdle = true
+                circP.Visible = false
+                circN.Visible = false
+            end
+            return
+        end
+        aimIdle = false
         local ok, err = pcall(step)
         if not ok then
             warn("[RN TEAM] aimbot: " .. tostring(err))
             Mon.fail("aim", err)
             Mon.fail("aimn", err)
-            Win:Log("ERROR", "Erro no ciclo do Aimbot", tostring(err))
         end
     end)
     Win:OnDestroy(function()
@@ -4658,7 +4540,6 @@ do
     end)
 end
 
---// ---------------- Hitbox ----------------
 do
     local s = tabCombat:AddSection("💥 Hitbox Jogadores")
     s:AddToggle({Name = "Hitbox", Flag = "hb_on", Default = false})
@@ -4690,7 +4571,6 @@ do
         end
     end
 
-    -- wanted = {[part] = true}. Restaura o que saiu da seleção e aplica o novo tamanho.
     local function sync(store, wanted, size, transp)
         for part, o in pairs(store) do
             if not wanted[part] then
@@ -4777,10 +4657,6 @@ do
     end)
 end
 
---// ============================================================
---//  ABA VISUAL: ESP, Chams, Espectador, Ambiente
---// ============================================================
-
 local specToggle, specLabel
 do
     local s = tabVisual:AddSection("📦 ESP Jogadores")
@@ -4803,7 +4679,6 @@ do
     c:AddToggle({Name = "Team Check", Flag = "chams_team", Default = true, Feature = false})
 end
 
---// ---------------- ESP de jogadores + Chams ----------------
 do
     local entries = {}
     local roleCache = {}
@@ -5045,7 +4920,6 @@ do
     connect(Players.PlayerRemoving, destroyEntry)
 end
 
---// ---------------- ESP de objetos/NPCs + Espectador ----------------
 do
     local s = tabVisual:AddSection("ESP Objetos e NPCs")
     local espoDirBox = s:AddInput({Name = "Diretório", Flag = "espo_dir", Default = "", Placeholder = "Ex.: Workspace.Itens", PathHistory = true})
@@ -5097,7 +4971,7 @@ do
                                 TextXAlignment = Enum.TextXAlignment.Center, TextStrokeTransparency = 0.4,
                             })
                             local hl
-                            if count <= 30 then -- limite de Highlights simultâneos do Roblox
+                            if count <= 30 then
                                 hl = new("Highlight", {
                                     Adornee = inst, FillTransparency = 0.6,
                                     DepthMode = Enum.HighlightDepthMode.AlwaysOnTop,
@@ -5138,18 +5012,16 @@ do
             if not ok then
                 warn("[RN TEAM] esp objetos: " .. tostring(err))
                 Mon.fail("espo", err)
-                Win:Log("ERROR", "Erro no ESP de objetos", tostring(err))
             end
             task.wait(0.5)
         end
     end)
 
-    -- Espectador universal
     local sp = tabVisual:AddSection("🎥 Espectador Universal")
     local specDirBox = sp:AddInput({Name = "Diretório dos NPCs", Flag = "spec_dir", Default = "", Placeholder = "Ex.: Workspace.NPCs", PathHistory = true})
     sp:AddTempDropdown({Name = "📂 Diretórios usados", Input = specDirBox, Multi = true})
     local specIdx = 0
-    local current -- Model sendo observado
+    local current
 
     local function targets()
         local list = {}
@@ -5245,7 +5117,7 @@ do
             return
         end
         if current and (not current.Parent or not isAlive(current)) then
-            pick(1) -- alvo saiu/morreu: troca para o próximo
+            pick(1)
         end
         local cam = Workspace.CurrentCamera
         local hum = current and getHum(current)
@@ -5265,7 +5137,6 @@ do
     end)
 end
 
---// ---------------- Ambiente ----------------
 do
     local s = tabVisual:AddSection("Ambiente")
     s:AddToggle({Name = "Fullbright", Flag = "fb_on", Default = false})
@@ -5302,7 +5173,6 @@ do
     u:AddToggle({Name = "Fechar telas de compra / tela cheia", Flag = "antiui", Default = false})
     u:AddLabel("Fecha janelas que cobrem mais de 70% da tela (ex.: pop-ups de compra). Ao desligar, elas voltam.")
 
-    -- Iluminação: aplica só o que está ligado e restaura o resto
     local stored = {}
     local lightProps = {"Brightness", "ClockTime", "FogEnd", "FogStart", "GlobalShadows", "Ambient", "OutdoorAmbient"}
 
@@ -5361,7 +5231,6 @@ do
         end
     end
 
-    -- Câmera / zoom
     local origFov, origZoomMax, origZoomMin
     local function camStep()
         local cam = Workspace.CurrentCamera
@@ -5388,7 +5257,6 @@ do
         end
     end
 
-    -- Anti Interface: fecha frames que cobrem >70% da tela (telas de compra) e restaura ao desligar
     local hidden = setmetatable({}, {__mode = "k"})
     local antiConn
     local function sweep(gui)
@@ -5471,12 +5339,6 @@ do
     end)
 end
 
---// ---------------- FX Clean Global (aba Visual) ----------------
--- APAGA DE VEZ (Destroy, sem restauração) todo efeito encontrado em TODAS as pastas do Workspace,
--- em qualquer profundidade e mesmo desligado/escondido: partículas, trails, beams, fumaça, fogo,
--- faíscas, explosões, luzes e efeitos de tela. Objetos novos que surgirem também são apagados enquanto
--- o toggle estiver ligado. Desligar o toggle só para a limpeza (o que já foi apagado não volta).
--- Só a qualidade gráfica é devolvida ao valor original ao desligar.
 do
     local fxs = tabVisual:AddSection("✨ FX Clean")
     local fxOn = false
@@ -5492,7 +5354,6 @@ do
         ColorCorrectionEffect = true,
     }
 
-    -- always = true: limpeza manual (botão), vale mesmo com o toggle desligado
     local function fxHit(inst, always)
         if (not fxOn and not always) or not inst or not inst.Parent then
             return
@@ -5521,7 +5382,6 @@ do
         end
     end
 
-    -- varre Workspace (todas as pastas e subpastas) e Lighting, em lotes para não travar o jogo
     local function fxSweep(always)
         fxRun = fxRun + 1
         local myRun = fxRun
@@ -5555,7 +5415,7 @@ do
     end
 
     local function fxStop()
-        fxRun = fxRun + 1 -- cancela a varredura em andamento (nada é restaurado, só a qualidade gráfica)
+        fxRun = fxRun + 1
         if origQuality ~= nil then
             pcall(function()
                 settings().Rendering.QualityLevel = origQuality
@@ -5588,7 +5448,6 @@ do
     end})
     fxs:AddLabel("Apaga de vez (sem restauração) partículas, trails, beams, fumaça, fogo, luzes e efeitos de tela em todas as pastas do Workspace, inclusive os escondidos ou desligados. O que for apagado não volta.")
 
-    -- objetos novos também são apagados enquanto estiver ligado
     Win:Track(Workspace.DescendantAdded:Connect(function(inst)
         if fxOn then
             task.defer(fxHit, inst)
@@ -5600,7 +5459,6 @@ do
         end
     end))
 
-    -- batimento para o Painel de Status
     local acc = 0
     connect(RunService.Heartbeat, function(dt)
         acc = acc + dt
@@ -5620,11 +5478,8 @@ do
     end)
 end
 
---// ============================================================
---//  ABA FARM: jogadores, NPCs, itens (Tween) e perseguição
---// ============================================================
 local MODES = {"Em Cima", "Em Baixo", "Nas Costas"}
-local playerDropdowns = {} -- dropdowns de jogadores atualizados juntos
+local playerDropdowns = {}
 
 local function playerNameList()
     local out = {}
@@ -5644,8 +5499,6 @@ local function refreshPlayerDropdowns()
     end
 end
 
--- Posição relativa ao alvo (igual ao script original): usa o valor ABSOLUTO do offset como distância.
--- Em Cima = acima do alvo, Em Baixo = abaixo, Nas Costas = atrás; sempre olhando para o alvo.
 local function farmCFrame(targetRoot, mode, off)
     local d = math.max(math.abs(tonumber(off) or 5), 0.5)
     local tp = targetRoot.Position
@@ -5666,7 +5519,6 @@ local function applyFarmCFrame(cf)
     end
 end
 
--- avoid (opcional): evita escolher de novo o alvo anterior quando existe outro candidato
 local function nearest(models, from, avoid)
     local best, bestD, fallback
     for _, m in ipairs(models) do
@@ -5685,7 +5537,6 @@ local function nearest(models, from, avoid)
     return best or fallback
 end
 
--- ---------------- Farm Jogadores ----------------
 do
     local s = tabFarm:AddSection("Farm Jogadores")
     s:AddToggle({Name = "Ativar farm", Flag = "fp_on", Default = false})
@@ -5707,7 +5558,7 @@ do
         local myRoot = getRoot()
         if not myRoot or not isAlive(LocalPlayer.Character) then
             Mon.tick("fp", "aguardando o personagem (respawn)", true)
-            return -- respawn / sem personagem: espera
+            return
         end
         if not valid(target) then
             local models, byModel = {}, {}
@@ -5728,7 +5579,6 @@ do
     end, "fp")
 end
 
--- ---------------- Farm NPCs ----------------
 do
     local s = tabFarm:AddSection("Farm NPCs")
     local selSet = {}
@@ -5802,7 +5652,6 @@ do
     end, "fn")
 end
 
--- ---------------- Farm Itens (Tween) ----------------
 do
     local s = tabFarm:AddSection("Farm Itens (Tween)")
     local selSet = {}
@@ -5814,7 +5663,7 @@ do
         if #dirs > 0 then
             for _, it in ipairs(childrenOf(dirs)) do
                 if it:IsA("BasePart") or it:IsA("Model") then
-                    out[#out + 1] = it.Name -- repetidos são agrupados pelo MultiDropdown
+                    out[#out + 1] = it.Name
                 end
             end
         end
@@ -5853,7 +5702,7 @@ do
             return
         end
         while F.fi_on and Mover.playing("fi") do
-            if not best.Parent then -- o item sumiu: cancela e escolhe outro
+            if not best.Parent then
                 Mover.cancel("fi")
                 return
             end
@@ -5900,7 +5749,6 @@ do
     s:AddSlider({Name = "Velocidade Tween", Flag = "fi_speed", Min = 10, Max = 500, Default = 120, Step = 5})
 end
 
--- ---------------- Perseguição Tween ----------------
 do
     local s = tabFarm:AddSection("Perseguição Tween")
     local selSet = {}
@@ -5976,10 +5824,6 @@ Win:OnDestroy(function()
     Mover.cancel()
 end)
 
---// ============================================================
---//  ABA MOVIMENTO
---// ============================================================
-
 do
     local s = tabMove:AddSection("Velocidade e Pulo")
     s:AddToggle({Name = "Alterar velocidade", Flag = "mv_speed_on", Default = false})
@@ -6006,7 +5850,7 @@ do
 end
 
 do
-    -- Valores originais guardados por Humanoid (respawn cria outro Humanoid, sem vazamento)
+
     local orig = setmetatable({}, {__mode = "k"})
     local function origOf(hum)
         local o = orig[hum]
@@ -6047,7 +5891,6 @@ do
         end
     end
 
-    -- Noclip
     local noclipChanged = setmetatable({}, {__mode = "k"})
     local function noclipStep(ch)
         if F.noclip then
@@ -6068,7 +5911,6 @@ do
         end
     end
 
-    -- Voo
     local fly = {bv = nil, bg = nil, root = nil, up = false, down = false}
     local flyUi = new("Frame", {
         Name = "RN_FlyControls", BackgroundTransparency = 1, Size = UDim2.fromOffset(60, 130),
@@ -6121,7 +5963,7 @@ do
             return
         end
         flyUi.Visible = UserInputService.TouchEnabled
-        if fly.root ~= root or not (fly.bv and fly.bv.Parent) then -- (re)cria após respawn
+        if fly.root ~= root or not (fly.bv and fly.bv.Parent) then
             flyCleanup(nil)
             fly.root = root
             fly.bv = new("BodyVelocity", {MaxForce = Vector3.new(1e6, 1e6, 1e6), Velocity = Vector3.zero}, root)
@@ -6150,8 +5992,6 @@ do
         Mon.tick("fly", "voando a " .. speed .. " studs/s")
     end
 
-
-    -- Barra de Fly (canto superior direito): liga/desliga o voo e ajusta a velocidade
     local vp0 = Win._viewport()
     local flyBar = new("Frame", {
         Name = "RN_FlyBar", Size = UDim2.fromOffset(268, 46), BackgroundColor3 = Theme.Surface,
@@ -6200,7 +6040,7 @@ do
     Win._makeDraggable(flyBar, flyBar, barPos, function()
         return flyBar.AbsoluteSize
     end, nil, function()
-        return isDraggingEnabled -- Auto-Lock
+        return isDraggingEnabled
     end)
     connect(RunService.Heartbeat, function()
         flyBar.Visible = F.flybar_show ~= false
@@ -6214,7 +6054,6 @@ do
         end
     end)
 
-    -- AntiVoid
     local lastSafe
     local function antiVoidStep(hum, root)
         if not F.antivoid then
@@ -6236,7 +6075,6 @@ do
         end
     end
 
-    -- Spin / Bunny Hop / AntiKnockback
     local spinAuto = setmetatable({}, {__mode = "k"})
     local function powersStep(hum, root, dt)
         if F.spin_on then
@@ -6310,7 +6148,7 @@ do
                     Mon.tick(id, "aguardando o personagem (respawn)", true)
                 end
             end
-            return -- sem personagem (respawn): espera
+            return
         end
         speedJump(hum)
         noclipStep(ch)
@@ -6340,10 +6178,7 @@ do
     end)
 end
 
---// ============================================================
---//  ABA MISC: interação automática, teleportes, informações, botões de ação
---// ============================================================
-local Actions = {} -- ações reutilizadas pelos botões flutuantes
+local Actions = {}
 
 do
     local s = tabMisc:AddSection("🔌 Interação Automática")
@@ -6370,7 +6205,7 @@ do
     local function objectNames()
         local out = {}
         for _, o in ipairs(objectList(false)) do
-            out[#out + 1] = o.Name -- repetidos são agrupados pelo MultiDropdown
+            out[#out + 1] = o.Name
         end
         return out
     end
@@ -6384,7 +6219,6 @@ do
         return false
     end
 
-    -- Interage conforme o método escolhido; retorna true se executou algo
     local function interact(obj)
         local method = F.ia_method or "ProximityPrompt"
         if method == "ProximityPrompt" then
@@ -6422,9 +6256,9 @@ do
             if not r then
                 return false
             end
-            task.spawn(pcall, r.InvokeServer, r) -- não trava o loop se o servidor demorar
+            task.spawn(pcall, r.InvokeServer, r)
             return true
-        else -- Toque
+        else
             local part = obj:IsA("BasePart") and obj or obj:FindFirstChildWhichIsA("BasePart", true)
             local root = getRoot()
             if not part or not root then
@@ -6508,7 +6342,6 @@ do
         return F.ia_interval
     end
 
-    -- Card 1: só a interação (ClickDetector, ProximityPrompt, Toque, Remotes)
     local iaDirBox = s:AddInput({
         Name = "Diretório dos objetos", Flag = "ia_dir", Default = "", Placeholder = "Ex.: Workspace.Coletaveis",
         PathHistory = true,
@@ -6551,7 +6384,6 @@ do
     loopToggle(s, "Loop de interação", "ia_loop_interact", "ia_interact", Actions.interactOnce)
     s:AddInput({Name = "Intervalo dos loops (s)", Flag = "ia_interval", Default = 0.5, Numeric = true, Min = -1, Max = 3600})
 
-    -- Card 2: coleta de itens
     local c = tabMisc:AddSection("🧺 Coleta de Itens")
     c:AddLabel("Usa o diretório e o método do card Interação Automática.")
     c:AddButton({Name = "Coletar itens do diretório", Callback = function()
@@ -6559,7 +6391,6 @@ do
     end})
     loopToggle(c, "Loop de coleta", "ia_loop_collect", "ia_collect", Actions.collectOnce)
 
-    -- Card 3: teleporte para os objetos selecionados
     local t = tabMisc:AddSection("🎯 Teleporte p/ Objetos")
     t:AddLabel("Vai para os objetos marcados em Objetos selecionados.")
     t:AddButton({Name = "Teleportar p/ objeto selecionado", Callback = Actions.tpOnce})
@@ -6635,7 +6466,7 @@ do
     end})
 
     local ps = tabMisc:AddSection("🧭 Posições e Caminho")
-    -- Caminho direto: aceita sufixo :GetChildren()[N]
+
     local directBox = ps:AddInput({Name = "Caminho direto", Default = "", Placeholder = "Workspace.Pasta:GetChildren()[2]", PathHistory = true})
     ps:AddTempDropdown({Name = "📂 Diretórios usados", Input = directBox})
     ps:AddButton({Name = "Teleportar ao caminho direto", Callback = function()
@@ -6763,10 +6594,9 @@ do
     end})
 end
 
---// ---------------- Botões flutuantes de ação ----------------
 do
     local MAX_FLOATS = 10
-    local floats = {} -- [id] = {card = Frame}
+    local floats = {}
     local counter = 0
 
     local AUTOCLICK_NAME = "🎯 Auto Click (ponto na tela)"
@@ -6813,7 +6643,6 @@ do
         local loopKey = "float_" .. id
         local interval = 0.5
 
-        -- nome padrão "Flutuante N" (menor número livre) quando não foi dado um nome
         local used = {}
         for _, f in pairs(floats) do
             if f.num then
@@ -6850,7 +6679,6 @@ do
         }, card)
         corner(close, 8)
 
-        -- painel de configuração (LOOP + intervalo)
         local panel = new("Frame", {
             Name = "Settings", Position = UDim2.fromOffset(6, 46), Size = UDim2.fromOffset(178, 34),
             BackgroundTransparency = 1, Visible = false, ZIndex = 7,
@@ -6895,9 +6723,9 @@ do
         box.FocusLost:Connect(function()
             local n = tonumber(box.Text)
             if n then
-                interval = math.min(n, 3600) -- 0 ou negativo (ex.: -1) = a cada frame
+                interval = math.min(n, 3600)
             end
-            box.Text = tostring(interval) -- valor inválido volta ao anterior
+            box.Text = tostring(interval)
         end)
         cfg.MouseButton1Click:Connect(function()
             panel.Visible = not panel.Visible
@@ -6909,8 +6737,6 @@ do
             card:Destroy()
         end)
 
-        -- arraste com Auto-Lock: o toque no botão principal executa; arrastar só move com o menu aberto
-        -- sempre aparece no canto de cima, no mesmo lugar (um novo fica por cima do anterior)
         local pos = {x = Win._viewport().X * 0.38, y = 8}
         pos.x, pos.y = Win._place(card, pos.x, pos.y, Vector2.new(190, 46))
         Win._makeDraggable(main, card, pos, function()
@@ -6921,18 +6747,15 @@ do
         floats[id] = {card = card, loopKey = loopKey, num = num}
     end
 
-
-    --// ---- Auto Click flutuante: toque virtual num ponto travado da tela ----
     local GuiService = game:GetService("GuiService")
     local VIM
     pcall(function()
         VIM = game:GetService("VirtualInputManager")
     end)
-    -- No celular, clique de mouse virtual faz o Roblox trocar para o modo teclado/mouse e
-    -- esconder o joystick; por isso lá o clique é enviado como TOQUE virtual.
+
     local IS_MOBILE = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
-    local touchWorks = true -- vira false se o executor não suportar SendTouchEvent
-    local AUTOCLICK_Y_OFFSET = 0 -- ajuste fino vertical se o clique cair fora da bolinha
+    local touchWorks = true
+    local AUTOCLICK_Y_OFFSET = 0
     local DOT_COLORS = {
         Color3.fromRGB(255, 60, 60), Color3.fromRGB(0, 140, 255), Color3.fromRGB(0, 200, 90),
         Color3.fromRGB(255, 200, 0), Color3.fromRGB(180, 90, 255),
@@ -6940,15 +6763,15 @@ do
 
     local function virtualTap(x, y, slot)
         if IS_MOBILE and touchWorks then
-            local tid = 100 + slot -- id diferente do dedo real (joystick)
+            local tid = 100 + slot
             local ok = pcall(function()
-                VIM:SendTouchEvent(tid, 0, x, y) -- Begin
-                VIM:SendTouchEvent(tid, 2, x, y) -- End
+                VIM:SendTouchEvent(tid, 0, x, y)
+                VIM:SendTouchEvent(tid, 2, x, y)
             end)
             if ok then
                 return true
             end
-            touchWorks = false -- cai para o clique de mouse abaixo
+            touchWorks = false
         end
         return pcall(function()
             VIM:SendMouseButtonEvent(x, y, 0, true, game, 0)
@@ -6968,7 +6791,6 @@ do
         counter = counter + 1
         local id = counter
 
-        -- número do Auto Click: menor número livre
         local used = {}
         for _, f in pairs(floats) do
             if f.anum then
@@ -6981,8 +6803,8 @@ do
         end
         label = (label and label ~= "") and label or ("Auto Click " .. anum)
 
-        local interval = 0.1 -- segundos entre cliques (0 = a cada frame)
-        local target = nil -- Vector2 em coordenadas de tela
+        local interval = 0.1
+        local target = nil
         local running = false
         local runToken = 0
         local capture, captureConn = nil, nil
@@ -7012,7 +6834,6 @@ do
         }, card)
         corner(close, 8)
 
-        -- painel: SET ALVO / DELETE / intervalo
         local panel = new("Frame", {
             Name = "Settings", Position = UDim2.fromOffset(6, 46), Size = UDim2.fromOffset(178, 70),
             BackgroundTransparency = 1, Visible = false, ZIndex = 7,
@@ -7035,7 +6856,6 @@ do
         corner(box, 6)
         makeLabel(panel, "s", {Position = UDim2.fromOffset(154, 37), Size = UDim2.fromOffset(20, 28), ZIndex = 8, TextColor3 = Theme.SubText})
 
-        -- bolinha do alvo (não intercepta toques: o clique virtual passa por ela)
         local dot = new("Frame", {
             Name = "RN_AutoClickDot_" .. id, Size = UDim2.fromOffset(18, 18), AnchorPoint = Vector2.new(0.5, 0.5),
             BackgroundColor3 = DOT_COLORS[(anum - 1) % #DOT_COLORS + 1], BorderSizePixel = 0, Visible = false, Active = false, ZIndex = 9,
@@ -7103,7 +6923,7 @@ do
                         if interval > 0 then
                             task.wait(interval)
                         else
-                            task.wait() -- 0 = a cada frame
+                            task.wait()
                         end
                     end
                 end)
@@ -7115,7 +6935,6 @@ do
             end
         end
 
-        -- Modo SET ALVO: uma camada cobre a tela e o PRÓXIMO toque (mesmo em cima de botão do jogo) vira o alvo
         local function beginCapture()
             endCapture()
             capture = new("TextButton", {
@@ -7124,18 +6943,18 @@ do
                 Text = "Toque no ponto onde o clique deve acontecer\n(pode ser em cima de qualquer botão)",
                 Font = FONT_BOLD, TextSize = 16, TextWrapped = true, TextColor3 = Color3.new(1, 1, 1),
             }, Root)
-            -- escuta o toque ignorando "processed": botões do jogo não impedem de travar o ponto
+
             captureConn = UserInputService.InputBegan:Connect(function(input)
                 local t = input.UserInputType
                 if t ~= Enum.UserInputType.MouseButton1 and t ~= Enum.UserInputType.Touch then
                     return
                 end
                 if not (card and card.Parent) then
-                    endCapture() -- interface foi fechada
+                    endCapture()
                     return
                 end
                 local p = Vector2.new(input.Position.X, input.Position.Y + GuiService:GetGuiInset().Y)
-                -- toque em cima de um flutuante do RN TEAM não conta (permite usar CANCELAR)
+
                 for _, f in pairs(floats) do
                     local c = f.card
                     if c and c.Parent then
@@ -7155,9 +6974,9 @@ do
 
         setBtn.MouseButton1Click:Connect(function()
             if capture then
-                endCapture() -- cancelar
+                endCapture()
             else
-                setRunning(false) -- o clique automático não pode rodar enquanto escolhe o ponto
+                setRunning(false)
                 beginCapture()
             end
         end)
@@ -7171,9 +6990,9 @@ do
         box.FocusLost:Connect(function()
             local n = tonumber(box.Text)
             if n then
-                interval = math.min(n, 3600) -- 0 ou negativo = a cada frame
+                interval = math.min(n, 3600)
             end
-            box.Text = tostring(interval) -- valor inválido volta ao anterior
+            box.Text = tostring(interval)
         end)
         cfg.MouseButton1Click:Connect(function()
             panel.Visible = not panel.Visible
@@ -7193,7 +7012,6 @@ do
             card:Destroy()
         end)
 
-        -- toque no botão principal liga/desliga; arrastar só move com o menu aberto (Auto-Lock)
         local pos = {x = Win._viewport().X * 0.38, y = 8}
         pos.x, pos.y = Win._place(card, pos.x, pos.y, Vector2.new(190, 46))
         Win._makeDraggable(main, card, pos, function()
@@ -7211,7 +7029,7 @@ do
         Probe = function()
             local n = countFloats()
             if n > 0 then
-                return "active", n .. " botão(ões) na tela"
+                return "active"
             end
             return "inactive"
         end,
@@ -7246,9 +7064,6 @@ do
     s:AddLabel("🎯 Auto Click: crie o botão, toque em ⚙️ → SET ALVO e toque no ponto da tela (pode ser em cima de botão do jogo). Depois toque no botão para ligar/desligar. No celular, escolha um ponto do lado direito para não pegar o joystick.")
 end
 
---// ============================================================
---//  ABA EXECUTOR: editor com 10 slots
---// ============================================================
 do
     local SLOT_COUNT = 10
     local slots = {}
@@ -7256,7 +7071,7 @@ do
     for i = 1, SLOT_COUNT do
         slots[i] = (type(saved) == "table" and type(saved[i]) == "string") and saved[i] or ""
     end
-    -- registra no sistema de salvamento (RN_TEAM_SAVE.json); ResetAll não apaga os scripts
+
     Win.Elements.exec_slots = {
         Get = function()
             return slots
@@ -7349,7 +7164,7 @@ do
             return
         end
         notify("Executor", "Executando o script do slot " .. cur .. "...", "info")
-        task.spawn(function() -- assíncrono: um script longo não trava o menu
+        task.spawn(function()
             local ok, runErr = pcall(fn)
             if ok then
                 notify("Executor", "O script terminou sem erros.", "success")
@@ -7402,7 +7217,6 @@ do
         end
     end)
 
-    -- O editor ocupa todo o espaço que sobra na aba (medido em unidades da UI, independente da escala)
     local FIXED = 34 + 36 + 36 + 3 * 6
     local function fit()
         local ratio = MainFrame.Size.Y.Offset > 0 and MainFrame.AbsoluteSize.Y / MainFrame.Size.Y.Offset or 1
@@ -7421,10 +7235,6 @@ do
     loadSlot(1)
 end
 
---// ============================================================
---//  ABA CONFIG: fundo do menu, salvamento, interface
---// ============================================================
-
 do
     local MenuBackground = new("ImageLabel", {
         Name = "MenuBackground", BackgroundTransparency = 1, BorderSizePixel = 0, Size = UDim2.fromScale(1, 1),
@@ -7432,7 +7242,6 @@ do
     }, MainFrame)
     corner(MenuBackground, 12)
 
-    -- aceita só dígitos (ou "rbxassetid://dígitos"); vazio remove o fundo
     local function normalizeId(raw)
         raw = trim(raw)
         if raw == "" then
@@ -7494,7 +7303,7 @@ end
 do
     local s = tabCfg:AddSection("Salvamento")
     s:AddLabel(Win.CanSave
-        and "Salvamento automático ativo (arquivo RN_TEAM_SAVE.json, na pasta NovaUI)."
+        and "Salvamento automático ativo (arquivo RN_TEAM_SAVE.json, na pasta RN_TEAM)."
         or "Seu ambiente não suporta arquivos: as configurações ficam só em memória nesta sessão.")
     s:AddButton({Name = "Salvar agora", Callback = function()
         notify("Configuração", Win:Save() and "Configurações salvas." or "Não foi possível salvar.", Win.CanSave and "success" or "warning")
@@ -7516,7 +7325,7 @@ do
         Name = "Notificações", Flag = "ui_notify", Default = true, Feature = false,
         Callback = function(on)
             if not on then
-                Win:ClearNotifications() -- some as que já estão na tela
+                Win:ClearNotifications()
             end
         end,
     })
@@ -7531,7 +7340,6 @@ do
     end})
 end
 
---// ---------------- Músicas (Config) ----------------
 do
     local sec = tabCfg:AddSection("🎵 Músicas")
     local supported = type(getcustomasset) == "function" and type(writefile) == "function"
@@ -7624,7 +7432,7 @@ do
             Id = "music", Name = "Música", Group = tabCfg.Name,
             Probe = function()
                 if sound.IsPlaying then
-                    return "active", "tocando"
+                    return "active"
                 end
                 return "inactive"
             end,
@@ -7695,7 +7503,7 @@ do
             end
             local path = fileOf(name)
             if isfile(path) then
-                playFile(path) -- já baixada: toca direto
+                playFile(path)
             else
                 notify("Música", "Baixando " .. name .. "...", "info")
                 download(url, name, function(p)
@@ -7710,8 +7518,6 @@ do
     end
 end
 
---// ---------------- Atalhos de teclado ----------------
--- RightShift: abre/fecha o menu (da biblioteca) | End: mostra/esconde o FloatClick | Delete: fecha a interface
 connect(UserInputService.InputBegan, function(input, processed)
     if processed or input.UserInputType ~= Enum.UserInputType.Keyboard then
         return
@@ -7723,7 +7529,6 @@ connect(UserInputService.InputBegan, function(input, processed)
     end
 end)
 
---// ---------------- Animação de abertura ----------------
 local function playIntro()
     Win:SetVisible(false)
     local cover = new("Frame", {
@@ -7762,10 +7567,6 @@ local function playIntro()
     cover:Destroy()
 end
 
-
---// ============================================================
---//  ABA STATUS: FPS e ping
---// ============================================================
 local LEVEL_COLOR = {
     INFO = Color3.fromRGB(147, 197, 253),
     SUCCESS = Color3.fromRGB(74, 222, 128),
@@ -7784,7 +7585,7 @@ local function esc(s)
 end
 
 do
-    -- FPS e ping medidos de verdade (sem valores inventados)
+
     local Stats = game:GetService("Stats")
     local fpsValue, fpsAcc, fpsFrames = nil, 0, 0
     connect(RunService.RenderStepped, function(dt)
@@ -7827,9 +7628,6 @@ do
     end)
 end
 
---// ============================================================
---//  ABA EVENTOS: Central de Eventos
---// ============================================================
 do
     local filterLevel, filterText = "Todas", ""
     local ctl = tabEvents.Page
@@ -7852,7 +7650,6 @@ do
     })
     sc:AddButton({Name = "Limpar histórico", Callback = function()
         Win:ClearEvents()
-        Win:Log("INFO", "Histórico de eventos limpo")
     end})
 
     local sl = tabEvents:AddSection("🧾 Histórico", true)
@@ -7929,24 +7726,16 @@ do
     end)
 end
 
---// ============================================================
---//  GRAVADOR DE ROTA v2 (aba Farm)
---//  * grava posição + orientação completa (inclui inclinação) com tempo, a 30 Hz
---//  * comprime trechos parados (sem perder o tempo que você ficou parado)
---//  * replay interpolado fiel ao tempo original, velocidade 0.5x a 8x
---//  * pausa/retoma (F3), progresso em tempo real e trava de movimento
---//  * rotas antigas (só pontos) são convertidas automaticamente
---// ============================================================
 do
     local CFG = {
-        RECORD_INTERVAL = 1 / 30, -- 30 Hz em vez de todo frame (economiza memória)
-        MAX_RECORD_SECONDS = 300, -- limite de segurança (5 min)
-        IDLE_POS_EPS = 0.02, -- studs; abaixo disso considera "parado"
-        IDLE_ROT_EPS = 0.01, -- radianos; abaixo disso considera "sem giro"
+        RECORD_INTERVAL = 1 / 30,
+        MAX_RECORD_SECONDS = 300,
+        IDLE_POS_EPS = 0.02,
+        IDLE_ROT_EPS = 0.01,
         ROUTE_COUNT = 5,
-        LEGACY_SPEED = 16, -- studs/s usados para dar tempo às rotas antigas
+        LEGACY_SPEED = 16,
     }
-    local STRIDE = 7 -- t, x, y, z, rx, ry, rz (Euler YXZ)
+    local STRIDE = 7
     local SPEED_OPTIONS = {"0.5x", "1x", "1.5x", "2x", "4x", "8x"}
     local LOCK_STATES = {
         Enum.HumanoidStateType.Running,
@@ -7963,7 +7752,6 @@ do
         return math.floor(x * m + 0.5) / m
     end
 
-    -- rota = {v = 2, d = {t1,x1,y1,z1,rx1,ry1,rz1, t2,...}}; entra no RN_TEAM_SAVE.json
     local function newRoute()
         return {v = 2, d = {}}
     end
@@ -7993,7 +7781,6 @@ do
         d[n + 5], d[n + 6], d[n + 7] = rnd(rx, 1000), rnd(ry, 1000), rnd(rz, 1000)
     end
 
-    -- rota antiga {x,y,z,...}: ganha tempo (16 studs/s) e olha na direção do caminho
     local function convertLegacy(flat)
         local pts = {}
         for i = 1, #flat - 2, 3 do
@@ -8064,7 +7851,6 @@ do
         Default = nil,
     }
 
-    -- ---------- reprodução: trilha pré-montada + interpolação ----------
     local function buildTrack(r)
         local times, cfs, d = {}, {}, r.d
         for i = 1, #d, STRIDE do
@@ -8074,7 +7860,7 @@ do
         return {times = times, cfs = cfs, duration = times[#times] or 0}
     end
 
-    local function findIndex(times, t) -- maior i com times[i] <= t (busca binária)
+    local function findIndex(times, t)
         local lo, hi = 1, #times
         if t <= times[lo] then
             return lo
@@ -8093,7 +7879,6 @@ do
         return lo
     end
 
-    -- CFrame:Lerp interpola posição e faz slerp da orientação (preserva inclinação/giro)
     local function sampleAt(track, t)
         local times, cfs = track.times, track.cfs
         local i = findIndex(times, t)
@@ -8112,7 +7897,6 @@ do
         return tonumber(tostring(F.route_slot or "Rota 1"):match("%d+")) or 1
     end
 
-    -- ---------- trava de movimento do Humanoid durante o replay ----------
     local function lockHum(hum)
         if not hum then
             return nil
@@ -8140,7 +7924,6 @@ do
         end)
     end
 
-    -- ---------- interface ----------
     local rs = tabFarm:AddSection("🛤️ Gravador de Rota")
     local infoLbl
     local rec, play = nil, nil
@@ -8161,7 +7944,7 @@ do
 
     local function finishRecording(r)
         if r.idleT then
-            pushSample(r.d, r.idleT, r.lastCf) -- mantém o tempo parado no final
+            pushSample(r.d, r.idleT, r.lastCf)
         end
         if #r.d < STRIDE * 2 then
             notify("Gravador", "Rota muito curta; nada foi salvo.", "warning")
@@ -8295,7 +8078,6 @@ do
     end})
     rs:AddLabel("O replay segue o tempo, a posição e a orientação gravados (atravessa paredes). Ficar parado não gasta memória.")
 
-    -- ---------- gravação: 30 Hz + compressão de trechos parados ----------
     connect(RunService.Heartbeat, function()
         if not rec then
             return
@@ -8303,12 +8085,11 @@ do
         local root = getRoot()
         if not root or root ~= rec.root or not isAlive(LocalPlayer.Character) then
             notify("Gravador", "Personagem morreu/resetou: gravação encerrada.", "warning")
-            Win.Elements.route_rec:Set(false, false) -- salva o que já foi gravado
+            Win.Elements.route_rec:Set(false, false)
             return
         end
         local elapsed = os.clock() - rec.start
         if elapsed >= CFG.MAX_RECORD_SECONDS then
-            Win:Log("WARNING", "Gravador: limite de " .. CFG.MAX_RECORD_SECONDS .. "s atingido; gravação encerrada")
             notify("Gravador", "Limite de " .. CFG.MAX_RECORD_SECONDS .. "s atingido; gravação encerrada.", "warning")
             Win.Elements.route_rec:Set(false, false)
             return
@@ -8325,7 +8106,7 @@ do
         end
         if moved then
             if rec.idleT then
-                pushSample(rec.d, rec.idleT, rec.lastCf) -- "segura" a pose até o fim da parada
+                pushSample(rec.d, rec.idleT, rec.lastCf)
                 rec.idleT = nil
             end
             pushSample(rec.d, elapsed, cf)
@@ -8336,7 +8117,6 @@ do
         Mon.tick("rrec", string.format("🔴 %d amostra(s), %.1fs", math.floor(#rec.d / STRIDE), elapsed))
     end, "rrec")
 
-    -- ---------- reprodução: tempo real x velocidade, com pausa e loop ----------
     connect(RunService.Heartbeat, function(dt)
         if not (F.route_play and play) then
             return
@@ -8346,7 +8126,7 @@ do
             Mon.tick("rplay", "aguardando o personagem (respawn)", true)
             return
         end
-        if root ~= play.root then -- respawn: retoma do mesmo instante da rota
+        if root ~= play.root then
             if not Mover.hold("route", root) then
                 Mon.tick("rplay", "movimento ocupado por outro sistema", true)
                 return
@@ -8376,7 +8156,7 @@ do
         local text = string.format("%s Rota %d: %.1fs / %.1fs (%d%%) • %sx", F.route_pause and "⏸" or "▶", play.slot, play.t, track.duration, math.floor(pct * 100 + 0.5), tostring(speedMult()))
         Mon.tick("rplay", text)
         play.uiT = play.uiT + dt
-        if play.uiT >= 0.2 and infoLbl then -- progresso na interface ~5x por segundo
+        if play.uiT >= 0.2 and infoLbl then
             play.uiT = 0
             infoLbl:Set(text)
         end
@@ -8396,9 +8176,6 @@ do
     end)
 end
 
---// ============================================================
---//  REEXECUTAR AO TROCAR DE SERVIDOR (aba Config)
---// ============================================================
 do
     local qot = (type(queue_on_teleport) == "function" and queue_on_teleport)
         or (type(queueonteleport) == "function" and queueonteleport)
@@ -8406,13 +8183,11 @@ do
         or (type(fluxus) == "table" and type(fluxus.queue_on_teleport) == "function" and fluxus.queue_on_teleport)
         or nil
 
-    -- se este script foi reexecutado pelo próprio recurso, confirma (só agora é "concluído")
     local okG, genv = pcall(function()
         return getgenv and getgenv() or nil
     end)
     if okG and type(genv) == "table" and genv.RN_TEAM_REEXEC then
         genv.RN_TEAM_REEXEC = nil
-        Win:Log("SUCCESS", "Reexecutado automaticamente após a troca de servidor")
     end
 
     local rx = tabCfg:AddSection("🔁 Reexecutar ao Trocar de Servidor")
@@ -8425,10 +8200,8 @@ do
     rx:AddDropdown({Name = "Reexecutar também o slot do Executor", Flag = "reexec_slot", Options = slotOptions, Default = "Nenhum"})
     rx:AddLabel("Ligado: o RN TEAM se executa sozinho ao entrar no próximo servidor.")
 
-    -- link fixo do próprio RN TEAM (usado na reexecução; não é mais digitado na interface)
     local RN_DEFAULT_URL = "https://raw.githubusercontent.com/RN-TEAM-2758/MENU-UNIVERSAL-RN/refs/heads/main/script.js"
 
-    -- procura uma cópia local do script na pasta do executor (workspace / autoexec)
     local function findLocalCopy()
         if not (type(isfile) == "function" and type(readfile) == "function") then
             return nil
@@ -8458,7 +8231,7 @@ do
             url = trim(genv.RN_TEAM_URL)
         end
         if url ~= "" then
-            -- guarda o link no próximo servidor também, para a cadeia continuar sozinha
+
             parts[#parts + 1] = string.format("pcall(function() if getgenv then getgenv().RN_TEAM_URL = %q end end)", url)
             parts[#parts + 1] = string.format("pcall(function() loadstring(game:HttpGet(%q))() end)", url)
         else
@@ -8481,7 +8254,6 @@ do
         return table.concat(parts, "\n")
     end
 
-    -- enfileira no início do teleporte, com as configurações do momento (uma vez por teleporte)
     local queuedNow = false
     local tpConn = connect(LocalPlayer.OnTeleport, function(state)
         if state == Enum.TeleportState.Failed then
@@ -8495,19 +8267,15 @@ do
             or state == Enum.TeleportState.InProgress or state == Enum.TeleportState.WaitingForServer then
             local code = buildQueuedCode()
             if not code then
-                Win:Log("WARNING", "Reexecução ligada, mas não há link, cópia local (RN_TEAM_v2.lua) nem slot; nada foi enfileirado")
                 return
             end
             if not qot then
-                Win:Log("ERROR", "Reexecução: o executor não tem queue_on_teleport")
                 return
             end
             local ok, err = pcall(qot, code)
             if ok then
                 queuedNow = true
-                Win:Log("SUCCESS", "Reexecução enfileirada para o próximo servidor")
             else
-                Win:Log("ERROR", "Reexecução: falha ao enfileirar", tostring(err))
             end
         end
     end)
@@ -8517,22 +8285,18 @@ do
             return "inactive"
         end
         if not qot then
-            return "error", "o executor não tem queue_on_teleport"
+            return "error"
         end
         if not buildQueuedCode() then
-            return "waiting", "sem link configurado no script"
+            return "waiting"
         end
         if not (tpConn and tpConn.Connected) then
-            return "error", "o ouvinte de teleporte não está conectado"
+            return "error"
         end
-        return "active", "pronto: será enfileirado quando o teleporte começar"
+        return "active"
     end)
 end
 
---// ============================================================
---//  ⚡ EVENTO / REMOTE
---//  EVENTO → CONFIGURAÇÕES → SELEÇÃO DOS ALVOS → GERAÇÃO DOS ARGUMENTOS → EXECUÇÃO
---// ============================================================
 do
     local MAX_FIRES_PER_SECOND, MAX_TARGETS, MAX_PENDING_INVOKES = 60, 100, 8
     local ARG_OPTIONS = {"Player", "Character", "HumanoidRootPart", "Position", "LookVector", "CFrame", "Vector3", "Nome", "Model", "Part", "Texto fixo", "Número fixo"}
@@ -8554,19 +8318,17 @@ do
     local function num(v)
         return tonumber(v) or 0
     end
-    local EI = {} -- ponte entre o modo manual e o Event Intelligence (reset e "passar para o manual")
+    local EI = {}
 
     local main = tabRemote:AddSection("⚡ Evento / Remote", true)
     main:AddLabel("Fluxo: EVENTO → CONFIGURAÇÕES → SELEÇÃO DOS ALVOS → GERAÇÃO DOS ARGUMENTOS → EXECUÇÃO. Os argumentos são montados a cada disparo, na ordem em que você os marcar. Limite de segurança: no máximo " .. MAX_FIRES_PER_SECOND .. " disparos por segundo.")
 
-    -- todas as subseções começam recolhidas (o usuário abre só a que precisa)
     local sEvent = main:AddSubSection("🔌 EVENTO / REMOTE", false)
     local sTargets = main:AddSubSection("🎯 ALVOS", false)
     local sArgs = main:AddSubSection("🧩 ARGUMENTOS", false)
     local sPos = main:AddSubSection("📍 POSIÇÃO / DIREÇÃO", false)
     local sExec = main:AddSubSection("⚙️ EXECUÇÃO", false)
 
-    --// ---------------------------------------------------------- 🔌 EVENTO / REMOTE
     local remoteCache = {path = nil, inst = nil}
     local function resolveRemote()
         local path = trim(F.ev_path)
@@ -8578,7 +8340,7 @@ do
             return cached
         end
         local inst = resolvePath(path) or resolvePath("game." .. path)
-        if not inst then -- a Tool muda de Backpack para Character quando é equipada
+        if not inst then
             local alt = path
             if path:find(".Backpack.", 1, true) then
                 alt = (path:gsub("%.Backpack%.", ".Character.", 1))
@@ -8619,7 +8381,7 @@ do
     local evPathBox = sEvent:AddInput({
         Name = "Caminho do Remote", Flag = "ev_path", Default = "", Placeholder = "ReplicatedStorage.Remotes.Hit",
         PathHistory = true,
-        -- aceita também código colado: local Event = game:GetService("Players").LocalPlayer.Character.Tool.Event
+
         Validate = function(raw)
             local px = parsePathExpr(raw)
             if px then
@@ -8654,7 +8416,6 @@ do
         end
     end})
 
-    --// ---------------------------------------------------------- 🎯 ALVOS
     local typesDd = sTargets:AddMultiDropdown({
         Name = "Tipos de alvo", Flag = "ev_types", Options = TYPE_OPTIONS, Default = {"Players"},
     })
@@ -8666,7 +8427,7 @@ do
         Name = "Jogadores selecionados", Flag = "ev_players_sel",
         Source = function()
             local list = playerNameList()
-            if F.ev_p_self then -- com "Incluir meu personagem" ligado, dá para escolher a si mesmo
+            if F.ev_p_self then
                 list[#list + 1] = LocalPlayer.Name
             end
             return list
@@ -8756,7 +8517,6 @@ do
         playersDd:Refresh()
     end)
 
-    --// ---------------------------------------------------------- 🧩 ARGUMENTOS
     local argsDd = sArgs:AddMultiDropdown({
         Name = "Argumentos (na ordem marcada)", Flag = "ev_args", Options = ARG_OPTIONS, Ordered = true,
         Default = {"Character", "Position"}, Placeholder = "Sem argumentos",
@@ -8765,7 +8525,6 @@ do
     sArgs:AddInput({Name = "Número fixo", Flag = "ev_number", Default = 0, Numeric = true, Min = -1e9, Max = 1e9})
     sArgs:AddLabel("A ordem em que você marca vira a ordem dos argumentos (#1, #2...). Ex.: Character + Position envia (personagem do alvo, posição da parte de mira). Se um argumento não existir para um alvo, aquele alvo é pulado.")
 
-    --// ---------------------------------------------------------- 📍 POSIÇÃO / DIREÇÃO
     sPos:AddDropdown({
         Name = "Parte de mira", Flag = "ev_aim_part", Options = {"HumanoidRootPart", "Head", "Torso", "UpperTorso"},
         Default = "HumanoidRootPart",
@@ -8794,7 +8553,6 @@ do
     sPos:AddInput({Name = "Vector3 personalizado Y", Flag = "ev_vec_y", Default = 0, Numeric = true, Min = -1e6, Max = 1e6})
     sPos:AddInput({Name = "Vector3 personalizado Z", Flag = "ev_vec_z", Default = 0, Numeric = true, Min = -1e6, Max = 1e6})
 
-    --// ---------------------------------------------------------- seleção dos alvos
     local cursors = {Players = 0, NPCs = 0, Models = 0, Parts = 0}
 
     local function finishEntry(e)
@@ -8838,7 +8596,7 @@ do
                 end
             end
         end
-        -- distância máxima
+
         local maxd = tonumber(F.ev_maxdist) or 0
         local me = getRoot()
         if maxd > 0 then
@@ -8889,7 +8647,7 @@ do
     local function collectTargets()
         local chosen = toSet(typesDd:Get())
         if next(chosen) == nil then
-            return {{kind = "None", name = "(sem alvo)"}} -- só argumentos que não dependem de alvo
+            return {{kind = "None", name = "(sem alvo)"}}
         end
         local out = {}
         local function add(list)
@@ -8910,7 +8668,6 @@ do
             add(pickByMode("Parts", entriesOf("Parts"), partDd))
         end
         if #out > MAX_TARGETS then
-            Win:Log("WARNING", "Evento: " .. #out .. " alvos; usando só os " .. MAX_TARGETS .. " primeiros")
             local cut = {}
             for i = 1, MAX_TARGETS do
                 cut[i] = out[i]
@@ -8920,7 +8677,6 @@ do
         return out
     end
 
-    --// ---------------------------------------------------------- geração dinâmica dos argumentos
     local function resolveArg(name, e)
         local me = getRoot()
         if name == "Player" then
@@ -8988,7 +8744,6 @@ do
         return nil
     end
 
-    -- devolve (args, n) ou (nil, nomeDoArgumentoIndisponível)
     local function buildArgs(e)
         local order = F.ev_args or {}
         local args, n = {}, 0
@@ -9036,7 +8791,6 @@ do
         notify("Argumentos para " .. e.name, n == 0 and "(nenhum argumento)" or table.concat(parts, ", "), "info")
     end})
 
-    --// ---------------------------------------------------------- ⚙️ EXECUÇÃO
     local MODE_OPTIONS = {"Executar uma vez", "Loop"}
     local PER_OPTIONS = {"Um alvo por vez", "Todos os alvos"}
     sExec:AddDropdown({Name = "Modo", Flag = "ev_mode", Options = MODE_OPTIONS, Default = "Executar uma vez"})
@@ -9058,7 +8812,7 @@ do
         end
     end
 
-    local function rateGate() -- nunca passa de MAX_FIRES_PER_SECOND
+    local function rateGate()
         local gap = 1 / MAX_FIRES_PER_SECOND
         local wait = lastFire + gap - os.clock()
         if wait > 0 then
@@ -9085,9 +8839,7 @@ do
                 local ok, res = pcall(remote.InvokeServer, remote, table.unpack(args, 1, n))
                 pending = pending - 1
                 if ok then
-                    Win:Log("INFO", "Retorno de " .. remote.Name, describe(res))
                 else
-                    Win:Log("ERROR", "InvokeServer falhou em " .. remote.Name, tostring(res))
                 end
             end)
             return true
@@ -9096,7 +8848,6 @@ do
         return true
     end
 
-    -- um ciclo: resolve o remote, seleciona os alvos, gera os argumentos de cada um e envia
     local function runCycle()
         local remote, err = resolveRemote()
         if not remote then
@@ -9123,7 +8874,6 @@ do
             local args, n = buildArgs(e)
             if not args then
                 skipped = skipped + 1
-                Win:Log("WARNING", "Evento: argumento '" .. tostring(n) .. "' indisponível para '" .. tostring(e.name) .. "'; alvo pulado")
             else
                 rateGate()
                 local ok, e2 = pcall(sendTo, remote, args, n)
@@ -9131,7 +8881,6 @@ do
                     fired = fired + 1
                 else
                     lastErr = tostring(ok and e2 or e2)
-                    Win:Log("ERROR", "Evento: falha ao enviar para '" .. tostring(e.name) .. "'", lastErr)
                 end
             end
             local d = num(F.ev_delay)
@@ -9163,7 +8912,7 @@ do
                 task.wait(math.max(num(F.ev_interval), 0.03))
             end
         end
-        -- "enviado" = pedido entregue ao servidor; o efeito no jogo depende do servidor
+
         notify("Evento", string.format("%d disparo(s) enviado(s), %d alvo(s) pulado(s).", totalFired, totalSkipped), totalFired > 0 and "success" or "warning")
     end
 
@@ -9174,7 +8923,6 @@ do
         local reps = math.floor(num(F.ev_reps))
         if reps > 0 and loopCycles >= reps then
             Win.Elements.ev_loop:Set(false, false)
-            Win:Log("SUCCESS", "Evento: loop concluído (" .. loopCycles .. " ciclo(s))")
         end
     end
 
@@ -9221,8 +8969,6 @@ do
         setStatus("Parado.", true)
     end})
 
-
-    --// ---------------------------------------------------------- ♻️ ZERAR ABA / 📥 RECEBER DO EVENT INTELLIGENCE
     local EV_DEFAULTS = {
         {"ev_path", ""}, {"ev_kind", "Auto"},
         {"ev_types", {"Players"}}, {"ev_maxdist", 0},
@@ -9247,7 +8993,6 @@ do
         end
         local ok, err = pcall(el.Set, el, value, silent)
         if not ok then
-            Win:Log("WARNING", "Evento: não foi possível ajustar '" .. flag .. "'", tostring(err))
         end
     end
 
@@ -9257,7 +9002,6 @@ do
         end
     end
 
-    -- volta TODA a aba Evento ao estado original (manual + Event Intelligence)
     local function resetEventTab()
         session.stop = true
         if F.ev_loop then
@@ -9274,15 +9018,13 @@ do
         if EI.reset then
             local ok, err = pcall(EI.reset)
             if not ok then
-                Win:Log("ERROR", "Evento: falha ao zerar o Event Intelligence", tostring(err))
             end
         end
-        setEv("ev_kind", "Auto", false) -- grava a configuração
+        setEv("ev_kind", "Auto", false)
         notify("Evento", "Aba Evento zerada: voltou ao original, como nova.", "success")
     end
     EI.resetTab = resetEventTab
 
-    -- recebe do Event Intelligence: caminho, tipo de chamada, alvo e argumentos já montados
     function EI.toManual(spec)
         setEv("ev_path", spec.path, false)
         setEv("ev_kind", spec.kind or "Auto", false)
@@ -9291,7 +9033,7 @@ do
         if tg then
             if tg.type == "Players" then
                 setEv("ev_p_self", tg.name == LocalPlayer.Name, false)
-                setEv("ev_p_ally", false, false) -- senão um aliado seria descartado
+                setEv("ev_p_ally", false, false)
                 setEv("ev_mode_players", MODES.Players[3], false)
                 pcall(playersDd.Refresh, playersDd)
                 setEv("ev_players_sel", {tg.name}, false)
@@ -9341,12 +9083,6 @@ do
         task.spawn(resetEventTab)
     end})
 
-    --// ============================================================
-    --//  🧠 RN TEAM · EVENT INTELLIGENCE (opcional, independente do modo manual)
-    --//  RSPY (texto colado) → ANÁLISE POR ARGUMENTO → CONTROLES → MONITORAMENTO → ENVIO MANUAL
-    --//  Regra central: o que não é reconhecido com segurança é preservado, nunca alterado.
-    --//  O texto colado NUNCA é executado: é lido por um analisador próprio (sem loadstring).
-    --// ============================================================
     ;(function()
         local MAX_ARGS, MAX_PROFILES, MAX_QUEUE, MAX_SRC = 12, 20, 40, 30000
         local SAVE_FILE = "RN_TEAM_EI.json"
@@ -9372,7 +9108,6 @@ do
             return text
         end
 
-        --// ---------------------------------------------------------- 1) LEITURA DO TEXTO (sem executar nada)
         local function tokenize(src)
             local toks, i, n = {}, 1, #src
             local function push(t, v, s, e)
@@ -9485,7 +9220,6 @@ do
             return toks
         end
 
-        -- devolve {calls = {...}, notes = {...}} ou nil, erro
         local function parseRSpy(src)
             local toks, terr = tokenize(src)
             if not toks then
@@ -9522,7 +9256,7 @@ do
 
             local parseExpr
 
-            local function skipBalanced() -- avança até ',' ou ')' no nível 0 e devolve o último token consumido
+            local function skipBalanced()
                 local depth, last = 0, nil
                 while true do
                     local t = peek()
@@ -9543,7 +9277,6 @@ do
                 end
             end
 
-            -- argumento de FireServer/InvokeServer: se não der para entender, o texto original é preservado como "raw"
             local function parseArgTolerant()
                 local save = p
                 local startTok = peek()
@@ -9770,7 +9503,6 @@ do
             return {calls = calls, notes = notes}
         end
 
-        --// ---------------------------------------------------------- 2) CAMINHOS E INSTÂNCIAS (resolução estrita)
         local function pathText(path)
             if #path.segs == 0 then
                 return "game"
@@ -9829,7 +9561,6 @@ do
             return nil
         end
 
-        -- devolve a instância ou nil, motivo. Nomes repetidos no mesmo pai = ambíguo = não resolve.
         local function resolveStrict(path)
             local cur = game
             for _, seg in ipairs(path.segs) do
@@ -9898,7 +9629,6 @@ do
             return {segs = segs}
         end
 
-        -- instância real → caminho (nomes a partir do game); nil se não estiver dentro do jogo
         local function pathFromInstance(inst)
             local segs, cur = {}, inst
             for _ = 1, 40 do
@@ -9926,7 +9656,6 @@ do
             return nil
         end
 
-        -- uma Tool troca de Backpack para Character ao ser equipada: devolve o caminho "do outro lado"
         local function toolAlt(path)
             local segs = path.segs
             if segs[1] == "Players" and (segs[3] == "Backpack" or segs[3] == "Character") then
@@ -9940,7 +9669,6 @@ do
             return nil
         end
 
-        --// ---------------------------------------------------------- 3) DESCRITORES (valor lido, nunca executado)
         local function evalNode(node, env, depth)
             depth = depth or 0
             if depth > 24 then
@@ -10090,7 +9818,6 @@ do
             return "raw:" .. tostring(d.text)
         end
 
-        -- valor real observado no jogo → descritor
         local function descFromValue(v, depth)
             depth = depth or 0
             local t = typeof(v)
@@ -10111,7 +9838,7 @@ do
                 return {t = "Enum", enum = tostring(v.EnumType), item = v.Name}
             elseif t == "Instance" then
                 local okN, full = pcall(v.GetFullName, v)
-                local okPath, pth = pcall(pathFromInstance, v) -- permite achar o objeto de novo se ele for recriado (respawn)
+                local okPath, pth = pcall(pathFromInstance, v)
                 return {t = "instance", inst = v, text = okN and full or v.Name, path = okPath and pth or nil}
             elseif t == "table" then
                 if depth >= 3 then
@@ -10141,7 +9868,6 @@ do
             return {t = "raw", text = "<" .. t .. ">"}
         end
 
-        -- descritor → valor do Roblox. Devolve true, valor  |  false, motivo
         local function realize(d)
             local t = d.t
             if t == "number" or t == "string" or t == "boolean" then
@@ -10244,7 +9970,6 @@ do
             return tostring(v)
         end
 
-        --// ---------------------------------------------------------- 4) ANÁLISE POR ARGUMENTO (confiança individual)
         local function table3(d)
             if d.t ~= "table" or #d.entries ~= 3 then
                 return nil
@@ -10312,7 +10037,6 @@ do
             return nil
         end
 
-        -- {kind, conf, reason, reqClass}; conf: alta | confirmada | baixa | desconhecida
         local function analyze(d, interp)
             local t = d.t
             if interp and INTERPS[interp] and INTERPS[interp].need(d) then
@@ -10371,11 +10095,10 @@ do
             desconhecida = "significado DESCONHECIDO",
         }
 
-        --// ---------------------------------------------------------- 5) PERFIS (observado ≠ interpretado ≠ configuração do usuário)
         local syncWatch, refreshInfo, onLearned
-        local profiles = {}   -- lista de perfis
+        local profiles = {}
         local byLabel = {}
-        local saved = {}      -- interpretações confirmadas, lidas do arquivo
+        local saved = {}
         local ui = {playerDds = {}}
         local enabled = false
         local sending = false
@@ -10450,7 +10173,6 @@ do
                 end
             end
 
-            -- expande unpack(tabela literal) somente quando a estrutura é inequívoca
             local nodes = call.args
             if #nodes == 1 and nodes[1].k == "call" then
                 local a, f = nodes[1], nodes[1].fn
@@ -10532,7 +10254,6 @@ do
                 return
             end
             if sv.sig ~= p.sig then
-                Win:Log("INFO", "Event Intelligence: interpretação salva de '" .. short(p.key, 50) .. "' ignorada (estrutura diferente da chamada atual)")
                 return
             end
             local applied = 0
@@ -10545,7 +10266,6 @@ do
                 end
             end
             if applied > 0 then
-                Win:Log("INFO", "Event Intelligence: " .. applied .. " interpretação(ões) salva(s) reaplicada(s) em '" .. short(p.key, 50) .. "' (estrutura compatível)")
             end
         end
 
@@ -10557,9 +10277,6 @@ do
             return base .. " · " .. p.method .. " (" .. p.n .. ")"
         end
 
-        --// ---------------------------------------------------------- 5b) MODO SÓ CAMINHO (a estrutura vem da 1ª chamada real observada)
-        -- Só o caminho do Remote é informado. Nada é inventado: os argumentos só passam a existir
-        -- depois que o próprio jogo chama o evento e o monitoramento lê essa chamada.
         local function remoteKind(inst)
             return inst:IsA("RemoteFunction") and "InvokeServer" or "FireServer"
         end
@@ -10585,13 +10302,12 @@ do
                 p.method = remoteKind(inst)
             elseif inst then
                 return nil, "o objeto encontrado é " .. inst.ClassName .. ", não um Remote"
-            end -- não achou agora: o perfil fica esperando o item/objeto existir
+            end
             p.sig = signature(p)
             p.callKey = p.key .. "|auto"
             return p
         end
 
-        -- transforma a 1ª chamada observada na estrutura do perfil
         local function learnFrom(p, descs, n, method)
             local cap = math.min(n, MAX_ARGS)
             local slots = {}
@@ -10628,13 +10344,12 @@ do
             return nil
         end
 
-        --// ---------------------------------------------------------- 6) MONITORAMENTO EM TEMPO REAL (somente o que o executor permite)
         local hookState = ENV[HOOK_KEY]
         if type(hookState) ~= "table" then
             hookState = {installed = false}
             ENV[HOOK_KEY] = hookState
         end
-        hookState.handler = nil -- uma reexecução assume o gancho já instalado, sem instalar outro
+        hookState.handler = nil
 
         local watched = {}
         local watchedCount = 0
@@ -10678,12 +10393,10 @@ do
             for i = 1, count do
                 local ok, err = pcall(onObserved, batch[i])
                 if not ok then
-                    Win:Log("ERROR", "Event Intelligence: falha ao processar chamada observada", tostring(err))
                 end
             end
         end
 
-        -- roda dentro do __namecall: sem chamadas de método, sem yield; só guarda e adia
         local function handler(self, method, ...)
             local list = watched[self]
             if not list or sending then
@@ -10692,7 +10405,7 @@ do
             if HAS_CHECK and checkcaller() then
                 return
             end
-            for i = 1, #list do -- mais de um perfil pode acompanhar o mesmo Remote
+            for i = 1, #list do
                 if qn >= MAX_QUEUE then
                     dropped = dropped + 1
                     return
@@ -10781,7 +10494,7 @@ do
             for i = 1, cap do
                 descs[i] = descFromValue(item.args[i])
             end
-            if p.learning then -- modo só caminho: a 1ª chamada real define a estrutura
+            if p.learning then
                 local okL, errL = pcall(learnFrom, p, descs, n, item.method)
                 if okL then
                     local cb = onLearned
@@ -10789,7 +10502,6 @@ do
                         pcall(cb, p)
                     end
                 else
-                    Win:Log("ERROR", "Event Intelligence: falha ao aprender '" .. short(p.key, 50) .. "'", tostring(errL))
                 end
             end
             local o = p.obs
@@ -10800,11 +10512,9 @@ do
             if o.n ~= nil and o.n ~= n then
                 o.structChanges = (o.structChanges or 0) + 1
                 if o.structChanges <= 3 then
-                    Win:Log("WARNING", "Event Intelligence: a estrutura de '" .. short(p.key, 50) .. "' mudou (" .. o.n .. " → " .. n .. " argumento(s))")
                 end
             end
             if first and n ~= p.n then
-                Win:Log("WARNING", "Event Intelligence: a 1ª chamada observada de '" .. short(p.key, 50) .. "' tem " .. n .. " argumento(s); a chamada colada tinha " .. p.n)
             end
             o.n = n
             o.maxN = math.max(o.maxN or 0, n)
@@ -10826,12 +10536,10 @@ do
             end
             p.lastObs = descs
             if first then
-                Win:Log("INFO", "Event Intelligence: primeira chamada observada de '" .. short(p.key, 50) .. "'")
             end
             scheduleInfo()
         end
 
-        --// ---------------------------------------------------------- 7) MONTAGEM E ENVIO (só quando o usuário pede)
         local function slotDesc(p, s)
             local d = s.original
             if p.follow and not s.edited and p.lastObs and p.lastObs[s.idx] then
@@ -10917,9 +10625,7 @@ do
                     sending = false
                     p.invoking = false
                     if ok then
-                        Win:Log("INFO", "Retorno de " .. remote.Name, showValue(res))
                     else
-                        Win:Log("ERROR", "InvokeServer falhou em " .. remote.Name, tostring(res))
                     end
                 end)
                 notify("Event Intelligence", "InvokeServer enviado para " .. remote.Name .. ".", "success")
@@ -10937,9 +10643,8 @@ do
             end
         end
 
-        --// ---------------------------------------------------------- 8) INTERFACE
         local sec = main:AddSubSection("🧠 RN TEAM · Event Intelligence", false)
-        local selected -- perfil exibido
+        local selected
         local buildPanel, applyEnabled
         local function playerOptions(withOriginal)
             local out = {}
@@ -11047,8 +10752,6 @@ do
             end
         end
 
-        --// ---------------------------------------------------------- 📥 PASSAR PARA O MANUAL
-        -- Traduz o que o Event Intelligence juntou (Remote, chamada, alvo, argumentos) para os campos do modo manual.
         local function segsRelative(inst, anc, prefix)
             local rev, cur = {}, inst
             for _ = 1, 40 do
@@ -11105,13 +10808,13 @@ do
         end
 
         local AIM_PARTS = {"HumanoidRootPart", "Head", "Torso", "UpperTorso"}
-        local NEAR = 15 -- até quantos studs uma coordenada ainda é considerada "a posição de alguém"
+        local NEAR = 15
 
         local function manualSpecFor(p)
             local spec = {args = {}, notes = {}}
             local skipped = {}
             local tType, tName, tDir, tObj
-            local pending = {} -- Vector3/CFrame: resolvidos depois, quando o alvo já é conhecido
+            local pending = {}
             local function skip(i, why)
                 skipped[#skipped + 1] = "#" .. i .. " (" .. why .. ")"
             end
@@ -11229,15 +10932,12 @@ do
                     local ok, err = pcall(handleSlot, i, d)
                     if not ok then
                         skip(i, "erro ao ler")
-                        Win:Log("ERROR", "Event Intelligence: argumento #" .. i .. " não pôde ser passado ao manual", tostring(err))
                     end
                 else
                     skip(i, "sem dados")
                 end
             end
 
-            --// COORDENADAS AUTOMÁTICAS: nada de número fixo. Descobre de onde o valor veio
-            --// (posição do alvo, minha posição ou direção) e deixa o manual recalcular a cada disparo.
             local function targetModel()
                 if tType == "Players" then
                     local pl = (tName == LocalPlayer.Name) and LocalPlayer or Players:FindFirstChild(tName)
@@ -11270,7 +10970,7 @@ do
                     local me = getRoot()
                     local isDir = d.t == "Vector3" and math.abs(v.Magnitude - 1) < 0.02
                     if not isDir and not tType then
-                        -- nenhum alvo nos argumentos: vê se a coordenada é a posição de algum jogador
+
                         local bestPl, bestD
                         for _, pl in ipairs(Players:GetPlayers()) do
                             if pl ~= LocalPlayer and pl.Character then
@@ -11375,7 +11075,6 @@ do
                 end)
                 if not ok then
                     skip(i, "erro ao ler")
-                    Win:Log("ERROR", "Event Intelligence: coordenada #" .. i .. " não pôde ser automatizada", tostring(err))
                 end
             end
 
@@ -11397,7 +11096,6 @@ do
                 return
             end
             EI.toManual(spec)
-            Win:Log("INFO", "Event Intelligence → manual: " .. spec.path .. " · " .. tostring(spec.kind), "argumentos: " .. table.concat(spec.args, ", "))
             notify("Event Intelligence", "Passado para o modo manual: caminho, tipo de chamada, alvo e " .. #spec.args .. " argumento(s). Veja em ⚡ Evento / Remote.", "success")
             if #spec.notes > 0 then
                 notify("Event Intelligence", "Coordenadas automáticas (seguem o alvo/você em tempo real): " .. table.concat(spec.notes, " · "), "info")
@@ -11590,7 +11288,6 @@ do
                 panel:AddLabel("🔒 #" .. s.idx .. " preservado exatamente como veio; sem controle (análise manual).")
             end
 
-            -- interpretação confirmada pelo usuário (nunca muda o tipo do valor)
             local id = interpFor(s.original)
             if id and (s.original.t == "string" or s.original.t == "number" or s.original.t == "table") then
                 local meta = INTERPS[id]
@@ -11648,7 +11345,7 @@ do
                     task.spawn(EI.resetTab)
                 end
             end})
-            -- o resto fica guardado aqui, recolhido
+
             local adv = panel:AddSubSection("🔧 Avançado", false)
             adv:AddButton({Name = "👁 Pré-visualizar argumentos", Callback = function() previewArgs(p) end})
             if p.pathOnly then
@@ -11762,10 +11459,8 @@ do
         end
         ui.rebuildList = rebuildList
 
-        -- chamado quando um perfil "só caminho" acaba de aprender a estrutura
         onLearned = function(p)
             local short1 = tostring(p.key):match("([^%.]+)$") or tostring(p.key)
-            Win:Log("INFO", "Event Intelligence: '" .. short(p.key, 50) .. "' aprendido (" .. p.n .. " argumento(s), " .. p.method .. ")")
             notify("Event Intelligence", "Aprendi " .. short(short1, 24) .. ": " .. p.n .. " argumento(s). Os controles estão no painel; 'Enviar uma vez' repete a chamada mais recente.", "success")
             rebuildList(selected or p)
             refreshInfo()
@@ -11781,7 +11476,7 @@ do
                 notify("Event Intelligence", "Este executor não oferece hookmetamethod/getnamecallmethod, então não dá para aprender só pelo caminho. Cole a chamada do RSpy.", "warning")
                 return
             end
-            if not enabled then -- o usuário só precisa do caminho: liga sozinho
+            if not enabled then
                 applyEnabled(true)
                 if Win.Elements.ev_ei_on then
                     Win.Elements.ev_ei_on:Set(true, true)
@@ -11789,7 +11484,6 @@ do
             end
             local okP, p, err = pcall(profileFromPath, text)
             if not okP then
-                Win:Log("ERROR", "Event Intelligence: falha ao preparar o caminho", tostring(p))
                 notify("Event Intelligence", "Não foi possível usar esse caminho. Nada foi alterado.", "error")
                 return
             end
@@ -11831,7 +11525,6 @@ do
             end
             local result, err = parseRSpy(text)
             if not result then
-                Win:Log("WARNING", "Event Intelligence: não foi possível ler o texto", tostring(err))
                 notify("Event Intelligence", "Texto não pôde ser lido (" .. tostring(err) .. "). Nada foi alterado; faça a análise manual.", "warning")
                 return
             end
@@ -11843,7 +11536,6 @@ do
             for _, call in ipairs(result.calls) do
                 local okP, p = pcall(profileFromCall, call)
                 if not okP then
-                    Win:Log("ERROR", "Event Intelligence: falha ao analisar uma chamada (mantida intacta)", tostring(p))
                 else
                     local dup
                     for _, q in ipairs(profiles) do
@@ -11881,7 +11573,6 @@ do
             notify("Event Intelligence", string.format("%d evento(s) novo(s), %d já analisado(s) (configurações mantidas). %d precisam de análise manual.", added, same, manual), added > 0 and "success" or "info")
         end
 
-        --// controles estáticos
         sec:AddToggle({
             Name = "Ativar Event Intelligence", Flag = "ev_ei_on", Default = false, Feature = false,
             Callback = function(on)
@@ -11945,7 +11636,6 @@ do
             end
             syncWatch()
             refreshInfo()
-            Win:Log("INFO", enabled and "Event Intelligence ativado" or "Event Intelligence desativado (configurações preservadas)")
         end
 
         local refreshPending = false
@@ -11964,7 +11654,6 @@ do
         Win:Track(Players.PlayerAdded:Connect(playersChanged))
         Win:Track(Players.PlayerRemoving:Connect(playersChanged))
 
-        -- perfis "só caminho": religa o Remote quando a Tool é recriada (respawn) ou aparece depois
         task.spawn(function()
             while Win:IsAlive() do
                 task.wait(2)
@@ -11995,7 +11684,6 @@ do
             end
         end)
 
-        -- usado pelo botão "Zerar aba Evento": limpa eventos analisados, caixas de texto e desliga o Event Intelligence
         EI.reset = function()
             for i = #profiles, 1, -1 do
                 table.remove(profiles, i)
@@ -12025,9 +11713,6 @@ do
     end)
 end
 
---// ============================================================
---//  SONDAS: ligam cada controle ao que a função realmente executou
---// ============================================================
 do
     local P = Mon.probe
     local map = {
@@ -12045,21 +11730,21 @@ do
     for flag, id in pairs(map) do
         Win:Monitor(flag, P(id))
     end
-    -- Infinite Jump só reage a eventos: a prova é o ouvinte conectado
+
     Win:Monitor("infjump", function(control)
         if control ~= true then
             return "inactive"
         end
         local c = Mon.conns.infjump
         if c and c.Connected then
-            return "active", "ouvindo pedidos de pulo"
+            return "active"
         end
-        return "error", "o ouvinte de pulo não está conectado"
+        return "error"
     end)
 end
 
 Win:SelectTab(Win.Tabs[1])
-Win:EndBoot() -- a partir daqui, mudanças de controle entram na Central de Eventos
+Win:EndBoot()
 task.spawn(function()
     if F.intro_on ~= false then
         local ok, err = pcall(playIntro)
@@ -12075,7 +11760,6 @@ task.spawn(function()
     end
     if Win:IsAlive() then
         Win:SetVisible(true)
-        Win:Log("SUCCESS", "RN TEAM v2 carregada e visível")
         Win:Notify({
             Title = "RN TEAM carregada",
             Content = "Toque no botão flutuante para abrir ou fechar o menu.",
