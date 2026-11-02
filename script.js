@@ -23,6 +23,8 @@ local FONT = Enum.Font.GothamMedium
 local FONT_BOLD = Enum.Font.GothamBold
 local ROW_H = 38
 
+local START_OPEN = false
+
 -- Ícones de linha das abas (opcional). Cole o ID da imagem do Roblox para cada aba.
 -- Exemplo: Combate = "rbxassetid://123456789". Vazio = mantém o emoji.
 local TAB_ICONS = {
@@ -7996,7 +7998,7 @@ local function playIntro()
 
         if not pause(0.6 * k) then return end
 
-        Win:SetVisible(true)
+        Win:SetVisible(START_OPEN)
         if blur then
             play(blur, ti(0.95 * k, EASE.Quad, DIR.Out), {Size = 0})
         end
@@ -12216,7 +12218,7 @@ task.spawn(function()
         end
     end
     if Win:IsAlive() then
-        Win:SetVisible(true)
+        Win:SetVisible(START_OPEN)
         Win:Notify({
             Title = "RN TEAM carregada",
             Content = "Toque no botão flutuante para abrir ou fechar o menu.",
