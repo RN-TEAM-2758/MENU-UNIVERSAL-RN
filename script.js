@@ -7531,40 +7531,387 @@ end)
 
 local function playIntro()
     Win:SetVisible(false)
-    local cover = new("Frame", {
-        Name = "RN_Intro", Size = UDim2.fromScale(1, 1), BackgroundColor3 = Color3.new(0, 0, 0),
-        BorderSizePixel = 0, ZIndex = 1000, Active = true,
-    }, Root)
-    local logo = new("Frame", {
-        Name = "LogoCircle", AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
-        Size = UDim2.fromOffset(0, 0), BackgroundColor3 = Color3.fromRGB(215, 0, 0), BorderSizePixel = 0, ZIndex = 1001,
-    }, cover)
-    new("UICorner", {CornerRadius = UDim.new(1, 0)}, logo)
-    stroke(logo, Color3.fromRGB(255, 65, 65), 3, 0.15)
-    local txt = makeLabel(logo, "RN\nTEAM", {
-        Position = UDim2.fromOffset(9, 9), Size = UDim2.new(1, -18, 1, -18), TextColor3 = Color3.new(1, 1, 1),
-        TextScaled = true, Font = Enum.Font.GothamBlack, TextXAlignment = Enum.TextXAlignment.Center, ZIndex = 1002,
-    })
-    new("UITextSizeConstraint", {MinTextSize = 12, MaxTextSize = 42}, txt)
 
-    TweenService:Create(logo, TweenInfo.new(0.65, Enum.EasingStyle.Back, Enum.EasingDirection.Out),
-        {Size = UDim2.fromOffset(120, 120)}):Play()
-    task.wait(1.4)
-    if not Win:IsAlive() then
-        return
+    local RED = Color3.fromRGB(228, 22, 40)
+    local RED_HOT = Color3.fromRGB(255, 98, 98)
+    local RED_DEEP = Color3.fromRGB(120, 0, 16)
+    local INK = Color3.fromRGB(6, 6, 9)
+    local WHITE = Color3.new(1, 1, 1)
+    local EASE, DIR = Enum.EasingStyle, Enum.EasingDirection
+    local NSK = NumberSequenceKeypoint.new
+    local MID = Vector2.new(0.5, 0.5)
+    local CENTER = UDim2.fromScale(0.5, 0.5)
+    local rng = Random.new()
+
+    local vp = Root.AbsoluteSize
+    if vp.X < 50 or vp.Y < 50 then
+        local cam = Workspace.CurrentCamera
+        vp = cam and cam.ViewportSize or Vector2.new(800, 600)
     end
-    TweenService:Create(logo, TweenInfo.new(0.9, Enum.EasingStyle.Quart, Enum.EasingDirection.In),
-        {Rotation = 720, Size = UDim2.fromOffset(0, 0)}):Play()
-    TweenService:Create(txt, TweenInfo.new(0.55, Enum.EasingStyle.Quad, Enum.EasingDirection.In),
-        {TextTransparency = 1}):Play()
-    task.wait(0.9)
-    if not Win:IsAlive() then
-        return
+    local S = math.clamp(math.floor(math.min(vp.X, vp.Y) * 0.32), 96, 170)
+
+    local skipped, outroStarted = false, false
+    local tweens = {}
+    local cover, blur, prog, progConn
+
+    -- ===== utilitários =====
+    local function ti(t, style, dir, delay, repeats, reverses)
+        return TweenInfo.new(t, style or EASE.Quad, dir or DIR.Out, repeats or 0, reverses or false, delay or 0)
     end
-    TweenService:Create(cover, TweenInfo.new(0.35, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
-        {BackgroundTransparency = 1}):Play()
-    task.wait(0.35)
-    cover:Destroy()
+    local function play(inst, info, props)
+        local tw = TweenService:Create(inst, info, props)
+        tweens[#tweens + 1] = tw
+        tw:Play()
+        return tw
+    end
+    local function circle(inst)
+        return new("UICorner", {CornerRadius = UDim.new(1, 0)}, inst)
+    end
+    local function isAlive()
+        return cover ~= nil and cover.Parent ~= nil and Win:IsAlive()
+    end
+    local function cleanup()
+        for _, tw in ipairs(tweens) do
+            pcall(tw.Cancel, tw)
+        end
+        tweens = {}
+        if progConn then
+            pcall(progConn.Disconnect, progConn)
+            progConn = nil
+        end
+        if prog then
+            pcall(prog.Destroy, prog)
+            prog = nil
+        end
+        if blur then
+            pcall(blur.Destroy, blur)
+            blur = nil
+        end
+        if cover then
+            pcall(cover.Destroy, cover)
+            cover = nil
+        end
+    end
+    Win:OnDestroy(cleanup)
+
+    local t0 = os.clock()
+    local function at(t)
+        while isAlive() and not skipped and os.clock() - t0 < t do
+            task.wait()
+        end
+        return isAlive() and not skipped
+    end
+    local function pause(t)
+        local s = os.clock()
+        while isAlive() and os.clock() - s < t do
+            task.wait()
+        end
+        return isAlive()
+    end
+    local function later(delay, fn)
+        task.delay(delay, function()
+            if isAlive() and not skipped then
+                pcall(fn)
+            end
+        end)
+    end
+
+    -- CanvasGroup permite esmaecer um conjunto inteiro de uma vez; sem ele cai para Frame.
+    local groupClass = "Frame"
+    do
+        local ok, probe = pcall(Instance.new, "CanvasGroup")
+        if ok and probe then
+            groupClass = "CanvasGroup"
+            probe:Destroy()
+        end
+    end
+    local hasGroup = groupClass == "CanvasGroup"
+    local function newGroup(props, parent, hidden)
+        props.BackgroundTransparency = 1
+        props.BorderSizePixel = 0
+        if hidden then
+            if hasGroup then
+                props.GroupTransparency = 1
+            else
+                props.Visible = false
+            end
+        end
+        return new(groupClass, props, parent)
+    end
+    local function fadeGroup(g, value, t, style, dir)
+        if hasGroup then
+            play(g, ti(t, style or EASE.Quad, dir or DIR.Out), {GroupTransparency = value})
+        else
+            g.Visible = value < 0.5
+        end
+    end
+
+    -- ===== desfoque do mundo (aparece só quando as portas abrem) =====
+    pcall(function()
+        blur = Instance.new("BlurEffect")
+        blur.Name = "RN_IntroBlur"
+        blur.Size = 26
+        blur.Parent = Lighting
+    end)
+
+    -- ===== camada principal =====
+    cover = new("Frame", {
+        Name = "RN_Intro", Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1,
+        BorderSizePixel = 0, ZIndex = 1000, Active = true, ClipsDescendants = true,
+    }, Root)
+    cover.InputBegan:Connect(function(input)
+        local ut = input.UserInputType
+        if (ut == Enum.UserInputType.MouseButton1 or ut == Enum.UserInputType.Touch)
+            and not outroStarted and os.clock() - t0 > 0.5 then
+            skipped = true
+        end
+    end)
+
+    -- portas (duas metades) com brilho na junção
+    local doors = {}
+    for _, top in ipairs({true, false}) do
+        local d = new("Frame", {
+            Name = top and "DoorTop" or "DoorBottom",
+            Size = UDim2.fromScale(1, 0.5),
+            Position = top and UDim2.fromScale(0, 0) or UDim2.fromScale(0, 0.5),
+            BackgroundColor3 = WHITE, BorderSizePixel = 0, ZIndex = 1001,
+        }, cover)
+        local seam = Color3.fromRGB(34, 6, 10)
+        new("UIGradient", {
+            Color = ColorSequence.new(top and INK or seam, top and seam or INK),
+            Rotation = 90,
+        }, d)
+        local fade = NumberSequence.new({NSK(0, 1), NSK(0.2, 0), NSK(0.8, 0), NSK(1, 1)})
+        local glow = new("Frame", {
+            Name = "Glow", AnchorPoint = Vector2.new(0.5, top and 1 or 0),
+            Position = UDim2.new(0.5, 0, top and 1 or 0, 0), Size = UDim2.new(0, 0, 0, 8),
+            BackgroundColor3 = RED, BackgroundTransparency = 0.82, BorderSizePixel = 0, ZIndex = 2,
+        }, d)
+        new("UIGradient", {Transparency = fade}, glow)
+        local line = new("Frame", {
+            Name = "Line", AnchorPoint = Vector2.new(0.5, top and 1 or 0),
+            Position = UDim2.new(0.5, 0, top and 1 or 0, 0), Size = UDim2.new(0, 0, 0, 2),
+            BackgroundColor3 = RED_HOT, BackgroundTransparency = 0, BorderSizePixel = 0, ZIndex = 3,
+        }, d)
+        new("UIGradient", {Transparency = fade}, line)
+        doors[top and "top" or "bottom"] = {frame = d, glow = glow, line = line}
+    end
+
+    -- brasas subindo
+    local embers = new("Frame", {
+        Name = "Embers", Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, BorderSizePixel = 0, ZIndex = 1003,
+    }, cover)
+    local emberList = {}
+    for i = 1, 22 do
+        local sz = rng:NextInteger(2, 5)
+        local x = rng:NextNumber(0.04, 0.96)
+        local y0 = rng:NextNumber(1.02, 1.12)
+        local y1 = y0 - rng:NextNumber(0.55, 0.95)
+        local dur = rng:NextNumber(2.6, 4.6)
+        local delay = rng:NextNumber(0, 1.8)
+        local p = new("Frame", {
+            Size = UDim2.fromOffset(sz, sz), Position = UDim2.fromScale(x, y0),
+            BackgroundColor3 = (i % 3 == 0) and WHITE or RED_HOT, BackgroundTransparency = 1, BorderSizePixel = 0,
+        }, embers)
+        circle(p)
+        emberList[#emberList + 1] = p
+        play(p, ti(dur, EASE.Sine, DIR.Out, delay),
+            {Position = UDim2.fromScale(x + rng:NextNumber(-0.05, 0.05), y1)})
+        play(p, ti(dur / 2, EASE.Sine, DIR.Out, delay, 0, true),
+            {BackgroundTransparency = rng:NextNumber(0.25, 0.55)})
+    end
+
+    -- anéis de choque (ondas)
+    local function shock(d0, d1, dur, thick, color)
+        local r = new("Frame", {
+            AnchorPoint = MID, Position = CENTER, Size = UDim2.fromOffset(d0, d0),
+            BackgroundTransparency = 1, BorderSizePixel = 0, ZIndex = 1005,
+        }, cover)
+        circle(r)
+        local st = stroke(r, color or RED_HOT, thick, 0.15)
+        play(r, ti(dur, EASE.Quint, DIR.Out), {Size = UDim2.fromOffset(d1, d1)})
+        play(st, ti(dur, EASE.Quad, DIR.In), {Transparency = 1, Thickness = 0.5})
+    end
+
+    -- ===== nome "RN TEAM" com espaçamento que se fecha =====
+    local TS = math.max(14, math.floor(S * 0.2))
+    local tight, wide = math.floor(TS * 1.25), math.floor(TS * 2.0)
+    local SLOT_MID = 4 -- centro dos 7 slots (R N _ T E A M); o slot 3 fica vazio como espaço
+    local WORD = {
+        {"R", 1, RED_HOT}, {"N", 2, RED_HOT},
+        {"T", 3, WHITE}, {"E", 4, WHITE}, {"A", 5, WHITE}, {"M", 6, WHITE},
+    }
+    -- T E A M pulam o slot 3 (espaço entre RN e TEAM)
+    for _, w in ipairs(WORD) do
+        if w[2] >= 3 then
+            w[2] = w[2] + 1
+        end
+    end
+    local wordY = math.floor(S * 0.96)
+    local wordGroup = newGroup({
+        Name = "Word", AnchorPoint = MID, Position = UDim2.new(0.5, 0, 0.5, wordY),
+        Size = UDim2.fromOffset(S * 4.2, TS * 2.6), ZIndex = 1006,
+    }, cover, false)
+    local letters = {}
+    for i, w in ipairs(WORD) do
+        letters[i] = makeLabel(wordGroup, w[1], {
+            AnchorPoint = MID, Position = UDim2.new(0.5, (w[2] - SLOT_MID) * wide, 0.38, 0),
+            Size = UDim2.fromOffset(tight, TS * 1.4), Font = FONT_BOLD, TextSize = TS,
+            TextXAlignment = Enum.TextXAlignment.Center, TextYAlignment = Enum.TextYAlignment.Center,
+            TextColor3 = RED_HOT, TextTransparency = 1, ZIndex = 2,
+        })
+    end
+    local underline = new("Frame", {
+        AnchorPoint = MID, Position = UDim2.new(0.5, 0, 0, math.floor(TS * 1.95)), Size = UDim2.fromOffset(0, 2),
+        BackgroundColor3 = RED, BorderSizePixel = 0, ZIndex = 2,
+    }, wordGroup)
+    new("UIGradient", {
+        Transparency = NumberSequence.new({NSK(0, 1), NSK(0.25, 0), NSK(0.75, 0), NSK(1, 1)}),
+    }, underline)
+
+    -- ===== HUD de carregamento =====
+    local STATUS = {"Iniciando núcleo", "Carregando módulos", "Aplicando configurações", "Pronto"}
+    local HW = math.clamp(math.floor(vp.X * 0.4), 170, 300)
+    local hud = newGroup({
+        Name = "Hud", AnchorPoint = Vector2.new(0.5, 1),
+        Position = UDim2.new(0.5, 0, 1, -math.max(18, math.floor(vp.Y * 0.07))),
+        Size = UDim2.fromOffset(HW + 24, 40), ZIndex = 1006,
+    }, cover, true)
+    local inner = new("Frame", {
+        Position = UDim2.fromOffset(12, 2), Size = UDim2.fromOffset(HW, 36), BackgroundTransparency = 1, BorderSizePixel = 0,
+    }, hud)
+    local status = makeLabel(inner, STATUS[1], {
+        Size = UDim2.new(0.72, 0, 0, 14), TextSize = 11, TextColor3 = Theme.SubText, ZIndex = 2,
+    })
+    local pct = makeLabel(inner, "0%", {
+        AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, 0, 0, 0), Size = UDim2.new(0.28, 0, 0, 14),
+        TextSize = 11, Font = FONT_BOLD, TextXAlignment = Enum.TextXAlignment.Right, ZIndex = 2,
+    })
+    local track = new("Frame", {
+        Position = UDim2.fromOffset(0, 22), Size = UDim2.new(1, 0, 0, 3),
+        BackgroundColor3 = Color3.fromRGB(34, 34, 44), BorderSizePixel = 0, ZIndex = 2,
+    }, inner)
+    corner(track, 2)
+    local fill = new("Frame", {
+        Size = UDim2.fromScale(0, 1), BackgroundColor3 = WHITE, BorderSizePixel = 0, ZIndex = 3,
+    }, track)
+    corner(fill, 2)
+    new("UIGradient", {Color = ColorSequence.new(RED_DEEP, RED_HOT)}, fill)
+    local tipGlow = new("Frame", {
+        AnchorPoint = MID, Position = UDim2.fromScale(1, 0.5), Size = UDim2.fromOffset(18, 18),
+        BackgroundColor3 = RED, BackgroundTransparency = 0.7, BorderSizePixel = 0, ZIndex = 4,
+    }, fill)
+    circle(tipGlow)
+    local tip = new("Frame", {
+        AnchorPoint = MID, Position = UDim2.fromScale(1, 0.5), Size = UDim2.fromOffset(7, 7),
+        BackgroundColor3 = WHITE, BorderSizePixel = 0, ZIndex = 5,
+    }, fill)
+    circle(tip)
+
+    local statusIdx = 1
+    prog = Instance.new("NumberValue")
+    progConn = prog.Changed:Connect(function(v)
+        fill.Size = UDim2.new(math.clamp(v / 100, 0, 1), 0, 1, 0)
+        pct.Text = string.format("%d%%", math.floor(v + 0.5))
+        local idx = (v < 30 and 1) or (v < 62 and 2) or (v < 94 and 3) or 4
+        if idx ~= statusIdx then
+            statusIdx = idx
+            status.Text = STATUS[idx]
+            status.TextTransparency = 0.7
+            play(status, ti(0.25), {TextTransparency = 0})
+            if idx == 4 then
+                pct.TextColor3 = RED_HOT
+            end
+        end
+    end)
+
+    -- dica para pular
+    local touchOnly = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
+    local hint = makeLabel(cover, touchOnly and "Toque para pular" or "Clique para pular", {
+        AnchorPoint = Vector2.new(1, 1), Position = UDim2.new(1, -14, 1, -10), Size = UDim2.fromOffset(140, 14),
+        TextSize = 10, TextColor3 = Color3.fromRGB(120, 120, 140), TextTransparency = 1,
+        TextXAlignment = Enum.TextXAlignment.Right, ZIndex = 1007,
+    })
+
+    -- ===== linha do tempo =====
+    local function sequence()
+        later(0.8, function()
+            play(hint, ti(0.5), {TextTransparency = 0.35})
+        end)
+
+        -- 1.20: RN TEAM abre espaço e fecha o espaçamento
+        if not at(1.2) then return false end
+        for i, l in ipairs(letters) do
+            local w = WORD[i]
+            local d = (i - 1) * 0.07
+            play(l, ti(0.9, EASE.Quint, DIR.Out, d),
+                {Position = UDim2.new(0.5, (w[2] - SLOT_MID) * tight, 0.38, 0), TextColor3 = w[3]})
+            play(l, ti(0.5, EASE.Quad, DIR.Out, d), {TextTransparency = 0})
+        end
+        later(0.5, function()
+            play(underline, ti(0.8, EASE.Quint, DIR.Out), {Size = UDim2.fromOffset(tight * 7 + 24, 2)})
+        end)
+
+        -- 1.60: HUD e progresso em etapas
+        if not at(1.6) then return false end
+        fadeGroup(hud, 0, 0.4)
+        play(prog, ti(0.75, EASE.Quad, DIR.Out), {Value = 34})
+        if not at(2.55) then return false end
+        play(prog, ti(0.7, EASE.Quad, DIR.InOut), {Value = 71})
+        if not at(3.4) then return false end
+        play(prog, ti(0.6, EASE.Quad, DIR.Out), {Value = 100})
+
+        -- 4.50: fim da carga, segue para a abertura
+        if not at(4.5) then return false end
+        return true
+    end
+
+    -- ===== saída: portas se abrem revelando a interface =====
+    local function outro(fast)
+        outroStarted = true
+        local k = fast and 0.55 or 1
+
+        fadeGroup(hud, 1, 0.3 * k)
+        fadeGroup(wordGroup, 1, 0.45 * k)
+        play(wordGroup, ti(0.45 * k, EASE.Quad, DIR.In), {Position = UDim2.new(0.5, 0, 0.5, wordY + 14)})
+        play(hint, ti(0.2 * k), {TextTransparency = 1})
+        for _, p in ipairs(emberList) do
+            play(p, ti(0.3 * k), {BackgroundTransparency = 1})
+        end
+        -- a linha vermelha surge só agora: risca o centro da tela e vira clarão antes das portas abrirem
+        for _, d in pairs(doors) do
+            play(d.line, ti(0.5 * k, EASE.Quint, DIR.Out), {Size = UDim2.new(1, 0, 0, 4), BackgroundColor3 = WHITE})
+            play(d.glow, ti(0.5 * k, EASE.Quint, DIR.Out), {Size = UDim2.new(1, 0, 0, 18), BackgroundColor3 = RED_HOT, BackgroundTransparency = 0.6})
+        end
+
+        if not pause(0.6 * k) then return end
+
+        Win:SetVisible(true)
+        if blur then
+            play(blur, ti(0.95 * k, EASE.Quad, DIR.Out), {Size = 0})
+        end
+        local open = ti(0.95 * k, EASE.Quint, DIR.InOut)
+        play(doors.top.frame, open, {Position = UDim2.fromScale(0, -0.5)})
+        play(doors.bottom.frame, open, {Position = UDim2.fromScale(0, 1)})
+        for _, d in pairs(doors) do
+            play(d.line, ti(0.7 * k, EASE.Quad, DIR.In), {BackgroundTransparency = 1})
+            play(d.glow, ti(0.7 * k, EASE.Quad, DIR.In), {BackgroundTransparency = 1})
+        end
+        shock(S * 0.6, math.max(vp.X, vp.Y) * 1.3, 0.9 * k, 3, WHITE)
+
+        pause(1.0 * k)
+    end
+
+    local ok, err = pcall(function()
+        local finished = sequence()
+        if isAlive() then
+            outro(not finished)
+        end
+    end)
+    cleanup()
+    if not ok then
+        error(err, 0)
+    end
 end
 
 local LEVEL_COLOR = {
