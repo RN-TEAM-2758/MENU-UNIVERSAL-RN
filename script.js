@@ -914,7 +914,7 @@ function Nova.CreateWindow(opts)
         BorderSizePixel = 0,
     }, Root)
     corner(Main, 12)
-    stroke(Main, Theme.Stroke, 1)
+    stroke(Main, Theme.Accent, 2, 0.3)
     local scaleObj = new("UIScale", {Scale = 1}, Main)
 
     local TopBar = new("Frame", {
@@ -3782,6 +3782,13 @@ function Nova.CreateWindow(opts)
     end
 
     Window.Gui = gui
+    Window.BindAccent = bindAccent
+    bindAccent(function()
+        local st = Main:FindFirstChildOfClass("UIStroke")
+        if st then
+            st.Color = Theme.Accent
+        end
+    end)
     Window.Root = Root
     Window.Main = Main
     Window.Launcher = Launcher
@@ -7177,18 +7184,26 @@ do
 end
 
 do
-    local SLOT_COUNT = 10
-    local slots = {}
+    -- ================= Aba Executor (visual neon) =================
+    local K = {
+        SLOTS = 10, HISTORY = 20, CONSOLE = 150, HL_LIMIT = 9000,
+        HEADER = 44, BTN = 34, CONSOLE_H = 84, GUTTER = 34, PAD = 6,
+        DARK = Color3.fromRGB(8, 8, 12),
+        BTN_BG = Color3.fromRGB(20, 20, 26),
+        BTN_STROKE = Color3.fromRGB(72, 72, 86),
+        CODE = Enum.Font.Code,
+    }
+
+    -- slots   = o que está salvo no arquivo (só muda em "Salvar").
+    -- drafts  = o que está na tela agora; vive só na memória (some ao sair do jogo/trocar de servidor).
+    local slots, drafts, history = {}, {}, {}
     local saved = Win.Saved.exec_slots
-    for i = 1, SLOT_COUNT do
+    for i = 1, K.SLOTS do
         slots[i] = (type(saved) == "table" and type(saved[i]) == "string") and saved[i] or ""
-    end
-    -- slots = o que está salvo no arquivo (só muda em "Salvar no Slot").
-    -- drafts = o que está na tela agora; vive só na memória e some ao sair do jogo/trocar de servidor.
-    local drafts = {}
-    for i = 1, SLOT_COUNT do
         drafts[i] = slots[i]
     end
+    local cur, expanded, codeSize, lastCursor = 1, false, 13, nil
+    local U = {}
 
     Win.Elements.exec_slots = {
         Get = function()
@@ -7201,161 +7216,677 @@ do
         Default = nil,
     }
 
+    local function bindAcc(fn)
+        if Win.BindAccent then
+            Win.BindAccent(fn)
+        else
+            fn()
+        end
+    end
+
+    local function escapeRT(s)
+        s = tostring(s)
+        s = s:gsub("&", "&amp;")
+        s = s:gsub("<", "&lt;")
+        s = s:gsub(">", "&gt;")
+        return s
+    end
+
+    -- ---------- destaque de sintaxe (Luau) ----------
+    local highlight
+    do
+        local KEYWORDS = {}
+        for w in ("and break continue do else elseif end false for function goto if in local nil not or repeat return then true until while"):gmatch("%a+") do
+            KEYWORDS[w] = true
+        end
+        local C_COMMENT, C_STRING, C_NUMBER, C_KEYWORD, C_CALL = "#6ab050", "#ff9a5a", "#f6c453", "#ff5c70", "#4fc3f7"
+        local function wrap(color, text)
+            text = escapeRT(text)
+            if color then
+                return '<font color="' .. color .. '">' .. text .. "</font>"
+            end
+            return text
+        end
+        highlight = function(src)
+            local out, n = {}, 0
+            local i, len = 1, #src
+            local function push(color, text)
+                n = n + 1
+                out[n] = wrap(color, text)
+            end
+            while i <= len do
+                local c = src:sub(i, i)
+                local nxt = i
+                if c == "-" and src:sub(i + 1, i + 1) == "-" then
+                    local eq = src:match("^%-%-%[(=*)%[", i)
+                    local j
+                    if eq then
+                        local _, e = src:find("]" .. eq .. "]", i, true)
+                        j = e or len
+                    else
+                        j = (src:find("\n", i, true) or (len + 1)) - 1
+                    end
+                    push(C_COMMENT, src:sub(i, j))
+                    nxt = j + 1
+                elseif c == '"' or c == "'" then
+                    local j = i + 1
+                    while j <= len do
+                        local d = src:sub(j, j)
+                        if d == "\\" then
+                            j = j + 2
+                        elseif d == c or d == "\n" then
+                            break
+                        else
+                            j = j + 1
+                        end
+                    end
+                    local e = (src:sub(j, j) == c) and j or (j - 1)
+                    if e > len then
+                        e = len
+                    end
+                    push(C_STRING, src:sub(i, e))
+                    nxt = e + 1
+                elseif c == "[" and src:match("^%[=*%[", i) then
+                    local eq = src:match("^%[(=*)%[", i)
+                    local _, e = src:find("]" .. eq .. "]", i, true)
+                    e = e or len
+                    push(C_STRING, src:sub(i, e))
+                    nxt = e + 1
+                elseif c:match("%d") then
+                    local num = src:match("^0[xX]%x+", i) or src:match("^%d[%d%.]*", i)
+                    push(C_NUMBER, num)
+                    nxt = i + #num
+                elseif c:match("[%a_]") then
+                    local word = src:match("^[%a_][%w_]*", i)
+                    local after = i + #word
+                    if KEYWORDS[word] then
+                        push(C_KEYWORD, word)
+                    elseif src:sub(after, after) == "(" then
+                        push(C_CALL, word)
+                    else
+                        push(nil, word)
+                    end
+                    nxt = after
+                else
+                    local run = src:match("^[^%a_%d\"'%-%[]+", i)
+                    if not run then
+                        run = c
+                    end
+                    push(nil, run)
+                    nxt = i + #run
+                end
+                i = nxt
+            end
+            return table.concat(out)
+        end
+    end
+
+    local function preview(s)
+        local first = tostring(s or ""):match("^%s*([^\r\n]*)") or ""
+        first = first:gsub("%s+$", "")
+        local l = utf8.len(first)
+        if l and l > 30 then
+            first = first:sub(1, (utf8.offset(first, 31) or (#first + 1)) - 1) .. "…"
+        elseif not l and #first > 30 then
+            first = first:sub(1, 30) .. "…"
+        end
+        return first
+    end
+
+    -- ---------- construção da tela ----------
     local page = tabExec.Page
     page.ScrollingEnabled = false
-    local col = new("Frame", {
-        BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
-    }, page)
+    local stage = new("Frame", {Name = "ExecStage", BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 300)}, page)
+    local col = new("Frame", {BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1)}, stage)
     new("UIListLayout", {Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder}, col)
 
-    local order = 0
-    local function row(h)
-        order = order + 1
-        local r = new("Frame", {BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, h), LayoutOrder = order}, col)
-        new("UIListLayout", {
-            FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 6),
-            SortOrder = Enum.SortOrder.LayoutOrder, VerticalAlignment = Enum.VerticalAlignment.Center,
-        }, r)
-        return r
-    end
-    local function button(parent, text, n, color, callback)
+    local function mkBtn(parent, text, size, o)
+        o = o or {}
         local b = new("TextButton", {
-            Size = UDim2.new(1 / n, -(6 * (n - 1)) / n, 1, 0), BackgroundColor3 = Theme.Element, BackgroundTransparency = 0.2,
-            AutoButtonColor = true, Text = text, Font = FONT_BOLD, TextSize = 12, TextColor3 = color or Theme.Text,
-            TextTruncate = Enum.TextTruncate.AtEnd,
+            Size = size, BackgroundColor3 = o.bg or K.BTN_BG, BorderSizePixel = 0, AutoButtonColor = true,
+            Text = text, Font = FONT_BOLD, TextSize = o.textSize or 12, TextColor3 = o.color or Theme.Text,
+            TextTruncate = Enum.TextTruncate.AtEnd, LayoutOrder = o.order or 0,
         }, parent)
-        corner(b, 8)
-        b.MouseButton1Click:Connect(callback)
+        corner(b, o.radius or 10)
+        local st = stroke(b, o.stroke or K.BTN_STROKE, o.thickness or 1, o.strokeT or 0)
+        if o.accent then
+            bindAcc(function()
+                st.Color = Theme.Accent
+            end)
+        end
+        return b, st
+    end
+
+    -- Cabeçalho
+    local header = new("Frame", {BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, K.HEADER), LayoutOrder = 1}, col)
+    do
+    local iconBox = new("Frame", {
+        Size = UDim2.fromOffset(38, 38), Position = UDim2.fromOffset(0, 3),
+        BackgroundColor3 = Color3.fromRGB(30, 9, 13), BorderSizePixel = 0,
+    }, header)
+    corner(iconBox, 9)
+    local iconStroke = stroke(iconBox, Theme.Accent, 1.5, 0.15)
+    local iconTxt = new("TextLabel", {
+        Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, Text = ">_", Font = FONT_BOLD,
+        TextSize = 16, TextColor3 = Theme.Accent,
+    }, iconBox)
+    bindAcc(function()
+        iconStroke.Color = Theme.Accent
+        iconTxt.TextColor3 = Theme.Accent
+    end)
+
+    end
+    local RIGHT_W = 96 + 80 + 78 + 12
+    local titleBox = new("Frame", {
+        BackgroundTransparency = 1, Position = UDim2.fromOffset(46, 0),
+        Size = UDim2.new(1, -(46 + RIGHT_W + 6), 1, 0), ClipsDescendants = true,
+    }, header)
+    makeLabel(titleBox, "Executor", {
+        Position = UDim2.fromOffset(0, 2), Size = UDim2.new(1, 0, 0, 22), Font = FONT_BOLD, TextSize = 16,
+    })
+    makeLabel(titleBox, "Execute seus scripts com segurança e rapidez", {
+        Position = UDim2.fromOffset(0, 24), Size = UDim2.new(1, 0, 0, 16), TextSize = 10,
+        TextColor3 = Theme.SubText, TextTruncate = Enum.TextTruncate.AtEnd,
+    })
+
+    local right = new("Frame", {
+        BackgroundTransparency = 1, AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, 0, 0, 3),
+        Size = UDim2.fromOffset(RIGHT_W, 38),
+    }, header)
+    new("UIListLayout", {
+        FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 6),
+        SortOrder = Enum.SortOrder.LayoutOrder, VerticalAlignment = Enum.VerticalAlignment.Center,
+    }, right)
+    U.scriptsBtn = mkBtn(right, "📁 Meus Scripts", UDim2.fromOffset(96, 36), {order = 1, textSize = 11})
+    U.histBtn = mkBtn(right, "🕒 Histórico", UDim2.fromOffset(80, 36), {order = 2, textSize = 11})
+    U.slotBtn = mkBtn(right, "Slot 1 ▾", UDim2.fromOffset(78, 36), {order = 3, textSize = 12})
+
+    -- Editor
+    U.editorBox = new("Frame", {
+        BackgroundColor3 = K.DARK, BorderSizePixel = 0, Size = UDim2.new(1, 0, 0, 200),
+        LayoutOrder = 2, ClipsDescendants = true,
+    }, col)
+    corner(U.editorBox, 10)
+    local edStroke = stroke(U.editorBox, Theme.Accent, 1.5, 0.35)
+    bindAcc(function()
+        edStroke.Color = Theme.Accent
+    end)
+
+    local gutterClip = new("Frame", {
+        BackgroundTransparency = 1, Size = UDim2.new(0, K.GUTTER, 1, 0), ClipsDescendants = true,
+    }, U.editorBox)
+    new("Frame", {
+        BackgroundColor3 = Color3.fromRGB(52, 30, 36), BorderSizePixel = 0,
+        Position = UDim2.fromOffset(K.GUTTER, 0), Size = UDim2.new(0, 1, 1, 0),
+    }, U.editorBox)
+    U.gutter = new("TextLabel", {
+        BackgroundTransparency = 1, Position = UDim2.fromOffset(0, K.PAD), Size = UDim2.new(1, -6, 0, 0),
+        AutomaticSize = Enum.AutomaticSize.Y, Font = K.CODE, TextSize = codeSize,
+        TextColor3 = Color3.fromRGB(110, 110, 130), TextXAlignment = Enum.TextXAlignment.Right,
+        TextYAlignment = Enum.TextYAlignment.Top, Text = "1",
+    }, gutterClip)
+
+    U.scroll = new("ScrollingFrame", {
+        BackgroundTransparency = 1, BorderSizePixel = 0, Position = UDim2.fromOffset(K.GUTTER + 2, 0),
+        Size = UDim2.new(1, -(K.GUTTER + 2), 1, 0), ScrollBarThickness = 4, ScrollBarImageColor3 = Theme.Accent,
+        CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.XY,
+        ScrollingDirection = Enum.ScrollingDirection.XY, ClipsDescendants = true,
+    }, U.editorBox)
+    bindAcc(function()
+        U.scroll.ScrollBarImageColor3 = Theme.Accent
+    end)
+
+    U.editor = new("TextBox", {
+        Name = "Editor", Position = UDim2.fromOffset(0, 0), Size = UDim2.fromOffset(200, 200),
+        AutomaticSize = Enum.AutomaticSize.XY, BackgroundTransparency = 1, MultiLine = true,
+        ClearTextOnFocus = false, TextWrapped = false, Font = K.CODE, TextSize = codeSize,
+        TextColor3 = Theme.Text, PlaceholderText = "-- Digite seu script Luau aqui...",
+        PlaceholderColor3 = Theme.SubText, TextXAlignment = Enum.TextXAlignment.Left,
+        TextYAlignment = Enum.TextYAlignment.Top, Text = "",
+    }, U.scroll)
+    padding(U.editor, K.PAD, K.PAD, K.PAD, K.PAD)
+    -- camada colorida por cima do TextBox (o texto real fica transparente; o cursor continua visível)
+    U.hl = new("TextLabel", {
+        BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1), RichText = true, TextWrapped = false,
+        Font = K.CODE, TextSize = codeSize, TextColor3 = Theme.Text, TextXAlignment = Enum.TextXAlignment.Left,
+        TextYAlignment = Enum.TextYAlignment.Top, Text = "", Active = false, Interactable = false,
+    }, U.editor)
+
+    U.scroll:GetPropertyChangedSignal("CanvasPosition"):Connect(function()
+        U.gutter.Position = UDim2.fromOffset(0, K.PAD - U.scroll.CanvasPosition.Y)
+    end)
+
+    local function cornerIcon(text, xOff)
+        local b = new("TextButton", {
+            AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, xOff, 0, 6), Size = UDim2.fromOffset(24, 24),
+            BackgroundColor3 = K.DARK, BackgroundTransparency = 0.2, BorderSizePixel = 0, Text = text,
+            Font = FONT_BOLD, TextSize = 15, TextColor3 = Theme.SubText, ZIndex = 5, AutoButtonColor = true,
+        }, U.editorBox)
+        corner(b, 6)
         return b
     end
+    U.gearBtn = cornerIcon("⚙", -10)
 
-    local cur = 1
-    local nav = row(34)
-    local prevBtn = button(nav, "< Anterior", 3, nil, function() end)
-    local slotLabel = makeLabel(nav, "", {
-        Size = UDim2.new(1 / 3, -4, 1, 0), TextXAlignment = Enum.TextXAlignment.Center, Font = FONT_BOLD,
-        TextColor3 = Theme.Accent, LayoutOrder = 2,
+    -- Botões de ação
+    local btnRow = new("Frame", {BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, K.BTN), LayoutOrder = 3}, col)
+    new("UIListLayout", {
+        FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 6),
+        SortOrder = Enum.SortOrder.LayoutOrder, VerticalAlignment = Enum.VerticalAlignment.Center,
+    }, btnRow)
+    local function bsize(w)
+        local f = w / 5.35
+        return UDim2.new(f, -24 * f, 1, 0)
+    end
+    local rs = {}
+    U.runBtn, rs[1] = mkBtn(btnRow, "▶ Executar", bsize(1.35), {order = 1, color = Color3.fromRGB(255, 255, 255)})
+    U.clearBtn, rs[2] = mkBtn(btnRow, "🗑 Limpar", bsize(1), {order = 2, textSize = 11})
+    U.saveBtn, rs[3] = mkBtn(btnRow, "💾 Salvar", bsize(1), {order = 3, textSize = 11})
+    U.copyBtn, rs[4] = mkBtn(btnRow, "📋 Copiar", bsize(1), {order = 4, textSize = 11})
+    U.pasteBtn, rs[5] = mkBtn(btnRow, "📥 Colar", bsize(1), {order = 5, textSize = 11})
+
+    -- Efeito de toque: o vermelho aparece só enquanto o botão está sendo pressionado
+    do
+        local PRESS_BG = Color3.fromRGB(58, 10, 18)
+        local MIN_SHOW = 0.15
+        local function isPress(input)
+            return input.UserInputType == Enum.UserInputType.MouseButton1
+                or input.UserInputType == Enum.UserInputType.Touch
+        end
+        local function pressFx(btn, st)
+            local pressed, downT, token = false, 0, 0
+            btn.AutoButtonColor = false
+            local function restore()
+                btn.BackgroundColor3 = K.BTN_BG
+                st.Color = K.BTN_STROKE
+                st.Thickness = 1
+            end
+            local function down()
+                token = token + 1
+                pressed, downT = true, os.clock()
+                btn.BackgroundColor3 = PRESS_BG
+                st.Color = Theme.Accent
+                st.Thickness = 2
+            end
+            local function up()
+                if not pressed then
+                    return
+                end
+                pressed = false
+                local my = token
+                local left = MIN_SHOW - (os.clock() - downT)
+                if left > 0 then
+                    task.delay(left, function()
+                        if token == my and not pressed then
+                            restore()
+                        end
+                    end)
+                else
+                    restore()
+                end
+            end
+            btn.InputBegan:Connect(function(input)
+                if isPress(input) then
+                    down()
+                end
+            end)
+            btn.InputEnded:Connect(function(input)
+                if isPress(input) then
+                    up()
+                end
+            end)
+            btn.MouseLeave:Connect(up)
+            UserInputService.InputEnded:Connect(function(input)
+                if isPress(input) then
+                    up()
+                end
+            end)
+        end
+        for i = 1, #rs do
+            local btn = ({U.runBtn, U.clearBtn, U.saveBtn, U.copyBtn, U.pasteBtn})[i]
+            pressFx(btn, rs[i])
+        end
+    end
+
+    -- Console removido: log() fica como função vazia para não quebrar as chamadas existentes
+    local function log() end
+
+    -- Menus (popup) — ficam sobre o conteúdo, fecham ao tocar fora
+    U.catcher = new("TextButton", {
+        Name = "PopupCatcher", Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, Text = "",
+        AutoButtonColor = false, Visible = false, ZIndex = 30,
+    }, stage)
+    U.popup = new("Frame", {
+        Name = "Popup", Visible = false, ZIndex = 31, BackgroundColor3 = Color3.fromRGB(14, 14, 20),
+        BorderSizePixel = 0, AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, 0, 0, K.HEADER + 4),
+        Size = UDim2.fromOffset(220, 150),
+    }, stage)
+    corner(U.popup, 10)
+    local popStroke = stroke(U.popup, Theme.Accent, 1, 0.3)
+    bindAcc(function()
+        popStroke.Color = Theme.Accent
+    end)
+    U.popTitle = makeLabel(U.popup, "", {
+        Position = UDim2.fromOffset(10, 6), Size = UDim2.new(1, -20, 0, 18), Font = FONT_BOLD,
+        TextSize = 12, TextColor3 = Theme.SubText,
     })
-    prevBtn.LayoutOrder = 1
-    local nextBtn = button(nav, "Próximo >", 3, nil, function() end)
-    nextBtn.LayoutOrder = 3
+    U.popList = new("ScrollingFrame", {
+        BackgroundTransparency = 1, BorderSizePixel = 0, Position = UDim2.fromOffset(4, 28),
+        Size = UDim2.new(1, -8, 1, -32), ScrollBarThickness = 3, CanvasSize = UDim2.new(),
+        AutomaticCanvasSize = Enum.AutomaticSize.Y, ScrollingDirection = Enum.ScrollingDirection.Y,
+    }, U.popup)
+    new("UIListLayout", {Padding = UDim.new(0, 3), SortOrder = Enum.SortOrder.LayoutOrder}, U.popList)
+    local popKey = nil
 
-    order = order + 1
-    local holder = new("ScrollingFrame", {
-        Name = "EditorHolder", Size = UDim2.new(1, 0, 0, 200), LayoutOrder = order, BackgroundColor3 = Theme.Background,
-        BackgroundTransparency = 0.1, BorderSizePixel = 0, ScrollBarThickness = 4, CanvasSize = UDim2.new(0, 0, 0, 0),
-        AutomaticCanvasSize = Enum.AutomaticSize.Y, ClipsDescendants = true,
-    }, col)
-    corner(holder, 8)
-    local editor = new("TextBox", {
-        Name = "Editor", Size = UDim2.new(1, -8, 0, 200), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1,
-        MultiLine = true, ClearTextOnFocus = false, TextWrapped = true, Font = Enum.Font.Code, TextSize = 13,
-        TextColor3 = Theme.Text, PlaceholderText = "-- Digite seu script Luau aqui...", PlaceholderColor3 = Theme.SubText,
-        TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top, Text = "",
-    }, holder)
-    padding(editor, 6, 6, 6, 6)
+    local function closePopup()
+        U.popup.Visible = false
+        U.catcher.Visible = false
+        popKey = nil
+    end
+    U.catcher.MouseButton1Click:Connect(closePopup)
+
+    local function openPopup(key, title, entries, width)
+        if U.popup.Visible and popKey == key then
+            closePopup()
+            return
+        end
+        for _, c in ipairs(U.popList:GetChildren()) do
+            if c:IsA("GuiObject") then
+                c:Destroy()
+            end
+        end
+        U.popTitle.Text = title
+        if #entries == 0 then
+            makeLabel(U.popList, "Nada por aqui ainda.", {
+                Size = UDim2.new(1, 0, 0, 30), TextSize = 12, TextColor3 = Theme.SubText,
+                TextXAlignment = Enum.TextXAlignment.Center,
+            })
+        end
+        for i, e in ipairs(entries) do
+            local b = new("TextButton", {
+                Size = UDim2.new(1, -4, 0, 34), BackgroundColor3 = Theme.Element, BorderSizePixel = 0,
+                AutoButtonColor = true, RichText = true, Font = FONT, TextSize = 12, TextColor3 = Theme.Text,
+                TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd,
+                LayoutOrder = i,
+                Text = escapeRT(e.text) .. (e.sub and ('  <font color="#7d8197">' .. escapeRT(e.sub) .. "</font>") or ""),
+            }, U.popList)
+            corner(b, 8)
+            padding(b, 8, 0, 8, 0)
+            if e.active then
+                stroke(b, Theme.Accent, 1.5, 0.1)
+            end
+            b.MouseButton1Click:Connect(function()
+                closePopup()
+                e.onClick()
+            end)
+        end
+        local rows = math.max(#entries, 1)
+        local maxH = math.max(stage.Size.Y.Offset - K.HEADER - 10, 100)
+        U.popup.Size = UDim2.fromOffset(width, math.min(rows * 37 + 34, maxH))
+        popKey = key
+        U.catcher.Visible = true
+        U.popup.Visible = true
+    end
+
+    -- ---------- lógica ----------
+    local lastLines = 0
+    local function refresh()
+        local text = U.editor.Text
+        local lines = 1
+        for _ in text:gmatch("\n") do
+            lines = lines + 1
+        end
+        if lines ~= lastLines then
+            lastLines = lines
+            local t = table.create(lines)
+            for k = 1, lines do
+                t[k] = tostring(k)
+            end
+            U.gutter.Text = table.concat(t, "\n")
+        end
+        local okHl, res = false, nil
+        if #text <= K.HL_LIMIT then
+            okHl, res = pcall(highlight, text)
+        end
+        if okHl then
+            U.hl.Visible = true
+            U.hl.Text = res
+            U.editor.TextTransparency = 1
+        else
+            U.hl.Visible = false
+            U.editor.TextTransparency = 0
+        end
+    end
 
     local function loadSlot(i)
-        cur = ((i - 1) % SLOT_COUNT) + 1
-        editor.Text = drafts[cur]
-        slotLabel.Text = "— Slot " .. cur .. " / " .. SLOT_COUNT .. " —"
+        cur = ((i - 1) % K.SLOTS) + 1
+        U.editor.Text = drafts[cur]
+        U.slotBtn.Text = "Slot " .. cur .. " ▾"
+        U.scroll.CanvasPosition = Vector2.new(0, 0)
+        refresh()
+    end
+
+    local function setEditorText(t)
+        t = tostring(t or ""):gsub("\r\n", "\n"):gsub("\r", "\n")
+        U.editor.Text = t
+        drafts[cur] = t
+        refresh()
+    end
+
+    local function applyFont(size)
+        codeSize = math.clamp(size, 10, 20)
+        U.editor.TextSize = codeSize
+        U.hl.TextSize = codeSize
+        U.gutter.TextSize = codeSize
     end
 
     -- Tudo que é digitado fica guardado no rascunho do slot atual (só na memória).
-    editor:GetPropertyChangedSignal("Text"):Connect(function()
-        drafts[cur] = editor.Text
+    U.editor:GetPropertyChangedSignal("Text"):Connect(function()
+        drafts[cur] = U.editor.Text
+        refresh()
+    end)
+    U.editor:GetPropertyChangedSignal("CursorPosition"):Connect(function()
+        if U.editor.CursorPosition >= 1 then
+            lastCursor = U.editor.CursorPosition
+        end
     end)
 
-    prevBtn.MouseButton1Click:Connect(function()
-        drafts[cur] = editor.Text
-        loadSlot(cur - 1)
-    end)
-    nextBtn.MouseButton1Click:Connect(function()
-        drafts[cur] = editor.Text
-        loadSlot(cur + 1)
-    end)
+    local function addHistory(code)
+        local last = history[#history]
+        if last and last.code == code then
+            return
+        end
+        history[#history + 1] = {code = code, time = os.date("%H:%M")}
+        if #history > K.HISTORY then
+            table.remove(history, 1)
+        end
+    end
 
-    local function runCode(code)
+    local lastErr, lastErrT = nil, 0
+    local function runCode(code, label, quiet)
         if trim(code) == "" then
             notify("Executor", "Digite um código primeiro.", "warning")
             return
         end
         if type(loadstring) ~= "function" then
+            log("err", "loadstring não está disponível neste ambiente.")
             notify("Executor", "loadstring não está disponível neste ambiente.", "error")
             return
         end
         local fn, err = loadstring(code)
         if not fn then
-            notify("Erro de sintaxe", tostring(err), "error")
+            if not quiet or lastErr ~= tostring(err) or os.clock() - lastErrT > 3 then
+                lastErr, lastErrT = tostring(err), os.clock()
+                log("err", "Erro de sintaxe: " .. tostring(err))
+                notify("Erro de sintaxe", tostring(err), "error")
+            end
             return
         end
-        notify("Executor", "Executando o script do slot " .. cur .. "...", "info")
+        if not quiet then
+            addHistory(code)
+            log("info", "Executando " .. (label or ("Slot " .. cur)) .. "...")
+        end
         task.spawn(function()
             local ok, runErr = pcall(fn)
             if ok then
-                notify("Executor", "O script terminou sem erros.", "success")
+                if not quiet then
+                    log("ok", "Script terminou sem erros.")
+                end
             else
-                notify("Erro ao executar", tostring(runErr), "error")
+                if not quiet or lastErr ~= tostring(runErr) or os.clock() - lastErrT > 3 then
+                    lastErr, lastErrT = tostring(runErr), os.clock()
+                    log("err", "Erro ao executar: " .. tostring(runErr))
+                    notify("Erro ao executar", tostring(runErr), "error")
+                end
             end
         end)
     end
 
-    local r1 = row(36)
-    button(r1, "Executar", 3, Color3.fromRGB(225, 29, 46), function()
-        runCode(editor.Text)
+    -- ---------- botões ----------
+    U.runBtn.MouseButton1Click:Connect(function()
+        runCode(U.editor.Text)
     end)
-    button(r1, "🗑 Limpar", 3, Color3.fromRGB(170, 170, 190), function()
-        editor.Text = ""
-        drafts[cur] = ""
+    U.clearBtn.MouseButton1Click:Connect(function()
+        setEditorText("")
     end)
-    button(r1, "📌 Botão Flutuante", 3, Theme.Accent, function()
-        local code = editor.Text
-        if trim(code) == "" then
-            notify("Botão flutuante", "Escreva um script antes de criar o botão.", "warning")
-            return
-        end
-        createFloatButton(function()
-            runCode(code)
-        end, "Script " .. cur)
-    end)
-
-    local r2 = row(36)
-    button(r2, "💾 Salvar no Slot", 2, nil, function()
-        drafts[cur] = editor.Text
-        slots[cur] = editor.Text
+    U.saveBtn.MouseButton1Click:Connect(function()
+        drafts[cur] = U.editor.Text
+        slots[cur] = U.editor.Text
         if Win:Save() then
+            log("ok", "Slot " .. cur .. " salvo no arquivo.")
             notify("Executor", "Slot " .. cur .. " salvo no arquivo.", "success")
         else
+            log("warn", "Slot " .. cur .. " mantido só na memória (não foi possível gravar o arquivo).")
             notify("Executor", "Slot " .. cur .. " mantido só na memória (não foi possível gravar o arquivo).", "warning")
         end
     end)
-    button(r2, "📋 Executar Clipboard", 2, nil, function()
+    U.copyBtn.MouseButton1Click:Connect(function()
+        if type(setclipboard) == "function" and pcall(setclipboard, U.editor.Text) then
+            log("info", "Script copiado.")
+            notify("Executor", "Script copiado.", "success")
+        else
+            notify("Executor", "Seu executor não oferece setclipboard.", "warning")
+        end
+    end)
+    U.pasteBtn.MouseButton1Click:Connect(function()
         if type(getclipboard) ~= "function" then
             notify("Executor", "Seu executor não oferece getclipboard.", "warning")
             return
         end
-        local ok, text = pcall(getclipboard)
-        if ok and type(text) == "string" and text ~= "" then
-            editor.Text = text
-            runCode(text)
-        else
+        local ok, clip = pcall(getclipboard)
+        if not (ok and type(clip) == "string" and clip ~= "") then
             notify("Executor", "Não foi possível ler a área de transferência.", "error")
+            return
         end
+        local t = U.editor.Text
+        local pos = (lastCursor and lastCursor >= 1 and lastCursor <= #t + 1) and lastCursor or (#t + 1)
+        setEditorText(t:sub(1, pos - 1) .. clip .. t:sub(pos))
     end)
 
-    local FIXED = 34 + 36 + 36 + 3 * 6
-    local function fit()
+    local function floatFromEditor()
+        local code = U.editor.Text
+        if trim(code) == "" then
+            notify("Botão flutuante", "Escreva um script antes de criar o botão.", "warning")
+            return
+        end
+        local n = cur
+        createFloatButton(function()
+            runCode(code, "Script " .. n, true)
+        end, "Script " .. n)
+    end
+
+    U.gearBtn.MouseButton1Click:Connect(function()
+        openPopup("gear", "Opções do editor", {
+            {text = "📌 Botão flutuante deste script", onClick = floatFromEditor},
+            {text = "📋 Executar clipboard", onClick = function()
+                if type(getclipboard) ~= "function" then
+                    notify("Executor", "Seu executor não oferece getclipboard.", "warning")
+                    return
+                end
+                local ok, clip = pcall(getclipboard)
+                if ok and type(clip) == "string" and clip ~= "" then
+                    runCode(clip, "Clipboard")
+                else
+                    notify("Executor", "Não foi possível ler a área de transferência.", "error")
+                end
+            end},
+            {text = "🔠 Aumentar fonte", onClick = function()
+                applyFont(codeSize + 1)
+            end},
+            {text = "🔡 Diminuir fonte", onClick = function()
+                applyFont(codeSize - 1)
+            end},
+        }, 230)
+    end)
+
+    local fit
+
+    U.slotBtn.MouseButton1Click:Connect(function()
+        local list = {}
+        for i = 1, K.SLOTS do
+            local d = drafts[i]
+            local filled = trim(d) ~= ""
+            list[i] = {
+                text = "Slot " .. i,
+                sub = filled and (((d == slots[i]) and "💾 " or "✏️ ") .. preview(d)) or "vazio",
+                active = (i == cur),
+                onClick = function()
+                    loadSlot(i)
+                end,
+            }
+        end
+        openPopup("slots", "Escolher slot", list, 230)
+    end)
+
+    U.scriptsBtn.MouseButton1Click:Connect(function()
+        local list = {}
+        for i = 1, K.SLOTS do
+            local d = drafts[i]
+            if trim(d) ~= "" then
+                list[#list + 1] = {
+                    text = "Slot " .. i,
+                    sub = ((d == slots[i]) and "💾 salvo · " or "✏️ rascunho · ") .. preview(d),
+                    active = (i == cur),
+                    onClick = function()
+                        loadSlot(i)
+                    end,
+                }
+            end
+        end
+        openPopup("scripts", "Meus scripts", list, 260)
+    end)
+
+    U.histBtn.MouseButton1Click:Connect(function()
+        local list = {}
+        for i = #history, 1, -1 do
+            local h = history[i]
+            list[#list + 1] = {
+                text = h.time,
+                sub = preview(h.code),
+                onClick = function()
+                    setEditorText(h.code)
+                end,
+            }
+        end
+        openPopup("history", "Histórico de execuções", list, 260)
+    end)
+
+    -- ---------- ajuste de tamanho ----------
+    fit = function()
         local ratio = MainFrame.Size.Y.Offset > 0 and MainFrame.AbsoluteSize.Y / MainFrame.Size.Y.Offset or 1
         if ratio <= 0 then
             return
         end
-        local avail = page.AbsoluteSize.Y / ratio - 20
-        local h = math.max(avail - FIXED, 110)
-        holder.Size = UDim2.new(1, 0, 0, h)
-        editor.Size = UDim2.new(1, -8, 0, h)
+        local avail = math.max(page.AbsoluteSize.Y / ratio - 20, 220)
+        stage.Size = UDim2.new(1, 0, 0, avail)
+        local fixed = K.HEADER + K.BTN + 12
+        local h = math.max(avail - fixed, 90)
+        U.editorBox.Size = UDim2.new(1, 0, 0, h)
+        local viewW = math.max(U.scroll.AbsoluteSize.X / ratio, 50)
+        U.editor.Size = UDim2.fromOffset(viewW, h)
     end
     page:GetPropertyChangedSignal("AbsoluteSize"):Connect(fit)
     MainFrame:GetPropertyChangedSignal("AbsoluteSize"):Connect(fit)
+    U.scroll:GetPropertyChangedSignal("AbsoluteSize"):Connect(fit)
     fit()
 
     loadSlot(1)
