@@ -7183,10 +7183,16 @@ do
     for i = 1, SLOT_COUNT do
         slots[i] = (type(saved) == "table" and type(saved[i]) == "string") and saved[i] or ""
     end
+    -- slots = o que está salvo no arquivo (só muda em "Salvar no Slot").
+    -- drafts = o que está na tela agora; vive só na memória e some ao sair do jogo/trocar de servidor.
+    local drafts = {}
+    for i = 1, SLOT_COUNT do
+        drafts[i] = slots[i]
+    end
 
     Win.Elements.exec_slots = {
         Get = function()
-            return slots
+            return drafts
         end,
         Serialize = function()
             return slots
@@ -7251,13 +7257,21 @@ do
 
     local function loadSlot(i)
         cur = ((i - 1) % SLOT_COUNT) + 1
-        editor.Text = slots[cur]
+        editor.Text = drafts[cur]
         slotLabel.Text = "— Slot " .. cur .. " / " .. SLOT_COUNT .. " —"
     end
+
+    -- Tudo que é digitado fica guardado no rascunho do slot atual (só na memória).
+    editor:GetPropertyChangedSignal("Text"):Connect(function()
+        drafts[cur] = editor.Text
+    end)
+
     prevBtn.MouseButton1Click:Connect(function()
+        drafts[cur] = editor.Text
         loadSlot(cur - 1)
     end)
     nextBtn.MouseButton1Click:Connect(function()
+        drafts[cur] = editor.Text
         loadSlot(cur + 1)
     end)
 
@@ -7292,8 +7306,7 @@ do
     end)
     button(r1, "🗑 Limpar", 3, Color3.fromRGB(170, 170, 190), function()
         editor.Text = ""
-        slots[cur] = ""
-        Win:Save()
+        drafts[cur] = ""
     end)
     button(r1, "📌 Botão Flutuante", 3, Theme.Accent, function()
         local code = editor.Text
@@ -7308,6 +7321,7 @@ do
 
     local r2 = row(36)
     button(r2, "💾 Salvar no Slot", 2, nil, function()
+        drafts[cur] = editor.Text
         slots[cur] = editor.Text
         if Win:Save() then
             notify("Executor", "Slot " .. cur .. " salvo no arquivo.", "success")
@@ -8071,19 +8085,75 @@ do
         return nil
     end
 
-    local ov = tabStatus:AddSection("📊 FPS e Ping", true)
-    local fpsLabel = ov:AddLabel("FPS: medindo...")
-    local pingLabel = ov:AddLabel("Ping: medindo...")
+    -- FPS e ping ficam fixos no canto inferior esquerdo da tela:
+    -- não arrastam, não bloqueiam toque e não somem quando o menu fecha.
+    local hud = new("Frame", {
+        Name = "RN_PerfHUD",
+        AnchorPoint = Vector2.new(0, 1),
+        Position = UDim2.new(0, 6, 1, -4),
+        Size = UDim2.fromOffset(0, 0),
+        AutomaticSize = Enum.AutomaticSize.XY,
+        BackgroundColor3 = Color3.fromRGB(0, 0, 0),
+        BackgroundTransparency = 0.55,
+        BorderSizePixel = 0,
+        Active = false,
+        Interactable = false,
+        ZIndex = 50,
+        Visible = F.perf_hud ~= false,
+    }, Gui)
+    corner(hud, 6)
+    new("UIPadding", {
+        PaddingLeft = UDim.new(0, 6), PaddingRight = UDim.new(0, 6),
+        PaddingTop = UDim.new(0, 2), PaddingBottom = UDim.new(0, 2),
+    }, hud)
+    local hudText = new("TextLabel", {
+        BackgroundTransparency = 1,
+        Size = UDim2.fromOffset(0, 0),
+        AutomaticSize = Enum.AutomaticSize.XY,
+        Font = FONT_BOLD,
+        TextSize = 11,
+        RichText = true,
+        TextColor3 = Theme.Text,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Active = false,
+        Interactable = false,
+        ZIndex = 51,
+        Text = "FPS --  •  Ping --",
+    }, hud)
+
+    local function fpsColor(v)
+        if v >= 50 then
+            return Color3.fromRGB(74, 222, 128)
+        elseif v >= 30 then
+            return Color3.fromRGB(251, 191, 36)
+        end
+        return Color3.fromRGB(248, 113, 113)
+    end
+
+    local ov = tabStatus:AddSection("📊 Desempenho", true)
+    ov:AddToggle({
+        Name = "Mostrar FPS e Ping na tela", Flag = "perf_hud", Default = true, Feature = false,
+        Callback = function(on)
+            hud.Visible = on == true
+        end,
+    })
+    ov:AddLabel("FPS e ping ficam fixos no canto inferior esquerdo da tela (não se movem e não atrapalham o toque).")
 
     task.spawn(function()
         while Win:IsAlive() do
             task.wait(0.5)
-            if tabStatus.Page.Visible then
-                fpsLabel:Set(fpsValue and string.format("FPS: %d", math.floor(fpsValue + 0.5)) or "FPS: medindo...")
+            if hud.Visible then
+                local fpsText = "FPS --"
+                if fpsValue then
+                    local f = math.floor(fpsValue + 0.5)
+                    fpsText = string.format('FPS <font color="%s">%d</font>', hex(fpsColor(f)), f)
+                end
                 local ping, approx = readPing()
-                pingLabel:Set(ping and string.format("Ping: %s%d ms", approx and "~" or "", math.floor(ping + 0.5)) or "Ping: indisponível neste ambiente")
+                local pingText = ping and string.format("Ping %s%d ms", approx and "~" or "", math.floor(ping + 0.5)) or "Ping --"
+                hudText.Text = fpsText .. "  •  " .. pingText
             end
         end
+        hud:Destroy()
     end)
 end
 
