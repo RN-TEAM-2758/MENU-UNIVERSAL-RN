@@ -5772,6 +5772,101 @@ do
 end
 
 do
+    local s = tabFarm:AddSection("Puxar NPCs")
+    local selSet = {}
+    local dd
+
+    s:AddLabel("Traz os NPCs da pasta até você.")
+    s:AddToggle({Name = "Ativar puxar NPCs", Flag = "pn_on", Default = false})
+    local pnDirBox = s:AddInput({
+        Name = "Diretório dos NPCs", Flag = "pn_dir", Default = "", Placeholder = "Ex.: Workspace.Mobs",
+        PathHistory = true,
+        Callback = function()
+            refreshMulti(dd, "NPC")
+        end,
+    })
+    s:AddTempDropdown({Name = "📂 Diretórios usados", Input = pnDirBox, Multi = true})
+    s:AddToggle({Name = "Puxar TODOS da Pasta", Flag = "pn_all", Default = true, Feature = false})
+    dd = s:AddMultiDropdown({
+        Name = "NPCs específicos", Flag = "pn_sel",
+        Source = function()
+            return npcNames(F.pn_dir or "")
+        end,
+        Callback = function(v)
+            selSet = toSet(v)
+        end,
+    })
+    selSet = toSet(dd:Get())
+    s:AddButton({Name = "Atualizar lista de NPCs", Callback = function()
+        refreshMulti(dd, "NPC")
+    end})
+    s:AddDropdown({Name = "Posição dos NPCs", Flag = "pn_mode", Options = {"Na frente", "Em cima", "Em volta"}, Default = "Na frente"})
+    s:AddSlider({Name = "Distância (studs)", Flag = "pn_dist", Min = 0, Max = 30, Default = 5, Step = 1})
+    s:AddSlider({Name = "Altura (offset)", Flag = "pn_h", Min = -10, Max = 20, Default = 0, Step = 1})
+    s:AddSlider({Name = "Máximo de NPCs", Flag = "pn_max", Min = 1, Max = 100, Default = 20, Step = 1})
+
+    task.defer(function()
+        dd:Refresh()
+    end)
+
+    local function allowed(m)
+        return m and m.Parent ~= nil and isAlive(m) and getRoot(m) ~= nil and (F.pn_all or selSet[m.Name] == true)
+    end
+
+    connect(RunService.Heartbeat, function()
+        if not F.pn_on then
+            return
+        end
+        if trim(F.pn_dir) == "" then
+            Mon.tick("pull", "informe a pasta de NPCs", true)
+            return
+        end
+        local myRoot = getRoot()
+        if not myRoot or not isAlive(LocalPlayer.Character) then
+            Mon.tick("pull", "aguardando o personagem (respawn)", true)
+            return
+        end
+        local list = {}
+        for _, m in ipairs(getNPCs(F.pn_dir)) do
+            if allowed(m) then
+                list[#list + 1] = m
+            end
+        end
+        local limit = math.max(1, tonumber(F.pn_max) or 20)
+        local dist = tonumber(F.pn_dist) or 5
+        local h = tonumber(F.pn_h) or 0
+        local mode = F.pn_mode
+        local base = myRoot.CFrame
+        local n = math.min(#list, limit)
+        for i = 1, n do
+            local r = getRoot(list[i])
+            if r then
+                local offset
+                if mode == "Em cima" then
+                    offset = Vector3.new(0, dist, 0)
+                elseif mode == "Em volta" then
+                    local a = (i / n) * math.pi * 2
+                    offset = Vector3.new(math.cos(a) * dist, h, math.sin(a) * dist)
+                else
+                    offset = base.LookVector * dist + Vector3.new(0, h, 0)
+                end
+                if mode == "Em cima" then
+                    offset = offset + Vector3.new(0, h, 0)
+                end
+                r.CFrame = CFrame.new(base.Position + offset)
+                r.AssemblyLinearVelocity = Vector3.zero
+                r.AssemblyAngularVelocity = Vector3.zero
+            end
+        end
+        if n > 0 then
+            Mon.tick("pull", n .. " NPC(s) puxado(s)")
+        else
+            Mon.tick("pull", "nenhum NPC válido (pasta/seleção)", true)
+        end
+    end, "pull")
+end
+
+do
     local s = tabFarm:AddSection("Farm Itens (Tween)")
     local selSet = {}
     local dd
@@ -12779,7 +12874,7 @@ do
         aim_on = "aim", aimn_on = "aimn", hb_on = "hb", hbn_on = "hbn",
         esp_box = "esp", esp_tracer = "esp", esp_health = "esp", esp_name = "esp", esp_dist = "esp",
         esp_xray = "esp", esp_role = "esp", chams_on = "chams", espo_on = "espo", spec_on = "spec",
-        fp_on = "fp", fn_on = "fn", fi_on = "fi", ch_on = "ch",
+        fp_on = "fp", fn_on = "fn", pn_on = "pull", fi_on = "fi", ch_on = "ch",
         mv_speed_on = "speed", mv_jump_on = "jump", fly_on = "fly", antivoid = "antivoid", grav_on = "grav",
         noclip = "noclip", bhop = "bhop", spin_on = "spin", antikb = "antikb",
         fb_on = "fb", nofog = "nofog", light_time_on = "ltime", light_bright_on = "lbright",
