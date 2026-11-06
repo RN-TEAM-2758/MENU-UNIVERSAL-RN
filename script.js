@@ -4098,50 +4098,173 @@ local function parsePathExpr(text)
     return {segs = segs, method = method}
 end
 
-local function resolvePath(text)
-    text = trim(text)
-    if text == "" then
-        return nil
-    end
-    local parts, cur, start = {}, Workspace, 1
-    local px = parsePathExpr(text)
-    if px then
-        parts, cur = px.segs, game
-    else
-        for p in text:gmatch("[^%./\\]+") do
-            table.insert(parts, p)
-        end
-        local first = parts[1] and parts[1]:lower()
-        if first == "game" then
-            cur, start = game, 2
-        elseif first == "workspace" then
-            start = 2
-        end
-    end
-    for i = start, #parts do
-        local nxt = cur:FindFirstChild(parts[i])
-        if not nxt and parts[i] == "LocalPlayer" and cur == Players then
-            nxt = LocalPlayer
-        end
-        if not nxt and cur == game then
-            local ok, svc = pcall(game.GetService, game, parts[i])
-            nxt = ok and svc or nil
-        end
+-- Resolução de caminhos com busca em profundidade (backtracking):
+--  • nomes repetidos: se o 1º "model" não leva ao final, tenta os outros "model" irmãos;
+--  • nomes com ponto/barra no meio (ex.: "Modelo.v2", "pasta(1)"): tenta juntar segmentos;
+--  • diferença de maiúsculas/minúsculas: usada só como último recurso;
+--  • sem prefixo Workspace/game: procura no Workspace e, se não achar, no game (serviços).
+local resolvePath, resolveRelative
+do
+    local BUDGET = 4000
 
-        if not nxt and (parts[i] == "Character" or parts[i] == "PrimaryPart" or parts[i] == "Parent") then
-            local okp, v = pcall(function()
-                return cur[parts[i]]
-            end)
-            if okp and typeof(v) == "Instance" then
-                nxt = v
+    local function splitPathText(text)
+        local segs, seps = {}, {}
+        local pos, len = 1, #text
+        while pos <= len do
+            local s = text:find("[%./\\]", pos)
+            local seg = text:sub(pos, (s or (len + 1)) - 1)
+            if seg ~= "" then
+                segs[#segs + 1] = seg
+                seps[#segs] = s and text:sub(s, s) or "."
+            end
+            pos = (s or len) + 1
+        end
+        return segs, seps
+    end
+
+    local function stepInto(cur, name)
+        local nxt = cur:FindFirstChild(name)
+        if nxt then
+            return nxt
+        end
+        if cur == Players and name == "LocalPlayer" then
+            return LocalPlayer
+        end
+        if cur == game then
+            local ok, svc = pcall(game.GetService, game, name)
+            if ok and svc then
+                return svc
             end
         end
-        if not nxt then
+        if name == "Character" or name == "PrimaryPart" or name == "Parent" then
+            local okp, v = pcall(function()
+                return cur[name]
+            end)
+            if okp and typeof(v) == "Instance" then
+                return v
+            end
+        end
+        return nil
+    end
+
+    local function walk(cur, segs, seps, i, budget)
+        if i > #segs then
+            return cur
+        end
+        local name = segs[i]
+        for j = i, #segs do
+            if j > i then
+                name = name .. seps[j - 1] .. segs[j]
+            end
+            if budget.n <= 0 then
+                return nil
+            end
+            budget.n = budget.n - 1
+            local first = stepInto(cur, name)
+            if first then
+                local r = walk(first, segs, seps, j + 1, budget)
+                if r then
+                    return r
+                end
+            end
+            local okc, kids = pcall(cur.GetChildren, cur)
+            if okc then
+                budget.n = budget.n - math.floor(#kids / 25)
+                local exact, loose, lname = {}, {}, name:lower()
+                for _, c in ipairs(kids) do
+                    if c ~= first then
+                        if c.Name == name then
+                            exact[#exact + 1] = c
+                        elseif c.Name:lower() == lname then
+                            loose[#loose + 1] = c
+                        end
+                    end
+                end
+                for _, list in ipairs({exact, loose}) do
+                    for _, c in ipairs(list) do
+                        if budget.n <= 0 then
+                            return nil
+                        end
+                        budget.n = budget.n - 1
+                        local r = walk(c, segs, seps, j + 1, budget)
+                        if r then
+                            return r
+                        end
+                    end
+                end
+            end
+        end
+        return nil
+    end
+
+    function resolvePath(text)
+        text = trim(text)
+        if text == "" then
             return nil
         end
-        cur = nxt
+        local segs, seps, roots, start
+        local px = parsePathExpr(text)
+        if px then
+            segs, seps, roots, start = px.segs, {}, {game}, 1
+            for i = 1, #segs do
+                seps[i] = "."
+            end
+        else
+            segs, seps = splitPathText(text)
+            roots, start = {Workspace, game}, 1
+            local first = segs[1] and segs[1]:lower()
+            if first == "game" then
+                roots, start = {game}, 2
+            elseif first == "workspace" then
+                roots, start = {Workspace}, 2
+            end
+        end
+        if #segs == 0 then
+            return nil
+        end
+        for _, root in ipairs(roots) do
+            local r = walk(root, segs, seps, start, {n = BUDGET})
+            if r then
+                return r
+            end
+        end
+        return nil
     end
-    return cur
+
+    -- Procura um caminho relativo dentro de um modelo. Aceita só o nome (busca em todo o
+    -- modelo), um caminho parcial (Hurtboxes.NapeHurtbox) ou até o caminho completo
+    -- (Workspace.npc.Hurtboxes.NapeHurtbox): se o começo não existir dentro do modelo,
+    -- vai descartando os primeiros trechos até achar.
+    local relCache = {}
+    function resolveRelative(model, text)
+        local entry = relCache[text]
+        if not entry then
+            local segs, seps = splitPathText(text)
+            entry = {segs = segs, seps = seps}
+            relCache[text] = entry
+        end
+        local segs, seps = entry.segs, entry.seps
+        if #segs == 0 then
+            return nil
+        end
+        for skip = 0, #segs - 1 do
+            local cur = model
+            for k = skip + 1, #segs do
+                local nxt = cur:FindFirstChild(segs[k]) or cur:FindFirstChild(segs[k], true)
+                if not nxt then
+                    cur = nil
+                    break
+                end
+                cur = nxt
+            end
+            if cur then
+                return cur
+            end
+        end
+        -- último recurso: o texto inteiro como um único nome (nomes com ponto)
+        local whole = text
+        return model:FindFirstChild(whole) or model:FindFirstChild(whole, true)
+    end
 end
 
 local function resolveDirs(text)
@@ -4157,11 +4280,20 @@ local function resolveDirs(text)
 end
 
 local function childrenOf(dirs)
+    -- filhos diretos; Folders (e Models sem partes próprias) são atravessados
+    -- até 4 níveis, para pastas aninhadas não esconderem os itens.
     local out = {}
-    for _, d in ipairs(dirs) do
+    local function add(d, depth)
         for _, c in ipairs(d:GetChildren()) do
-            out[#out + 1] = c
+            if c:IsA("Folder") and depth < 4 then
+                add(c, depth + 1)
+            else
+                out[#out + 1] = c
+            end
         end
+    end
+    for _, d in ipairs(dirs) do
+        add(d, 0)
     end
     return out
 end
@@ -4196,6 +4328,164 @@ end
 local function isAlly(plr)
     return plr.Team ~= nil and LocalPlayer.Team ~= nil and plr.Team == LocalPlayer.Team
 end
+
+-- Team Check avançado (usado pelo Aimbot de Jogadores).
+-- Cobre: Teams do Roblox, TeamColor, Attributes e valores (StringValue/ObjectValue/BrickColorValue/
+-- IntValue...) em Player, leaderstats e Character. A primeira fonte em que os DOIS jogadores têm
+-- informação de time decide; se nenhuma fonte tiver dados dos dois, trata como inimigo.
+local TEAM_KEYS_ORDER = {"team", "teamname", "teamid", "teamcolor", "side", "faction", "squad", "clan", "alliance", "group", "equipe", "time", "lado"}
+local TEAM_KEY_SET = {}
+for _, k in ipairs(TEAM_KEYS_ORDER) do
+    TEAM_KEY_SET[k] = true
+end
+local teamCache = setmetatable({}, {__mode = "k"})
+local teamEpoch = 0
+
+-- Qualquer mudança de time/jogador incrementa a "época" e invalida todo o cache na hora.
+local function invalidateTeams()
+    teamEpoch = teamEpoch + 1
+end
+
+local function teamKeyValue(v)
+    if typeof(v) == "Instance" then
+        return v
+    end
+    if v == nil then
+        return nil
+    end
+    local s = tostring(v)
+    if s == "" then
+        return nil
+    end
+    return s:lower()
+end
+
+-- Lê o "identificador de time" de um Player ou Character (Attributes e valores filhos).
+-- A ordem de prioridade é fixa (TEAM_KEYS_ORDER), então o resultado é sempre o mesmo.
+local function readTeamId(inst)
+    if not inst then
+        return nil
+    end
+    local ok, attrs = pcall(inst.GetAttributes, inst)
+    if ok and type(attrs) == "table" then
+        local lower = {}
+        for k, v in pairs(attrs) do
+            lower[tostring(k):lower()] = v
+        end
+        for _, key in ipairs(TEAM_KEYS_ORDER) do
+            if lower[key] ~= nil then
+                local id = teamKeyValue(lower[key])
+                if id ~= nil then
+                    return id
+                end
+            end
+        end
+    end
+    local function scan(container)
+        local found = {}
+        for _, c in ipairs(container:GetChildren()) do
+            local n = c.Name:lower()
+            if TEAM_KEY_SET[n] and c:IsA("ValueBase") then
+                local okv, val = pcall(function()
+                    return c.Value
+                end)
+                if okv then
+                    found[n] = teamKeyValue(val)
+                end
+            end
+        end
+        for _, key in ipairs(TEAM_KEYS_ORDER) do
+            if found[key] ~= nil then
+                return found[key]
+            end
+        end
+        return nil
+    end
+    local id = scan(inst)
+    if id ~= nil then
+        return id
+    end
+    local stats = inst:FindFirstChild("leaderstats")
+    if stats then
+        return scan(stats)
+    end
+    return nil
+end
+
+local function computeSameTeam(plr)
+    local me = LocalPlayer
+    -- 1) Teams do Roblox
+    if me.Team ~= nil and plr.Team ~= nil then
+        return me.Team == plr.Team
+    end
+    -- 2) TeamColor (jogos sem objetos Team, só com cor)
+    if not me.Neutral and not plr.Neutral then
+        return me.TeamColor == plr.TeamColor
+    end
+    -- 3) Attributes / valores no Player
+    local mine, theirs = readTeamId(me), readTeamId(plr)
+    if mine ~= nil and theirs ~= nil then
+        return mine == theirs
+    end
+    -- 4) Attributes / valores no Character
+    mine, theirs = readTeamId(me.Character), readTeamId(plr.Character)
+    if mine ~= nil and theirs ~= nil then
+        return mine == theirs
+    end
+    return false
+end
+
+local function isTeammate(plr)
+    local now = os.clock()
+    local c = teamCache[plr]
+    -- cache curto (0.2s) + invalidado por eventos; cobre valores que mudam sem disparar sinal
+    if c and c.e == teamEpoch and now - c.t < 0.2 then
+        return c.v
+    end
+    local ok, res = pcall(computeSameTeam, plr)
+    local v = ok and res == true or false
+    teamCache[plr] = {t = now, v = v, e = teamEpoch}
+    return v
+end
+
+-- Escuta mudanças de time de cada jogador (inclusive quem entra depois) e do próprio jogador local.
+local teamHooked = setmetatable({}, {__mode = "k"})
+local function hookTeamSignals(plr)
+    if teamHooked[plr] then
+        return
+    end
+    teamHooked[plr] = true
+    pcall(function()
+        connect(plr:GetPropertyChangedSignal("Team"), invalidateTeams)
+        connect(plr:GetPropertyChangedSignal("TeamColor"), invalidateTeams)
+        connect(plr:GetPropertyChangedSignal("Neutral"), invalidateTeams)
+        connect(plr.AttributeChanged, invalidateTeams)
+        connect(plr.CharacterAdded, function(ch)
+            invalidateTeams()
+            pcall(function()
+                connect(ch.AttributeChanged, invalidateTeams)
+                connect(ch.ChildAdded, invalidateTeams)
+            end)
+        end)
+        connect(plr.ChildAdded, invalidateTeams)
+        connect(plr.ChildRemoved, invalidateTeams)
+        if plr.Character then
+            connect(plr.Character.AttributeChanged, invalidateTeams)
+        end
+    end)
+end
+
+for _, p in ipairs(Players:GetPlayers()) do
+    hookTeamSignals(p)
+end
+connect(Players.PlayerAdded, function(p)
+    hookTeamSignals(p)
+    invalidateTeams()
+end)
+connect(Players.PlayerRemoving, function(p)
+    teamCache[p] = nil
+    invalidateTeams()
+end)
 
 local function getPart(model, name, strict)
     local alt = {Torso = "UpperTorso", UpperTorso = "Torso", LowerTorso = "Torso"}
@@ -4241,23 +4531,37 @@ local function getNPCs(dirText)
         return c.list
     end
     local list = {}
+    local seen = {}
+    local function isNPC(m)
+        return m:IsA("Model") and m:FindFirstChildOfClass("Humanoid") ~= nil
+            and not Players:GetPlayerFromCharacter(m)
+    end
     local function walk(inst, depth)
         for _, ch in ipairs(inst:GetChildren()) do
             if ch:IsA("Model") then
                 if ch:FindFirstChildOfClass("Humanoid") then
-                    if not Players:GetPlayerFromCharacter(ch) then
+                    if not seen[ch] and not Players:GetPlayerFromCharacter(ch) then
+                        seen[ch] = true
                         table.insert(list, ch)
                     end
-                elseif depth < 2 then
+                elseif depth < 5 then
                     walk(ch, depth + 1)
                 end
-            elseif ch:IsA("Folder") and depth < 2 then
+            elseif ch:IsA("Folder") and depth < 5 then
                 walk(ch, depth + 1)
             end
         end
     end
     for _, dir in ipairs(resolveDirs(dirText)) do
-        walk(dir, 0)
+        -- o próprio caminho pode apontar direto para um NPC
+        if isNPC(dir) then
+            if not seen[dir] then
+                seen[dir] = true
+                table.insert(list, dir)
+            end
+        else
+            walk(dir, 0)
+        end
     end
     npcCache[dirText] = {t = now, list = list}
     return list
@@ -4492,19 +4796,20 @@ local HB_PARTS = {"HumanoidRootPart", "Head", "Torso", "UpperTorso", "LowerTorso
 do
     local s = tabCombat:AddSection("🎯 Aimbot Jogadores")
     s:AddToggle({Name = "Aimbot", Flag = "aim_on", Default = false})
-    s:AddToggle({Name = "Mostrar círculo de FOV", Flag = "aim_fov_show", Default = false, Feature = false})
-    s:AddToggle({Name = "Team Check (ignorar aliados)", Flag = "aim_team", Default = true, Feature = false})
-    s:AddToggle({Name = "Visible Check (sem obstáculos)", Flag = "aim_vis", Default = true, Feature = false})
+    s:AddToggle({Name = "FOV", Flag = "aim_fov_show", Default = false, Feature = false})
+    s:AddToggle({Name = "Team Check", Flag = "aim_team", Default = true, Feature = false})
+    s:AddToggle({Name = "Visible Check", Flag = "aim_vis", Default = true, Feature = false})
     s:AddSlider({Name = "FOV", Flag = "aim_fov", Min = 10, Max = 360, Default = 50, Step = 1})
-    s:AddSlider({Name = "Suavidade (1 = instantâneo)", Flag = "aim_smooth", Min = 0, Max = 1, Default = 0.8, Step = 0.05})
+    s:AddSlider({Name = "Suavidade", Flag = "aim_smooth", Min = 0, Max = 1, Default = 0.8, Step = 0.05})
     s:AddDropdown({Name = "Parte do corpo", Flag = "aim_part", Options = AIM_PARTS, Default = "Head"})
 
     local n = tabCombat:AddSection("🎯 Aimbot NPCs")
     n:AddToggle({Name = "Aimbot NPC", Flag = "aimn_on", Default = false})
-    n:AddToggle({Name = "Mostrar círculo de FOV", Flag = "aimn_fov_show", Default = false, Feature = false})
+    n:AddToggle({Name = "FOV", Flag = "aimn_fov_show", Default = false, Feature = false})
+    n:AddToggle({Name = "Visible Check", Flag = "aimn_vis", Default = true, Feature = false})
     n:AddInput({Name = "Pasta de NPCs", Flag = "aimn_dir", Default = "", Placeholder = "Ex.: Workspace.NPCs"})
     n:AddSlider({Name = "FOV", Flag = "aimn_fov", Min = 10, Max = 360, Default = 50, Step = 1})
-    n:AddSlider({Name = "Suavidade (1 = instantâneo)", Flag = "aimn_smooth", Min = 0, Max = 1, Default = 0.8, Step = 0.05})
+    n:AddSlider({Name = "Suavidade 1", Flag = "aimn_smooth", Min = 0, Max = 1, Default = 0.8, Step = 0.05})
     n:AddDropdown({Name = "Parte do corpo", Flag = "aimn_part", Options = AIM_PARTS, Default = "Head"})
 end
 
@@ -4599,7 +4904,7 @@ do
         if F.aim_on then
             local models = {}
             for _, p in ipairs(Players:GetPlayers()) do
-                if p ~= LocalPlayer and isAlive(p.Character) and not (F.aim_team and isAlly(p)) then
+                if p ~= LocalPlayer and isAlive(p.Character) and not (F.aim_team and isTeammate(p)) then
                     table.insert(models, p.Character)
                 end
             end
@@ -4622,7 +4927,7 @@ do
                     table.insert(models, m)
                 end
             end
-            local part = bestTarget(models, F.aimn_fov or 50, F.aimn_part or "Head", false)
+            local part = bestTarget(models, F.aimn_fov or 50, F.aimn_part or "Head", F.aimn_vis)
             if part then
                 Mon.tick("aimn", "mirando em " .. tostring(part.Parent and part.Parent.Name))
                 aimAt(part, F.aimn_smooth)
@@ -4662,6 +4967,7 @@ end
 do
     local s = tabCombat:AddSection("💥 Hitbox Jogadores")
     s:AddToggle({Name = "Hitbox", Flag = "hb_on", Default = false})
+    s:AddToggle({Name = "Team Check (ignorar aliados)", Flag = "hb_team", Default = true, Feature = false})
     s:AddSlider({Name = "Tamanho", Flag = "hb_size", Min = 2, Max = 600, Default = 10, Step = 1})
     s:AddDropdown({Name = "Parte do corpo", Flag = "hb_part", Options = HB_PARTS, Default = "HumanoidRootPart"})
     s:AddSlider({Name = "Transparência", Flag = "hb_transp", Min = 0, Max = 100, Default = 50, Step = 1, Suffix = "%"})
@@ -4669,10 +4975,30 @@ do
     local n = tabCombat:AddSection("💥 Hitbox NPCs")
     n:AddToggle({Name = "Hitbox NPC", Flag = "hbn_on", Default = false})
     n:AddInput({Name = "Pasta de NPCs", Flag = "hbn_dir", Default = "", Placeholder = "Ex.: Workspace.NPCs"})
-    n:AddSlider({Name = "Tamanho", Flag = "hbn_size", Min = 2, Max = 100, Default = 20, Step = 1})
+    n:AddDropdown({Name = "Parte do corpo", Flag = "hbn_part", Options = HB_PARTS, Default = "HumanoidRootPart"})
+    n:AddInput({Name = "Parte personalizada (opcional)", Flag = "hbn_custom", Default = "", Placeholder = "Vazio = usa a parte do corpo acima"})
+    n:AddLabel("Só preencha se a hitbox do NPC for outra parte (nome ou caminho dentro do NPC, ex.: Hitbox ou Corpo.Hitbox). Se deixar vazio, usa a parte do corpo escolhida acima (padrão HumanoidRootPart).")
+    n:AddSlider({Name = "Tamanho", Flag = "hbn_size", Min = 2, Max = 500, Default = 20, Step = 1})
     n:AddSlider({Name = "Transparência", Flag = "hbn_transp", Min = 0, Max = 100, Default = 50, Step = 1, Suffix = "%"})
 
     local storeP, storeN = {}, {}
+
+    -- Procura a parte personalizada dentro do NPC: nome simples (busca em todo o modelo)
+    -- ou caminho relativo separado por "." ou "/" (ex.: Corpo.Hitbox).
+    local function findCustomPart(model, text)
+        -- aceita "NapeHurtbox", "Hurtboxes.NapeHurtbox" ou "Workspace.npc.Hurtboxes.NapeHurtbox"
+        local cur = resolveRelative(model, text)
+        if not cur then
+            return nil
+        end
+        if cur:IsA("BasePart") then
+            return cur
+        end
+        if cur:IsA("Model") and cur.PrimaryPart then
+            return cur.PrimaryPart
+        end
+        return cur:FindFirstChildWhichIsA("BasePart", true)
+    end
 
     local function restorePart(part, o)
         pcall(function()
@@ -4729,7 +5055,7 @@ do
         if F.hb_on then
             local wanted = {}
             for _, p in ipairs(Players:GetPlayers()) do
-                if p ~= LocalPlayer and isAlive(p.Character) then
+                if p ~= LocalPlayer and isAlive(p.Character) and not (F.hb_team and isTeammate(p)) then
                     local part = getPart(p.Character, F.hb_part or "HumanoidRootPart", true)
                     if part then
                         wanted[part] = true
@@ -4748,9 +5074,15 @@ do
 
         if F.hbn_on and trim(F.hbn_dir) ~= "" then
             local wanted = {}
+            local custom = trim(F.hbn_custom)
             for _, m in ipairs(getNPCs(F.hbn_dir)) do
                 if isAlive(m) then
-                    local part = getPart(m, "HumanoidRootPart", true)
+                    local part
+                    if custom ~= "" then
+                        part = findCustomPart(m, custom)
+                    else
+                        part = getPart(m, F.hbn_part or "HumanoidRootPart", true)
+                    end
                     if part then
                         wanted[part] = true
                     end
@@ -4761,7 +5093,11 @@ do
             for _ in pairs(storeN) do
                 n = n + 1
             end
-            Mon.tick("hbn", n .. " NPC(s) ajustado(s)", n == 0)
+            if n == 0 and custom ~= "" then
+                Mon.tick("hbn", "parte personalizada '" .. custom .. "' não encontrada nos NPCs", true)
+            else
+                Mon.tick("hbn", n .. " NPC(s) ajustado(s)", n == 0)
+            end
         elseif next(storeN) then
             restoreAll(storeN)
         end
@@ -4940,7 +5276,7 @@ do
                 local hum = getHum(ch)
                 local root = getRoot(ch)
                 local live = ch ~= nil and hum ~= nil and hum.Health > 0 and root ~= nil and ch.Parent ~= nil
-                local ally = isAlly(plr)
+                local ally = isTeammate(plr)
                 local e = entries[plr]
                 local showESP = live and espAny and not (F.esp_team and ally)
                 local showChams = live and F.chams_on and not (F.chams_team and ally)
@@ -4959,7 +5295,7 @@ do
                     if not (showESP or showChams) then
                         hideEntry(e)
                     else
-                        local color = plr.Team and plr.TeamColor.Color or Color3.new(1, 1, 1)
+                        local color = plr.Team and plr.TeamColor.Color or (ally and Color3.fromRGB(80, 220, 120) or Color3.fromRGB(255, 70, 70))
                         local roleName
                         if showESP and F.esp_role then
                             local rn, rc = detectRole(plr)
@@ -5141,6 +5477,8 @@ do
     sp:AddTempDropdown({Name = "📂 Diretórios usados", Input = specDirBox, Multi = true})
     local specIdx = 0
     local current
+    local currentPlr
+    local specWait
 
     local function targets()
         local list = {}
@@ -5171,6 +5509,8 @@ do
 
     local function stopSpectate()
         current = nil
+        currentPlr = nil
+        specWait = nil
         local cam = Workspace.CurrentCamera
         local hum = getHum()
         if cam and hum then
@@ -5198,6 +5538,8 @@ do
         end
         idx = ((idx - 1 + dir) % #list) + 1
         current = list[idx]
+        currentPlr = current and Players:GetPlayerFromCharacter(current) or nil
+        specWait = nil
         if specLabel then
             specLabel:Set(labelFor(current))
         end
@@ -5208,6 +5550,7 @@ do
         Callback = function(v)
             if v then
                 current = nil
+                currentPlr = nil
                 pick(1)
             else
                 stopSpectate()
@@ -5219,6 +5562,7 @@ do
         Callback = function()
             if F.spec_on then
                 current = nil
+                currentPlr = nil
                 pick(1)
             end
         end,
@@ -5236,7 +5580,29 @@ do
             return
         end
         if current and (not current.Parent or not isAlive(current)) then
-            pick(1)
+            local plr = currentPlr
+            if plr and plr.Parent == Players then
+                -- mesmo jogador renasceu: troca para o novo personagem; espera até 6s antes de pular
+                local ch = plr.Character
+                if ch and ch ~= current and isAlive(ch) then
+                    current = ch
+                    specWait = nil
+                    if specLabel then
+                        specLabel:Set(labelFor(current))
+                    end
+                else
+                    specWait = specWait or os.clock()
+                    if os.clock() - specWait > 6 then
+                        specWait = nil
+                        pick(1)
+                    end
+                end
+            else
+                specWait = nil
+                pick(1)
+            end
+        else
+            specWait = nil
         end
         local cam = Workspace.CurrentCamera
         local hum = current and getHum(current)
@@ -5253,6 +5619,403 @@ do
         if F.spec_on then
             pcall(stopSpectate)
         end
+    end)
+end
+
+do
+    -- 📷 Câmera Livre: sem limites (atravessa paredes, qualquer altura, qualquer direção). Só no seu cliente.
+    local s = tabVisual:AddSection("📷 Câmera Livre")
+    local BIND = "RNTEAM_FreeCam"
+    local FC_enable, FC_disable
+
+    s:AddToggle({
+        Name = "Ativar câmera livre", Flag = "cam_on", Default = false,
+        Callback = function(v)
+            if v then
+                FC_enable()
+            else
+                FC_disable()
+            end
+        end,
+    })
+    s:AddSlider({Name = "Velocidade", Flag = "cam_speed", Min = 5, Max = 1000, Default = 80, Step = 5})
+    s:AddSlider({Name = "Sensibilidade do giro", Flag = "cam_sens", Min = 0.2, Max = 3, Default = 1, Step = 0.1})
+    s:AddToggle({Name = "Congelar personagem", Flag = "cam_freeze", Default = true, Feature = false})
+    s:AddToggle({Name = "Esconder arma/braços da tela", Flag = "cam_vm", Default = true, Feature = false})
+    s:AddLabel("Joystick move para onde você olha, arrastar a tela gira. PC: WASD, E sobe, Q desce, botão direito gira.")
+
+    local bound = false
+    local yaw, pitch, pos = 0, 0, Vector3.new()
+    local controls, controlsTried = nil, false
+    local rotTouch
+    local hiddenVM = {}
+    local acc = 0
+
+    local function getControls()
+        if controlsTried then
+            return controls
+        end
+        controlsTried = true
+        pcall(function()
+            local ps = LocalPlayer:WaitForChild("PlayerScripts", 2)
+            local pm = require(ps:WaitForChild("PlayerModule", 2))
+            controls = pm:GetControls()
+        end)
+        if not controls then
+            notify("Câmera Livre", "Controle do jogo indisponível: usando a direção do personagem (ele também anda).", "warning")
+        end
+        return controls
+    end
+
+    local function moveDir(rot)
+        local dir = Vector3.new()
+        local c = getControls()
+        local got = false
+        if c then
+            local ok, v = pcall(c.GetMoveVector, c)
+            if ok and typeof(v) == "Vector3" then
+                dir = rot.RightVector * v.X + rot.LookVector * (-v.Z)
+                got = true
+            end
+        end
+        if not got then
+            local h = getHum()
+            if h then
+                dir = h.MoveDirection
+            end
+        end
+        if UserInputService:IsKeyDown(Enum.KeyCode.E) then
+            dir = dir + Vector3.new(0, 1, 0)
+        end
+        if UserInputService:IsKeyDown(Enum.KeyCode.Q) then
+            dir = dir - Vector3.new(0, 1, 0)
+        end
+        return dir
+    end
+
+    local function hideViewmodel(cam, on)
+        if on then
+            for _, d in ipairs(cam:GetDescendants()) do
+                if d:IsA("BasePart") then
+                    hiddenVM[d] = true
+                    pcall(function()
+                        d.LocalTransparencyModifier = 1
+                    end)
+                end
+            end
+        else
+            for d in pairs(hiddenVM) do
+                pcall(function()
+                    d.LocalTransparencyModifier = 0
+                end)
+                hiddenVM[d] = nil
+            end
+        end
+    end
+
+    local function step(dt)
+        local cam = Workspace.CurrentCamera
+        if not cam then
+            return
+        end
+        cam.CameraType = Enum.CameraType.Scriptable
+
+        local rot = CFrame.fromOrientation(pitch, yaw, 0)
+        pos = pos + moveDir(rot) * ((F.cam_speed or 80) * dt)
+        cam.CFrame = CFrame.new(pos) * rot
+
+        acc = acc + dt
+        if acc >= 0.25 then
+            acc = 0
+            hideViewmodel(cam, F.cam_vm ~= false)
+        end
+
+        if F.cam_freeze ~= false and controls then
+            local h = getHum()
+            if h then
+                h:Move(Vector3.new(), false)
+                h.Jump = false
+            end
+        end
+        Mon.tick("cam", "câmera livre ativa")
+    end
+
+    FC_enable = function()
+        if bound then
+            return
+        end
+        local cam = Workspace.CurrentCamera
+        if cam then
+            local rx, ry = cam.CFrame:ToOrientation()
+            pitch, yaw = rx, ry
+            pos = cam.CFrame.Position
+        end
+        getControls()
+        pcall(function()
+            RunService:UnbindFromRenderStep(BIND)
+        end)
+        RunService:BindToRenderStep(BIND, Enum.RenderPriority.Last.Value + 1, function(dt)
+            local ok, err = pcall(step, dt)
+            if not ok then
+                Mon.fail("cam", err)
+            end
+        end)
+        bound = true
+    end
+
+    FC_disable = function()
+        if not bound then
+            return
+        end
+        bound = false
+        pcall(function()
+            RunService:UnbindFromRenderStep(BIND)
+        end)
+        local cam = Workspace.CurrentCamera
+        if cam then
+            hideViewmodel(cam, false)
+            cam.CameraType = Enum.CameraType.Custom
+            local h = getHum()
+            if h then
+                cam.CameraSubject = h
+            end
+        end
+        rotTouch = nil
+    end
+
+    local function rotate(dx, dy)
+        local k = (F.cam_sens or 1) * 0.006
+        yaw = yaw - dx * k
+        pitch = math.clamp(pitch - dy * k, -1.55, 1.55)
+    end
+
+    connect(UserInputService.InputBegan, function(input, gp)
+        if bound and input.UserInputType == Enum.UserInputType.Touch and not gp and not rotTouch then
+            rotTouch = input
+        end
+    end)
+    connect(UserInputService.InputChanged, function(input)
+        if not bound then
+            return
+        end
+        if input.UserInputType == Enum.UserInputType.Touch then
+            if input == rotTouch then
+                rotate(input.Delta.X, input.Delta.Y)
+            end
+        elseif input.UserInputType == Enum.UserInputType.MouseMovement then
+            if UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton2)
+                or UserInputService.MouseBehavior == Enum.MouseBehavior.LockCenter then
+                rotate(input.Delta.X, input.Delta.Y)
+            end
+        end
+    end)
+    connect(UserInputService.InputEnded, function(input)
+        if input == rotTouch then
+            rotTouch = nil
+        end
+    end)
+
+    -- garante o estado certo mesmo quando a config salva liga o toggle sem disparar o callback
+    task.spawn(function()
+        while Win:IsAlive() do
+            if F.cam_on and not bound then
+                FC_enable()
+            elseif not F.cam_on and bound then
+                FC_disable()
+            end
+            task.wait(0.5)
+        end
+    end)
+
+    Win:OnDestroy(function()
+        pcall(FC_disable)
+    end)
+end
+
+do
+    -- 🔒 Shift Lock (botão flutuante arrastável + atalho Shift)
+    local s = tabVisual:AddSection("🔒 Shift Lock")
+    local Settings = UserSettings():GetService("UserGameSettings")
+    local COL_OFF = Color3.fromRGB(180, 180, 180)
+    local COL_ON = Color3.fromRGB(0, 140, 255)
+    local TWEEN = TweenInfo.new(0.15, Enum.EasingStyle.Quad)
+    local CAM_OFFSET = Vector3.new(1.75, 0, 0)
+
+    local enabled = false
+    local defRot = Settings.RotationType
+    if defRot == Enum.RotationType.CameraRelative then
+        defRot = Enum.RotationType.MovementRelative
+    end
+
+    local gui = Instance.new("ScreenGui")
+    gui.Name = "RNTeamShiftLockGui"
+    gui.IgnoreGuiInset = true
+    gui.DisplayOrder = 1
+    gui.ResetOnSpawn = false
+
+    local frame = Instance.new("Frame")
+    frame.Size = UDim2.fromOffset(52, 52)
+    frame.Position = UDim2.new(1, -68, 0, 52)
+    frame.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
+    frame.BackgroundTransparency = 0.45
+    frame.BorderSizePixel = 0
+    frame.Parent = gui
+    Instance.new("UICorner", frame).CornerRadius = UDim.new(1, 0)
+
+    local stroke = Instance.new("UIStroke", frame)
+    stroke.Thickness = 2
+    stroke.Transparency = 0.3
+    stroke.Color = COL_OFF
+
+    local icon = Instance.new("ImageLabel", frame)
+    icon.Size = UDim2.fromScale(0.62, 0.62)
+    icon.AnchorPoint = Vector2.new(0.5, 0.5)
+    icon.Position = UDim2.fromScale(0.5, 0.5)
+    icon.BackgroundTransparency = 1
+    icon.Image = "rbxasset://textures/MouseLockedCursor.png"
+    icon.ImageColor3 = COL_OFF
+    icon.ScaleType = Enum.ScaleType.Fit
+
+    local btn = Instance.new("TextButton", frame)
+    btn.Size = UDim2.fromScale(1, 1)
+    btn.BackgroundTransparency = 1
+    btn.Text = ""
+
+    local mounted = mountGui(gui)
+
+    local function apply()
+        pcall(function()
+            Settings.RotationType = enabled and Enum.RotationType.CameraRelative or defRot
+        end)
+        local hum = getHum()
+        if hum then
+            hum.CameraOffset = enabled and CAM_OFFSET or Vector3.new()
+        end
+    end
+
+    local function paint(state)
+        local col = state and COL_ON or COL_OFF
+        TweenService:Create(icon, TWEEN, {ImageColor3 = col}):Play()
+        TweenService:Create(stroke, TWEEN, {Color = col}):Play()
+        TweenService:Create(frame, TWEEN, {BackgroundTransparency = state and 0.2 or 0.45}):Play()
+    end
+
+    local function set(state)
+        state = state == true
+        if enabled == state then
+            return
+        end
+        enabled = state
+        apply()
+        paint(state)
+    end
+
+    -- liga/desliga pelo botão ou atalho mantendo o toggle do menu sincronizado
+    local function flip()
+        local el = Win.Elements.sl_on
+        if el then
+            el:Set(not enabled, false)
+        else
+            set(not enabled)
+        end
+    end
+
+    s:AddToggle({
+        Name = "Shift Lock", Flag = "sl_on", Default = false,
+        Callback = function(v)
+            set(v)
+        end,
+    })
+    s:AddToggle({
+        Name = "Mostrar botão flutuante", Flag = "sl_btn", Default = false, Feature = false,
+        Callback = function(v)
+            gui.Enabled = v == true
+        end,
+    })
+    s:AddToggle({Name = "Atalho Shift (PC)", Flag = "sl_key", Default = true, Feature = false})
+    s:AddLabel("Toque curto no botão liga/desliga; arraste para mudar de lugar.")
+
+    connect(LocalPlayer.CharacterAdded, function(char)
+        if not enabled then
+            return
+        end
+        char:WaitForChild("Humanoid", 10)
+        task.defer(apply)
+    end)
+
+    local dragging, moved = false, false
+    local dragInput, dragStart, startPos
+
+    connect(btn.InputBegan, function(input)
+        if input.UserInputType == Enum.UserInputType.Touch
+            or input.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging = true
+            moved = false
+            dragInput = input
+            dragStart = input.Position
+            startPos = frame.AbsolutePosition
+        end
+    end)
+
+    connect(UserInputService.InputChanged, function(input)
+        if not dragging then
+            return
+        end
+        local isTouch = input.UserInputType == Enum.UserInputType.Touch and input == dragInput
+        local isMouse = input.UserInputType == Enum.UserInputType.MouseMovement
+        if not (isTouch or isMouse) then
+            return
+        end
+        local delta = input.Position - dragStart
+        if delta.Magnitude > 8 then
+            moved = true
+        end
+        if moved then
+            local screen = gui.AbsoluteSize
+            local size = frame.AbsoluteSize
+            local x = math.clamp(startPos.X + delta.X, 0, screen.X - size.X)
+            local y = math.clamp(startPos.Y + delta.Y, 0, screen.Y - size.Y)
+            frame.Position = UDim2.fromOffset(x, y)
+        end
+    end)
+
+    connect(UserInputService.InputEnded, function(input, gp)
+        if dragging and (input == dragInput or input.UserInputType == Enum.UserInputType.MouseButton1) then
+            dragging = false
+            dragInput = nil
+            if not moved then
+                flip()
+            end
+            moved = false
+            return
+        end
+        if gp then
+            return
+        end
+        if F.sl_key ~= false and input.KeyCode == Enum.KeyCode.LeftShift then
+            flip()
+        end
+    end)
+
+    -- sincroniza com a config salva (toggle ligado sem disparar callback)
+    task.spawn(function()
+        while Win:IsAlive() do
+            if (F.sl_on == true) ~= enabled then
+                set(F.sl_on == true)
+            end
+            if mounted then
+                gui.Enabled = F.sl_btn ~= false
+            end
+            task.wait(0.5)
+        end
+    end)
+
+    Win:OnDestroy(function()
+        enabled = false
+        apply()
+        pcall(function()
+            gui:Destroy()
+        end)
     end)
 end
 
@@ -5666,7 +6429,7 @@ do
     local target
     local function valid(plr)
         return plr and plr.Parent == Players and isAlive(plr.Character) and getRoot(plr.Character) ~= nil
-            and not (F.fp_ally and isAlly(plr))
+            and not (F.fp_ally and isTeammate(plr))
     end
 
     connect(RunService.Heartbeat, function()
@@ -5975,7 +6738,7 @@ do
         local best, bestD
         for _, p in ipairs(Players:GetPlayers()) do
             if p ~= LocalPlayer and isAlive(p.Character) and getRoot(p.Character) then
-                if not (F.ch_ally and isAlly(p)) and (F.ch_focus ~= "Jogadores Selecionados" or selSet[p.Name]) then
+                if not (F.ch_ally and isTeammate(p)) and (F.ch_focus ~= "Jogadores Selecionados" or selSet[p.Name]) then
                     local d = (getRoot(p.Character).Position - root.Position).Magnitude
                     if not bestD or d < bestD then
                         best, bestD = p, d
@@ -9724,7 +10487,7 @@ do
         local out = {}
         if typeName == "Players" then
             for _, p in ipairs(Players:GetPlayers()) do
-                if (p == LocalPlayer and F.ev_p_self) or (p ~= LocalPlayer and not (F.ev_p_ally and isAlly(p))) then
+                if (p == LocalPlayer and F.ev_p_self) or (p ~= LocalPlayer and not (F.ev_p_ally and isTeammate(p))) then
                     if not F.ev_p_alive or isAlive(p.Character) then
                         out[#out + 1] = finishEntry({kind = "Player", inst = p, name = p.Name, player = p, model = p.Character})
                     end
