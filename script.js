@@ -13631,6 +13631,271 @@ do
     end)
 end
 
+-- ============================================================
+-- FASE 1 (1/2): Anti-AFK com intervalo aleatório  |  Modo Batata
+-- ============================================================
+do
+    local VirtualUser
+    pcall(function()
+        VirtualUser = game:GetService("VirtualUser")
+    end)
+
+    local s = tabMisc:AddSection("💤 Anti-AFK")
+    s:AddToggle({Name = "Anti-AFK", Flag = "afk_on", Default = false})
+    s:AddSlider({Name = "Intervalo mínimo (s)", Flag = "afk_min", Min = 10, Max = 300, Default = 30, Step = 5})
+    s:AddSlider({Name = "Intervalo máximo (s)", Flag = "afk_max", Min = 10, Max = 600, Default = 90, Step = 5})
+    s:AddLabel("Evita a expulsão por inatividade. Além de reagir ao aviso de AFK do Roblox, faz uma ação leve em um intervalo sorteado entre o mínimo e o máximo, para não ficar um padrão fixo.")
+
+    local rng = Random.new()
+    local left = nil
+    local count = 0
+
+    local function poke()
+        if not VirtualUser then
+            return false
+        end
+        local ok = pcall(function()
+            VirtualUser:CaptureController()
+            VirtualUser:ClickButton2(Vector2.new(0, 0))
+        end)
+        if ok then
+            count = count + 1
+        end
+        return ok
+    end
+
+    local function nextDelay()
+        local lo, hi = F.afk_min or 30, F.afk_max or 90
+        if hi < lo then
+            lo, hi = hi, lo
+        end
+        return rng:NextNumber(lo, hi)
+    end
+
+    Win:Track(LocalPlayer.Idled:Connect(function()
+        if F.afk_on then
+            poke()
+        end
+    end))
+
+    connect(RunService.Heartbeat, function(dt)
+        if not F.afk_on then
+            left = nil
+            return
+        end
+        if not VirtualUser then
+            Mon.tick("afk", "VirtualUser indisponível neste executor", true)
+            return
+        end
+        left = (left or nextDelay()) - dt
+        if left <= 0 then
+            poke()
+            left = nextDelay()
+        end
+        Mon.tick("afk", string.format("%d ação(ões) • próxima em ~%ds", count, math.max(0, math.ceil(left))))
+    end, {"afk"})
+
+    Win:OnDestroy(function()
+        F.afk_on = false
+    end)
+end
+
+do
+    local s = tabVisual:AddSection("🥔 Modo Batata")
+    s:AddToggle({Name = "Modo batata (mais FPS)", Flag = "potato_on", Default = false})
+    s:AddToggle({Name = "Baixar qualidade gráfica", Flag = "potato_quality", Default = true, Feature = false})
+    s:AddToggle({Name = "Remover sombras", Flag = "potato_shadows", Default = true, Feature = false})
+    s:AddToggle({Name = "Remover texturas e materiais", Flag = "potato_textures", Default = true, Feature = false})
+    s:AddToggle({Name = "Desligar partículas e efeitos de tela", Flag = "potato_effects", Default = true, Feature = false})
+    s:AddLabel("Deixa o jogo mais leve só para você. Diferente do FX Clean, nada é apagado: ao desligar, tudo volta ao que era. Em mapas grandes a primeira aplicação pode levar alguns segundos.")
+
+    local rs
+    pcall(function()
+        rs = settings().Rendering
+    end)
+
+    local saved = setmetatable({}, {__mode = "k"})
+    local active = nil
+    local run = 0
+    local changed = 0
+
+    local function put(obj, prop, value)
+        local ok, cur = pcall(function()
+            return obj[prop]
+        end)
+        if not ok or cur == value then
+            return
+        end
+        local t = saved[obj]
+        if not t then
+            t = {}
+            saved[obj] = t
+        end
+        if t[prop] == nil then
+            t[prop] = {cur}
+        end
+        if pcall(function()
+            obj[prop] = value
+        end) then
+            changed = changed + 1
+        end
+    end
+
+    local EFFECTS = {ParticleEmitter = true, Trail = true, Beam = true, Smoke = true, Fire = true, Sparkles = true}
+
+    local function applyInst(inst, o)
+        if inst:IsA("BasePart") then
+            if inst:IsA("Terrain") or inst.Transparency >= 1 then
+                return
+            end
+            if o.shadows then
+                put(inst, "CastShadow", false)
+            end
+            if o.textures and inst.Material ~= Enum.Material.ForceField then
+                put(inst, "Material", Enum.Material.SmoothPlastic)
+                put(inst, "Reflectance", 0)
+                if inst:IsA("MeshPart") and not (inst.Parent and inst.Parent:IsA("Accessory")) then
+                    put(inst, "TextureID", "")
+                end
+            end
+        elseif o.textures and inst:IsA("Decal") then
+            local p = inst.Parent
+            if not (p and p.Name == "Head") then
+                put(inst, "Transparency", 1)
+            end
+        elseif o.effects and (EFFECTS[inst.ClassName] or inst:IsA("PostEffect")) then
+            put(inst, "Enabled", false)
+        end
+    end
+
+    local function applyGlobals(o)
+        if o.quality then
+            if rs then
+                put(rs, "QualityLevel", Enum.QualityLevel.Level01)
+            end
+            local terrain = Workspace:FindFirstChildOfClass("Terrain")
+            if terrain then
+                put(terrain, "WaterWaveSize", 0)
+                put(terrain, "WaterWaveSpeed", 0)
+                put(terrain, "WaterReflectance", 0)
+                put(terrain, "Decoration", false)
+            end
+            put(Lighting, "EnvironmentDiffuseScale", 0)
+            put(Lighting, "EnvironmentSpecularScale", 0)
+        end
+        if o.shadows then
+            put(Lighting, "GlobalShadows", false)
+            put(Lighting, "ShadowSoftness", 0)
+        end
+    end
+
+    local function sweep(o, myRun)
+        local n = 0
+        for _, root in ipairs({Workspace, Lighting}) do
+            local okD, list = pcall(root.GetDescendants, root)
+            if okD then
+                for _, d in ipairs(list) do
+                    if myRun ~= run then
+                        return
+                    end
+                    pcall(applyInst, d, o)
+                    n = n + 1
+                    if n % 300 == 0 then
+                        task.wait()
+                    end
+                end
+            end
+        end
+    end
+
+    local function restoreAll(fast)
+        run = run + 1
+        local list = {}
+        for obj, props in pairs(saved) do
+            list[#list + 1] = {obj, props}
+        end
+        saved = setmetatable({}, {__mode = "k"})
+        changed = 0
+        for i, e in ipairs(list) do
+            for prop, box in pairs(e[2]) do
+                pcall(function()
+                    e[1][prop] = box[1]
+                end)
+            end
+            if not fast and i % 400 == 0 then
+                task.wait()
+            end
+        end
+    end
+
+    local function readOpts()
+        return {
+            quality = F.potato_quality ~= false,
+            shadows = F.potato_shadows ~= false,
+            textures = F.potato_textures ~= false,
+            effects = F.potato_effects ~= false,
+        }
+    end
+
+    local function sigOf(o)
+        return (o.quality and "q" or "-") .. (o.shadows and "s" or "-") .. (o.textures and "t" or "-") .. (o.effects and "e" or "-")
+    end
+
+    Win:Track(Workspace.DescendantAdded:Connect(function(inst)
+        local o = active
+        if o then
+            task.defer(function()
+                pcall(applyInst, inst, o)
+            end)
+        end
+    end))
+    Win:Track(Lighting.DescendantAdded:Connect(function(inst)
+        local o = active
+        if o then
+            task.defer(function()
+                pcall(applyInst, inst, o)
+            end)
+        end
+    end))
+
+    -- observa a config (o toggle ligado vindo do arquivo salvo não dispara callback)
+    task.spawn(function()
+        local appliedSig = nil
+        while Win:IsAlive() do
+            local ok, err = pcall(function()
+                local o = readOpts()
+                local want = F.potato_on == true and sigOf(o) or nil
+                if appliedSig ~= nil and want ~= appliedSig then
+                    active = nil
+                    appliedSig = nil
+                    restoreAll(false)
+                elseif appliedSig == nil and want ~= nil then
+                    appliedSig = want
+                    active = o
+                    run = run + 1
+                    local myRun = run
+                    applyGlobals(o)
+                    task.spawn(sweep, o, myRun)
+                end
+                if active then
+                    Mon.tick("potato", changed .. " ajuste(s) aplicado(s)")
+                end
+            end)
+            if not ok then
+                warn("[RN TEAM] modo batata: " .. tostring(err))
+                Mon.fail("potato", err)
+            end
+            task.wait(0.5)
+        end
+    end)
+
+    Win:OnDestroy(function()
+        F.potato_on = false
+        active = nil
+        pcall(restoreAll, true)
+    end)
+end
+
 do
     local P = Mon.probe
     local map = {
@@ -13644,6 +13909,7 @@ do
         cam_fov_on = "camfov", zoom_on = "zoom", antiui = "antiui", fxclean = "fxclean",
         ia_loop_interact = "ia_interact", ia_loop_collect = "ia_collect", ia_loop_tp = "ia_tp",
         route_rec = "rrec", route_play = "rplay", ev_loop = "event",
+        afk_on = "afk", potato_on = "potato",
     }
     for flag, id in pairs(map) do
         Win:Monitor(flag, P(id))
