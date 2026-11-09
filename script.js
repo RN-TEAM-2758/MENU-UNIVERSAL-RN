@@ -5,6 +5,7 @@ local RunService = game:GetService("RunService")
 local HttpService = game:GetService("HttpService")
 local Lighting = game:GetService("Lighting")
 local TeleportService = game:GetService("TeleportService")
+local PathfindingService = game:GetService("PathfindingService")
 local Workspace = game:GetService("Workspace")
 
 local LocalPlayer = Players.LocalPlayer
@@ -2215,6 +2216,7 @@ function Nova.CreateWindow(opts)
         local dupGroups = 0
         local pool = {}
         local ordered = opts2.Ordered == true
+        local keepMissing = opts2.KeepMissing == true
         local orderList, orderIdx = {}, {}
         local el = {IsMulti = true, Name = opts2.Name, AutoRefresh = tonumber(opts2.AutoRefresh)}
         local toggle, commit
@@ -2305,6 +2307,18 @@ function Nova.CreateWindow(opts)
                 for _, o in ipairs(options) do
                     if selected[o] then
                         out[#out + 1] = o
+                    end
+                end
+                if keepMissing then
+                    local extra = {}
+                    for name in pairs(selected) do
+                        if not optionSet[name] then
+                            extra[#extra + 1] = name
+                        end
+                    end
+                    table.sort(extra)
+                    for _, name in ipairs(extra) do
+                        out[#out + 1] = name
                     end
                 end
             else
@@ -2501,6 +2515,17 @@ function Nova.CreateWindow(opts)
         end
         local function infoText(sel)
             local t = #sel .. " selecionado(s) de " .. #options
+            if keepMissing then
+                local absent = 0
+                for _, n in ipairs(sel) do
+                    if not optionSet[n] then
+                        absent = absent + 1
+                    end
+                end
+                if absent > 0 then
+                    t = t .. " · " .. absent .. " ausente(s) mantido(s)"
+                end
+            end
             if query ~= "" then
                 t = t .. " · filtro: " .. #view
             end
@@ -2622,7 +2647,7 @@ function Nova.CreateWindow(opts)
         function el:Set(values, silent)
             selClear()
             for _, name in ipairs(valuesToList(values)) do
-                if #options == 0 or optionSet[name] then
+                if keepMissing or #options == 0 or optionSet[name] then
                     selAdd(name)
                 end
             end
@@ -2687,7 +2712,7 @@ function Nova.CreateWindow(opts)
             local removed = 0
             if #new > 0 then
                 for name in pairs(selected) do
-                    if not seen[name] then
+                    if not seen[name] and not keepMissing then
                         selRemove(name)
                         removed = removed + 1
                     end
@@ -2764,7 +2789,7 @@ function Nova.CreateWindow(opts)
 
         local initial = opts2.Default or opts2.Selected or {}
         for _, name in ipairs(valuesToList(initial)) do
-            if #options == 0 or optionSet[name] then
+            if keepMissing or #options == 0 or optionSet[name] then
                 selAdd(name)
             end
         end
@@ -4619,6 +4644,19 @@ local function startLoop(key, fn, getInterval)
 end
 
 local Mover = {tween = nil, owner = nil, held = nil, bv = nil, conn = nil, touched = setmetatable({}, {__mode = "k"})}
+local Nav = {run = nil, failed = {}, REPATH_DIST = 8}
+local Viz = {GOAL = Color3.fromRGB(80, 220, 120), END = Color3.fromRGB(255, 90, 90), ROUTE = Color3.fromRGB(90, 170, 255)}
+
+local function moverBusy(owner)
+    local cur = Mover.tween
+    if cur and Mover.owner ~= owner and cur.PlaybackState == Enum.PlaybackState.Playing then
+        return true
+    end
+    if Nav.run and Nav.run.owner ~= owner then
+        return true
+    end
+    return false
+end
 
 local function moverHelpersOn(root)
     if not (Mover.bv and Mover.bv.Parent) then
@@ -4686,8 +4724,7 @@ local function moverHelpersOff()
 end
 
 function Mover.hold(owner, root)
-    local cur = Mover.tween
-    if cur and Mover.owner ~= owner and cur.PlaybackState == Enum.PlaybackState.Playing then
+    if moverBusy(owner) then
         return false
     end
     if Mover.held and Mover.held ~= owner then
@@ -4717,6 +4754,9 @@ function Mover.cancel(owner)
     if not owner then
         Mover.held = nil
     end
+    if Nav.run then
+        Nav.stop()
+    end
     if Mover.tween then
         pcall(function()
             Mover.tween:Cancel()
@@ -4727,13 +4767,16 @@ function Mover.cancel(owner)
 end
 
 function Mover.to(owner, root, pos, speed)
-    local cur = Mover.tween
-    if cur and Mover.owner ~= owner and cur.PlaybackState == Enum.PlaybackState.Playing then
+    if moverBusy(owner) then
         return nil
     end
     if Mover.held and Mover.held ~= owner then
         return nil
     end
+    if Nav.run then
+        Nav.stop()
+    end
+    local cur = Mover.tween
     local dist = (root.Position - pos).Magnitude
     if dist <= 1 then
         Mover.cancel()
@@ -4761,7 +4804,292 @@ function Mover.to(owner, root, pos, speed)
 end
 
 function Mover.playing(owner)
+    if Nav.run and Nav.run.owner == owner then
+        return true
+    end
     return Mover.tween ~= nil and Mover.owner == owner and Mover.tween.PlaybackState == Enum.PlaybackState.Playing
+end
+
+-- Pathfinding (PathfindingService) + visual 3D da rota
+do
+    local VIZ_ROOT = "RN_TEAM_Viz"
+
+    local function vizHost()
+        return Workspace.CurrentCamera or Workspace
+    end
+
+    function Viz.folder(name)
+        local host = vizHost()
+        local top = host:FindFirstChild(VIZ_ROOT)
+        if not top then
+            top = new("Folder", {Name = VIZ_ROOT}, host)
+        end
+        local f = top:FindFirstChild(name)
+        if not f then
+            f = new("Folder", {Name = name}, top)
+        end
+        return f
+    end
+
+    function Viz.clear(name)
+        local top = vizHost():FindFirstChild(VIZ_ROOT)
+        local f = top and top:FindFirstChild(name)
+        if f then
+            f:ClearAllChildren()
+        end
+    end
+
+    function Viz.destroyAll()
+        local hosts = {Workspace}
+        if Workspace.CurrentCamera then
+            hosts[#hosts + 1] = Workspace.CurrentCamera
+        end
+        for _, host in ipairs(hosts) do
+            local top = host:FindFirstChild(VIZ_ROOT)
+            if top then
+                top:Destroy()
+            end
+        end
+    end
+
+    local function vizPart(parent, size, cf, color, shape)
+        return new("Part", {
+            Anchored = true, CanCollide = false, CanQuery = false, CanTouch = false, CastShadow = false,
+            Material = Enum.Material.Neon, Color = color, Size = size, CFrame = cf,
+            Shape = shape or Enum.PartType.Block, Transparency = 0.1,
+        }, parent)
+    end
+
+    function Viz.dot(layer, pos, size, color)
+        return vizPart(layer, Vector3.new(size, size, size), CFrame.new(pos), color, Enum.PartType.Ball)
+    end
+
+    function Viz.line(layer, a, b, color)
+        local delta = b - a
+        local len = delta.Magnitude
+        if len < 0.05 then
+            return nil
+        end
+        local up = math.abs(delta.Unit.Y) > 0.99 and Vector3.xAxis or Vector3.yAxis
+        return vizPart(layer, Vector3.new(0.18, 0.18, len), CFrame.lookAt(a, b, up) * CFrame.new(0, 0, -len / 2), color)
+    end
+
+    function Viz.label(part, text, color)
+        local gui = new("BillboardGui", {
+            Size = UDim2.fromOffset(140, 22), StudsOffset = Vector3.new(0, 2.4, 0), AlwaysOnTop = true,
+        }, part)
+        new("TextLabel", {
+            Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, Text = text, TextColor3 = color,
+            TextStrokeTransparency = 0.4, Font = FONT_BOLD, TextSize = 14,
+        }, gui)
+    end
+
+    function Nav.stop()
+        local run = Nav.run
+        Nav.run = nil
+        Viz.clear("Nav")
+        if run and Mover.tween then
+            pcall(function()
+                Mover.tween:Cancel()
+            end)
+        end
+    end
+
+    local function navDraw(run, origin)
+        Viz.clear("Nav")
+        if not F.nav_viz then
+            return
+        end
+        local layer = Viz.folder("Nav")
+        local drop = Vector3.new(0, math.max((run.off or 3) - 0.4, 0), 0)
+        run.dots, run.lines = {}, {}
+        local prev = origin - drop
+        local n = #run.pts
+        for i = 1, math.min(n, 250) do
+            local p = run.pts[i] - drop
+            run.lines[i] = Viz.line(layer, prev, p, Theme.Accent)
+            if i < n then
+                run.dots[i] = Viz.dot(layer, p, 0.9, Theme.Accent)
+            else
+                local goal = Viz.dot(layer, p, 1.8, Viz.GOAL)
+                Viz.label(goal, "🎯 destino", Viz.GOAL)
+                run.dots[i] = goal
+            end
+            prev = p
+        end
+    end
+
+    local function navReached(run, i)
+        local d = run.dots and run.dots[i]
+        local l = run.lines and run.lines[i]
+        if d then
+            d:Destroy()
+        end
+        if l then
+            l:Destroy()
+        end
+        Mon.tick("nav", string.format("ponto %d/%d", i, #run.pts))
+    end
+
+    local function navGround(pos)
+        local params = RaycastParams.new()
+        params.FilterType = Enum.RaycastFilterType.Exclude
+        local skip = {}
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p.Character then
+                skip[#skip + 1] = p.Character
+            end
+        end
+        params.FilterDescendantsInstances = skip
+        local hit = Workspace:Raycast(pos + Vector3.new(0, 2, 0), Vector3.new(0, -80, 0), params)
+        return hit and hit.Position or pos
+    end
+
+    local function navCompute(root, goal)
+        local okC, path = pcall(function()
+            return PathfindingService:CreatePath({
+                AgentRadius = tonumber(F.nav_radius) or 2,
+                AgentHeight = 5,
+                AgentCanJump = true,
+                AgentCanClimb = true,
+                WaypointSpacing = tonumber(F.nav_spacing) or 6,
+            })
+        end)
+        if not okC or not path then
+            return nil, "CreatePath"
+        end
+        local okP = pcall(function()
+            path:ComputeAsync(navGround(root.Position), navGround(goal))
+        end)
+        if not okP then
+            return nil, "ComputeAsync"
+        end
+        if path.Status ~= Enum.PathStatus.Success then
+            return nil, tostring(path.Status)
+        end
+        local pts = {}
+        for _, wp in ipairs(path:GetWaypoints()) do
+            pts[#pts + 1] = wp.Position
+        end
+        return pts
+    end
+
+    local function navBody(run, root, goal)
+        local hum = getHum()
+        local off = 3
+        if hum and hum.RigType ~= Enum.HumanoidRigType.R6 then
+            off = hum.HipHeight + root.Size.Y / 2
+            if off < 2 then
+                off = 3
+            end
+        end
+        run.off = off
+        local ground, why = navCompute(root, goal)
+        if Nav.run ~= run then
+            return
+        end
+        local list
+        if ground then
+            list = {}
+            for i, p in ipairs(ground) do
+                local q = p + Vector3.new(0, off, 0)
+                local flat = Vector3.new(q.X - root.Position.X, 0, q.Z - root.Position.Z).Magnitude
+                if not (i == 1 and flat < 1.5) then
+                    list[#list + 1] = q
+                end
+            end
+            list[#list + 1] = goal
+            Nav.failed[run.key] = nil
+        else
+            Nav.failed[run.key] = os.clock()
+            Mon.tick("nav", "sem caminho (" .. tostring(why) .. ")", true)
+            if F.nav_fallback == false then
+                return
+            end
+            list = {goal}
+        end
+        run.pts = list
+        navDraw(run, root.Position)
+        for i, target in ipairs(list) do
+            if Nav.run ~= run or not root.Parent then
+                return
+            end
+            local dist = (root.Position - target).Magnitude
+            if dist > 0.4 then
+                local t = math.max(dist / math.max(run.speed, 1), 0.03)
+                local rot = root.CFrame - root.CFrame.Position
+                local tw = TweenService:Create(root, TweenInfo.new(t, Enum.EasingStyle.Linear), {CFrame = CFrame.new(target) * rot})
+                Mover.tween, Mover.owner = tw, run.owner
+                tw:Play()
+                local state = tw.Completed:Wait()
+                if Nav.run ~= run or state ~= Enum.PlaybackState.Completed then
+                    return
+                end
+            end
+            navReached(run, i)
+        end
+    end
+
+    local function navRun(run, root, goal)
+        local ok, err = pcall(navBody, run, root, goal)
+        if not ok then
+            warn("[RN TEAM] nav: " .. tostring(err))
+            Mon.fail("nav", err)
+        end
+        if Nav.run == run then
+            Nav.run = nil
+            Mover.tween, Mover.owner = nil, nil
+            moverHelpersOff()
+            Viz.clear("Nav")
+        end
+    end
+
+    -- Igual ao Mover.to, mas contornando obstáculos quando "nav_on" está ligado.
+    function Mover.go(owner, root, pos, speed)
+        if not F.nav_on then
+            return Mover.to(owner, root, pos, speed)
+        end
+        if moverBusy(owner) or (Mover.held and Mover.held ~= owner) then
+            return nil
+        end
+        if (root.Position - pos).Magnitude <= 1 then
+            Mover.cancel()
+            return nil
+        end
+        local run = Nav.run
+        if run and run.owner == owner then
+            if (run.goal - pos).Magnitude <= Nav.REPATH_DIST then
+                run.speed = tonumber(speed) or run.speed
+                return run
+            end
+            Nav.stop()
+        end
+        local key = string.format("%d,%d,%d", math.floor(pos.X / 6), math.floor(pos.Y / 6), math.floor(pos.Z / 6))
+        local failedAt = Nav.failed[key]
+        if failedAt and os.clock() - failedAt < 4 then
+            if F.nav_fallback == false then
+                return nil
+            end
+            return Mover.to(owner, root, pos, speed)
+        end
+        run = {owner = owner, goal = pos, key = key, speed = tonumber(speed) or 100}
+        Nav.run = run
+        Mover.owner = owner
+        if Mover.tween then
+            pcall(function()
+                Mover.tween:Cancel()
+            end)
+            Mover.tween = nil
+        end
+        moverHelpersOn(root)
+        task.spawn(navRun, run, root, pos)
+        return run
+    end
+
+    Win:OnDestroy(function()
+        Nav.stop()
+        Viz.destroyAll()
+    end)
 end
 
 local function teleportTo(pos)
@@ -6477,7 +6805,7 @@ do
     s:AddTempDropdown({Name = "📂 Diretórios usados", Input = fnDirBox, Multi = true})
     s:AddToggle({Name = "Farmar TODOS da Pasta", Flag = "fn_all", Default = false, Feature = false})
     dd = s:AddMultiDropdown({
-        Name = "NPCs específicos", Flag = "fn_sel",
+        Name = "NPCs específicos", Flag = "fn_sel", KeepMissing = true,
         Source = function()
             return npcNames(F.fn_dir or "")
         end,
@@ -6551,7 +6879,7 @@ do
     s:AddTempDropdown({Name = "📂 Diretórios usados", Input = pnDirBox, Multi = true})
     s:AddToggle({Name = "Puxar TODOS da Pasta", Flag = "pn_all", Default = true, Feature = false})
     dd = s:AddMultiDropdown({
-        Name = "NPCs específicos", Flag = "pn_sel",
+        Name = "NPCs específicos", Flag = "pn_sel", KeepMissing = true,
         Source = function()
             return npcNames(F.pn_dir or "")
         end,
@@ -6674,7 +7002,7 @@ do
             return
         end
         Mon.tick("fi", "indo até " .. best.Name)
-        local tw = Mover.to("fi", root, posOf(best), F.fi_speed)
+        local tw = Mover.go("fi", root, posOf(best), F.fi_speed)
         if not tw then
             return
         end
@@ -6752,7 +7080,7 @@ do
             return
         end
         if bestD > 4 then
-            Mover.to("ch", root, getRoot(best.Character).Position, F.ch_speed)
+            Mover.go("ch", root, getRoot(best.Character).Position, F.ch_speed)
             Mon.tick("ch", "perseguindo " .. best.Name)
         else
             Mover.cancel("ch")
@@ -6795,6 +7123,23 @@ end)
 connect(Players.PlayerRemoving, function()
     task.delay(0.2, refreshPlayerDropdowns)
 end)
+
+do
+    local s = tabFarm:AddSection("🧭 Pathfinding e Rota 3D")
+    s:AddToggle({Name = "Pathfinding (desviar de obstáculos)", Flag = "nav_on", Default = true})
+    s:AddToggle({
+        Name = "Mostrar rota 3D no mundo", Flag = "nav_viz", Default = true, Feature = false,
+        Callback = function(v)
+            if not v then
+                Viz.clear("Nav")
+            end
+        end,
+    })
+    s:AddToggle({Name = "Sem caminho: ir em linha reta", Flag = "nav_fallback", Default = true, Feature = false})
+    s:AddSlider({Name = "Espaçamento dos pontos", Flag = "nav_spacing", Min = 2, Max = 20, Default = 6, Step = 1, Suffix = " studs"})
+    s:AddSlider({Name = "Raio do agente", Flag = "nav_radius", Min = 1, Max = 6, Default = 2, Step = 0.5, Suffix = " studs"})
+    s:AddLabel("Vale para o Farm de Itens e a Perseguição Tween. Ligado, o personagem segue os pontos calculados pelo PathfindingService em vez de uma linha reta.")
+end
 
 Win:OnDestroy(function()
     Loops = {}
@@ -7485,6 +7830,167 @@ do
         end
     end})
 
+    do
+        local sh = tabMisc:AddSection("🌐 Server Hop")
+        local statusLbl = sh:AddLabel("Pronto: procura o servidor com menos jogadores.")
+        local hopping = false
+        ENV.__RN_HOP_VISITED = ENV.__RN_HOP_VISITED or {}
+        local visited = ENV.__RN_HOP_VISITED
+        local VISIT_TTL = 20 * 60
+
+        local function httpGet(url)
+            local req = (type(request) == "function" and request)
+                or (type(http_request) == "function" and http_request)
+                or (type(syn) == "table" and type(syn.request) == "function" and syn.request)
+                or (type(fluxus) == "table" and type(fluxus.request) == "function" and fluxus.request)
+            if req then
+                local ok, res = pcall(req, {Url = url, Method = "GET"})
+                if ok and type(res) == "table" then
+                    if res.StatusCode == 200 and type(res.Body) == "string" then
+                        return res.Body
+                    end
+                    return nil, res.StatusCode
+                end
+                return nil, "request"
+            end
+            local ok, body = pcall(function()
+                return game:HttpGet(url)
+            end)
+            if ok and type(body) == "string" then
+                return body
+            end
+            return nil, "http"
+        end
+
+        local function fetchServers(pages)
+            local list, cursor = {}, nil
+            for _ = 1, pages do
+                local url = "https://games.roblox.com/v1/games/" .. tostring(game.PlaceId)
+                    .. "/servers/Public?sortOrder=Asc&excludeFullGames=true&limit=100"
+                    .. (cursor and ("&cursor=" .. cursor) or "")
+                local body, code = httpGet(url)
+                if not body then
+                    return list, code
+                end
+                local ok, data = pcall(function()
+                    return HttpService:JSONDecode(body)
+                end)
+                if not ok or type(data) ~= "table" or type(data.data) ~= "table" then
+                    return list, "json"
+                end
+                for _, sv in ipairs(data.data) do
+                    list[#list + 1] = sv
+                end
+                cursor = data.nextPageCursor
+                if type(cursor) ~= "string" or cursor == "" then
+                    break
+                end
+                task.wait(0.4)
+            end
+            return list
+        end
+
+        local function pickCandidates(list)
+            local now = os.time()
+            for id, t in pairs(visited) do
+                if now - t > VISIT_TTL then
+                    visited[id] = nil
+                end
+            end
+            local minP = math.floor(tonumber(F.hop_min) or 1)
+            local out = {}
+            for _, sv in ipairs(list) do
+                local playing, maxP = tonumber(sv.playing), tonumber(sv.maxPlayers)
+                if type(sv.id) == "string" and sv.id ~= game.JobId and playing and playing >= minP
+                    and (not maxP or playing < maxP) and not (F.hop_skip ~= false and visited[sv.id]) then
+                    out[#out + 1] = sv
+                end
+            end
+            table.sort(out, function(a, b)
+                if a.playing ~= b.playing then
+                    return a.playing < b.playing
+                end
+                return (tonumber(a.ping) or 0) < (tonumber(b.ping) or 0)
+            end)
+            return out
+        end
+
+        local function hop()
+            if hopping then
+                notify("Server Hop", "Já estou buscando um servidor.", "warning")
+                return
+            end
+            hopping = true
+            task.spawn(function()
+                local function finish(msg, kind)
+                    hopping = false
+                    pcall(function()
+                        statusLbl:Set(msg)
+                    end)
+                    notify("Server Hop", msg, kind)
+                end
+                statusLbl:Set("Buscando servidores...")
+                local pages = math.clamp(math.floor(tonumber(F.hop_pages) or 3), 1, 10)
+                local list, err = fetchServers(pages)
+                if #list == 0 then
+                    local msg = err and ("Falha ao listar servidores (" .. tostring(err) .. ").") or "Nenhum servidor encontrado."
+                    if err == 429 then
+                        msg = msg .. " Limite de requisições: espere um pouco."
+                    end
+                    finish(msg, "error")
+                    return
+                end
+                local cands = pickCandidates(list)
+                if #cands == 0 then
+                    finish("Nenhum servidor elegível (cheios, visitados há pouco ou abaixo do mínimo).", "warning")
+                    return
+                end
+                visited[game.JobId] = os.time()
+                local failMsg
+                local conn = TeleportService.TeleportInitFailed:Connect(function(plr, result, msg)
+                    if plr == LocalPlayer then
+                        failMsg = tostring((msg and msg ~= "") and msg or result)
+                    end
+                end)
+                for i = 1, math.min(#cands, 5) do
+                    local sv = cands[i]
+                    failMsg = nil
+                    visited[sv.id] = os.time()
+                    statusLbl:Set(string.format("Entrando em servidor com %d/%s jogador(es)...", sv.playing, tostring(sv.maxPlayers or "?")))
+                    local ok, e = pcall(function()
+                        TeleportService:TeleportToPlaceInstance(game.PlaceId, sv.id, LocalPlayer)
+                    end)
+                    if not ok then
+                        failMsg = tostring(e)
+                    end
+                    local waited = 0
+                    while not failMsg and waited < 10 and Win:IsAlive() do
+                        task.wait(0.25)
+                        waited = waited + 0.25
+                    end
+                    if not failMsg then
+                        break
+                    end
+                end
+                conn:Disconnect()
+                if failMsg then
+                    finish("Não consegui entrar: " .. failMsg, "error")
+                else
+                    hopping = false
+                    pcall(function()
+                        statusLbl:Set("Teleportando...")
+                    end)
+                end
+            end)
+        end
+
+        sh:AddButton({Name = "Server hop (servidor mais vazio)", Callback = hop})
+        sh:AddSlider({Name = "Páginas de servidores (100 cada)", Flag = "hop_pages", Min = 1, Max = 10, Default = 3, Step = 1})
+        sh:AddSlider({Name = "Mínimo de jogadores", Flag = "hop_min", Min = 0, Max = 20, Default = 1, Step = 1})
+        sh:AddToggle({Name = "Pular servidores visitados há pouco", Flag = "hop_skip", Default = true, Feature = false})
+        sh:AddLabel("Lista os servidores públicos do jogo, escolhe o de menor população e tenta até 5 em caso de falha. Mais páginas = mais chance de achar um vazio, mas mais requisições.")
+    end
+
     local info = tabMisc:AddSection("ℹ️ Informações do Jogador")
     local lbl = info:AddLabel("Carregando...")
     local function infoText()
@@ -7546,6 +8052,15 @@ do
             notify("Copiar", "Seu executor não suporta clipboard.", "warning")
         end
     end
+    info:AddButton({Name = "Copiar coordenadas (Vector3.new)", Callback = function()
+        local r = getRoot()
+        if r then
+            local p = r.Position
+            copyText(string.format("Vector3.new(%.2f, %.2f, %.2f)", p.X, p.Y, p.Z), "Coordenadas")
+        else
+            notify("Copiar", "Sem personagem.", "warning")
+        end
+    end})
     info:AddButton({Name = "Copiar UserID", Callback = function()
         copyText(LocalPlayer.UserId, "UserID")
     end})
@@ -7731,29 +8246,53 @@ do
     end)
 
     local IS_MOBILE = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
-    local touchWorks = true
     local AUTOCLICK_Y_OFFSET = 0
+    local TAP_HOLD = 0.04
+    local CLICK_MODES = {"mouse", "touch", "both"}
+    local CLICK_MODE_TEXT = {
+        mouse = "🖱 Modo: Mouse", touch = "👆 Modo: Toque", both = "🖱👆 Modo: Ambos",
+    }
     local DOT_COLORS = {
         Color3.fromRGB(255, 60, 60), Color3.fromRGB(0, 140, 255), Color3.fromRGB(0, 200, 90),
         Color3.fromRGB(255, 200, 0), Color3.fromRGB(180, 90, 255),
     }
 
-    local function virtualTap(x, y, slot)
-        if IS_MOBILE and touchWorks then
-            local tid = 100 + slot
-            local ok = pcall(function()
+    -- Cada clique: move o cursor, aperta, SEGURA um instante e solta. Apertar e soltar no mesmo
+    -- frame é ignorado pelos botões do Roblox e pela maioria dos jogos (por isso o TAP_HOLD).
+    local function virtualTap(x, y, slot, mode)
+        local useMouse = mode ~= "touch"
+        local useTouch = mode ~= "mouse"
+        local tid = 100 + slot
+        local ok = false
+        if useMouse then
+            pcall(function()
+                VIM:SendMouseMoveEvent(x, y, game)
+            end)
+            if pcall(function()
+                VIM:SendMouseButtonEvent(x, y, 0, true, game, 1)
+            end) then
+                ok = true
+            end
+        end
+        if useTouch then
+            if pcall(function()
                 VIM:SendTouchEvent(tid, 0, x, y)
+            end) then
+                ok = true
+            end
+        end
+        task.wait(TAP_HOLD)
+        if useMouse then
+            pcall(function()
+                VIM:SendMouseButtonEvent(x, y, 0, false, game, 1)
+            end)
+        end
+        if useTouch then
+            pcall(function()
                 VIM:SendTouchEvent(tid, 2, x, y)
             end)
-            if ok then
-                return true
-            end
-            touchWorks = false
         end
-        return pcall(function()
-            VIM:SendMouseButtonEvent(x, y, 0, true, game, 0)
-            VIM:SendMouseButtonEvent(x, y, 0, false, game, 0)
-        end)
+        return ok
     end
 
     local function createAutoClickFloat(label)
@@ -7781,11 +8320,12 @@ do
         label = (label and label ~= "") and label or ("Auto Click " .. anum)
 
         local interval = 0.1
+        local mode = "mouse"
         local target = nil
         local running = false
         local runToken = 0
         local capture, captureConn = nil, nil
-        local EXPANDED_H = 120
+        local EXPANDED_H = 154
 
         local card = new("Frame", {
             Name = "RN_AutoClick_" .. id, Size = UDim2.fromOffset(190, 46), BackgroundColor3 = Theme.Surface,
@@ -7812,7 +8352,7 @@ do
         corner(close, 8)
 
         local panel = new("Frame", {
-            Name = "Settings", Position = UDim2.fromOffset(6, 46), Size = UDim2.fromOffset(178, 70),
+            Name = "Settings", Position = UDim2.fromOffset(6, 46), Size = UDim2.fromOffset(178, 104),
             BackgroundTransparency = 1, Visible = false, ZIndex = 7,
         }, card)
         local setBtn = new("TextButton", {
@@ -7832,6 +8372,12 @@ do
         }, panel)
         corner(box, 6)
         makeLabel(panel, "s", {Position = UDim2.fromOffset(154, 37), Size = UDim2.fromOffset(20, 28), ZIndex = 8, TextColor3 = Theme.SubText})
+
+        local modeBtn = new("TextButton", {
+            Name = "Mode", Position = UDim2.fromOffset(0, 71), Size = UDim2.fromOffset(174, 28), BackgroundColor3 = Theme.Element,
+            Text = CLICK_MODE_TEXT[mode], Font = FONT_BOLD, TextSize = 11, TextColor3 = Theme.Text, ZIndex = 8,
+        }, panel)
+        corner(modeBtn, 6)
 
         local dot = new("Frame", {
             Name = "RN_AutoClickDot_" .. id, Size = UDim2.fromOffset(18, 18), AnchorPoint = Vector2.new(0.5, 0.5),
@@ -7896,7 +8442,7 @@ do
                         if not p then
                             break
                         end
-                        virtualTap(p.X, p.Y + AUTOCLICK_Y_OFFSET, anum)
+                        virtualTap(p.X, p.Y + AUTOCLICK_Y_OFFSET, anum, mode)
                         if interval > 0 then
                             task.wait(interval)
                         else
@@ -7976,6 +8522,17 @@ do
             card.Size = panel.Visible and UDim2.fromOffset(190, EXPANDED_H) or UDim2.fromOffset(190, 46)
         end)
 
+        modeBtn.MouseButton1Click:Connect(function()
+            local idx = 1
+            for i, m in ipairs(CLICK_MODES) do
+                if m == mode then
+                    idx = i
+                end
+            end
+            mode = CLICK_MODES[idx % #CLICK_MODES + 1]
+            modeBtn.Text = CLICK_MODE_TEXT[mode]
+        end)
+
         local function cleanup()
             setRunning(false)
             endCapture()
@@ -8038,7 +8595,7 @@ do
         end
     end})
     s:AddLabel("Com o menu fechado os botões ficam travados (só clicam). Abra o menu para reposicioná-los.")
-    s:AddLabel("🎯 Auto Click: crie o botão, toque em ⚙️ → SET ALVO e toque no ponto da tela (pode ser em cima de botão do jogo). Depois toque no botão para ligar/desligar. No celular, escolha um ponto do lado direito para não pegar o joystick.")
+    s:AddLabel("🎯 Auto Click: crie o botão, toque em ⚙️ → SET ALVO e toque no ponto da tela (pode ser em cima de botão do jogo). Depois toque no botão para ligar/desligar. No celular, escolha um ponto do lado direito para não pegar o joystick. Se o clique não funcionar, troque o Modo em ⚙️ (Mouse / Toque / Ambos).")
 end
 
 do
@@ -9815,6 +10372,46 @@ do
         return tonumber(tostring(F.route_slot or "Rota 1"):match("%d+")) or 1
     end
 
+    local function drawRoute(r, show)
+        Viz.clear("Rota")
+        if not show or not r then
+            return
+        end
+        local n = sampleCount(r)
+        if n < 2 then
+            return
+        end
+        local d = r.d
+        local drop = Vector3.new(0, 2.5, 0)
+        local minGap = math.max(3, routeLength(r) / 300)
+        local pts, last = {}, nil
+        for i = 1, #d - STRIDE + 1, STRIDE do
+            local p = Vector3.new(d[i + 1], d[i + 2], d[i + 3]) - drop
+            if not last or (p - last).Magnitude >= minGap then
+                pts[#pts + 1] = p
+                last = p
+            end
+        end
+        local si = (n - 1) * STRIDE + 1
+        local endP = Vector3.new(d[si + 1], d[si + 2], d[si + 3]) - drop
+        if last ~= endP then
+            pts[#pts + 1] = endP
+        end
+        local layer = Viz.folder("Rota")
+        for i, p in ipairs(pts) do
+            if i > 1 then
+                Viz.line(layer, pts[i - 1], p, Viz.ROUTE)
+            end
+            if i == 1 then
+                Viz.label(Viz.dot(layer, p, 1.8, Viz.GOAL), "▶ início", Viz.GOAL)
+            elseif i == #pts then
+                Viz.label(Viz.dot(layer, p, 1.8, Viz.END), "⏹ fim", Viz.END)
+            else
+                Viz.dot(layer, p, 0.8, Viz.ROUTE)
+            end
+        end
+    end
+
     local function lockHum(hum)
         if not hum then
             return nil
@@ -9871,6 +10468,7 @@ do
         routes[r.slot] = {v = 2, d = r.d}
         local saved = Win:Save()
         refreshInfo()
+        drawRoute(routes[r.slot], F.route_viz)
         local msg = string.format("Rota %d: %d amostras (%.1fs)", r.slot, sampleCount(routes[r.slot]), routeDuration(routes[r.slot]))
         if saved then
             notify("Gravador", msg .. " salva.", "success")
@@ -9888,6 +10486,7 @@ do
                 return
             end
             refreshInfo()
+            drawRoute(routes[slotIndex()], F.route_viz)
         end,
     })
     infoLbl = rs:AddLabel("")
@@ -9909,6 +10508,7 @@ do
                 local cf = root.CFrame
                 rec = {slot = slotIndex(), d = {}, start = os.clock(), lastTick = 0, lastCf = cf, idleT = nil, root = root}
                 pushSample(rec.d, 0, cf)
+                Viz.clear("Rota")
                 notify("Gravador", "🔴 Gravando a Rota " .. rec.slot .. " (substitui a anterior). Desligue para salvar.", "info")
             else
                 local r = rec
@@ -9983,6 +10583,15 @@ do
     rs:AddDropdown({Name = "Velocidade do replay", Flag = "route_mult", Options = SPEED_OPTIONS, Default = "1x"})
     rs:AddToggle({Name = "Repetir em loop", Flag = "route_loop", Default = false, Feature = false})
     rs:AddToggle({Name = "Começar do ponto mais próximo", Flag = "route_nearest", Default = false, Feature = false})
+    rs:AddToggle({
+        Name = "Mostrar rota no mundo (3D)", Flag = "route_viz", Default = false, Feature = false,
+        Callback = function(on)
+            drawRoute(routes[slotIndex()], on)
+        end,
+    })
+    task.defer(function()
+        drawRoute(routes[slotIndex()], F.route_viz)
+    end)
     rs:AddButton({Name = "Apagar esta rota", Callback = function()
         local n = slotIndex()
         if (rec and rec.slot == n) or (play and play.slot == n) then
@@ -9992,6 +10601,7 @@ do
         routes[n] = newRoute()
         local saved = Win:Save()
         refreshInfo()
+        drawRoute(nil)
         notify("Gravador", saved and ("Rota " .. n .. " apagada.") or ("Rota " .. n .. " apagada da memória (arquivo não gravado)."), saved and "success" or "warning")
     end})
     rs:AddLabel("O replay segue o tempo, a posição e a orientação gravados (atravessa paredes). Ficar parado não gasta memória.")
@@ -10029,6 +10639,17 @@ do
             end
             pushSample(rec.d, elapsed, cf)
             rec.lastCf = cf
+            if F.route_viz and (rec.vizN or 0) < 400 then
+                local here = cf.Position - Vector3.new(0, 2.5, 0)
+                if not rec.vizLast then
+                    rec.vizLast, rec.vizN = here, 1
+                elseif (here - rec.vizLast).Magnitude >= 4 then
+                    local layer = Viz.folder("Rota")
+                    Viz.line(layer, rec.vizLast, here, Viz.ROUTE)
+                    Viz.dot(layer, here, 0.8, Viz.ROUTE)
+                    rec.vizLast, rec.vizN = here, rec.vizN + 1
+                end
+            end
         else
             rec.idleT = elapsed
         end
@@ -10389,7 +11010,7 @@ do
     })
     sN:AddDropdown({Name = "Modo", Flag = "ev_mode_npcs", Options = MODES.NPCs, Default = MODES.NPCs[1]})
     npcDd = sN:AddMultiDropdown({
-        Name = "NPCs selecionados", Flag = "ev_npcs_sel",
+        Name = "NPCs selecionados", Flag = "ev_npcs_sel", KeepMissing = true,
         Source = function()
             return npcNames(F.ev_npc_dir or "")
         end,
@@ -13909,7 +14530,7 @@ do
         cam_fov_on = "camfov", zoom_on = "zoom", antiui = "antiui", fxclean = "fxclean",
         ia_loop_interact = "ia_interact", ia_loop_collect = "ia_collect", ia_loop_tp = "ia_tp",
         route_rec = "rrec", route_play = "rplay", ev_loop = "event",
-        afk_on = "afk", potato_on = "potato",
+        afk_on = "afk", potato_on = "potato", nav_on = "nav",
     }
     for flag, id in pairs(map) do
         Win:Monitor(flag, P(id))
