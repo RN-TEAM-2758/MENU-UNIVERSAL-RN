@@ -5186,6 +5186,11 @@ do
     n:AddToggle({Name = "FOV", Flag = "aimn_fov_show", Default = false, Feature = false})
     n:AddToggle({Name = "Visible Check", Flag = "aimn_vis", Default = true, Feature = false})
     n:AddInput({Name = "Pasta de NPCs", Flag = "aimn_dir", Default = "", Placeholder = "Vazio = automático (todo o mapa)"})
+    n:AddButton({Name = "🔷 Seletor de objeto", Callback = function()
+        if Win.OpenObjectPicker then
+            Win.OpenObjectPicker("aimn")
+        end
+    end})
     n:AddSlider({Name = "FOV", Flag = "aimn_fov", Min = 10, Max = 360, Default = 50, Step = 1})
     n:AddSlider({Name = "Suavidade 1", Flag = "aimn_smooth", Min = 0, Max = 1, Default = 0.8, Step = 0.05})
     n:AddDropdown({Name = "Parte do corpo", Flag = "aimn_part", Options = AIM_PARTS, Default = "Head"})
@@ -5350,6 +5355,11 @@ do
     local n = tabCombat:AddSection("💥 Hitbox NPCs")
     n:AddToggle({Name = "Hitbox NPC", Flag = "hbn_on", Default = false})
     n:AddInput({Name = "Pasta de NPCs", Flag = "hbn_dir", Default = "", Placeholder = "Vazio = automático (todo o mapa)"})
+    n:AddButton({Name = "🔷 Seletor de objeto", Callback = function()
+        if Win.OpenObjectPicker then
+            Win.OpenObjectPicker("hbn")
+        end
+    end})
     n:AddDropdown({Name = "Parte do corpo", Flag = "hbn_part", Options = HB_PARTS, Default = "HumanoidRootPart"})
     n:AddInput({Name = "Parte personalizada (opcional)", Flag = "hbn_custom", Default = "", Placeholder = "Vazio = usa a parte do corpo acima"})
     n:AddSlider({Name = "Tamanho", Flag = "hbn_size", Min = 2, Max = 500, Default = 20, Step = 1})
@@ -5850,6 +5860,11 @@ do
     local sp = tabVisual:AddSection("🎥 Espectador Universal")
     local specDirBox = sp:AddInput({Name = "Diretório dos NPCs", Flag = "spec_dir", Default = "", Placeholder = "Vazio = automático (todo o mapa)", PathHistory = true})
     sp:AddTempDropdown({Name = "📂 Diretórios usados", Input = specDirBox, Multi = true})
+    sp:AddButton({Name = "🔷 Seletor de objeto", Callback = function()
+        if Win.OpenObjectPicker then
+            Win.OpenObjectPicker("spec")
+        end
+    end})
     local specIdx = 0
     local current
     local currentPlr
@@ -6976,6 +6991,11 @@ do
         end,
     })
     s:AddTempDropdown({Name = "📂 Diretórios usados", Input = fnDirBox, Multi = true})
+    s:AddButton({Name = "🔷 Seletor de objeto", Callback = function()
+        if Win.OpenObjectPicker then
+            Win.OpenObjectPicker("fn")
+        end
+    end})
     s:AddToggle({Name = "Farmar TODOS da Pasta", Flag = "fn_all", Default = false, Feature = false})
     dd = s:AddMultiDropdown({
         Name = "NPCs específicos", Flag = "fn_sel", KeepMissing = true,
@@ -7044,6 +7064,11 @@ do
         end,
     })
     s:AddTempDropdown({Name = "📂 Diretórios usados", Input = pnDirBox, Multi = true})
+    s:AddButton({Name = "🔷 Seletor de objeto", Callback = function()
+        if Win.OpenObjectPicker then
+            Win.OpenObjectPicker("pn")
+        end
+    end})
     s:AddToggle({Name = "Puxar TODOS da Pasta", Flag = "pn_all", Default = true, Feature = false})
     dd = s:AddMultiDropdown({
         Name = "NPCs específicos", Flag = "pn_sel", KeepMissing = true,
@@ -7673,7 +7698,12 @@ do
     local TARGETS = {
         ia = {dirs = {"ia_dir"}, sels = {"ia_sel"}, method = true},
         esp = {dirs = {"espo_dir"}, sels = {}},
-        fi = {dirs = {"fi_dir"}, sels = {}},
+        fi = {dirs = {"fi_dir"}, sels = {}, refresh = {"fi_sel"}},
+        fn = {dirs = {"fn_dir"}, sels = {}, refresh = {"fn_sel"}},
+        pn = {dirs = {"pn_dir"}, sels = {}, refresh = {"pn_sel"}},
+        aimn = {dirs = {"aimn_dir"}, sels = {}},
+        hbn = {dirs = {"hbn_dir"}, sels = {}},
+        spec = {dirs = {"spec_dir"}, sels = {}},
         tp = {dirs = {"tp_dir"}, sels = {"tp_sel"}},
     }
     local target = TARGETS.ia
@@ -7831,6 +7861,12 @@ do
             end
             if value and value ~= cur then
                 setEl(flag, value)
+            end
+        end
+        for _, flag in ipairs(target.refresh or {}) do
+            local el = Win.Elements[flag]
+            if el then
+                pcall(el.Refresh, el)
             end
         end
     end
@@ -11435,6 +11471,1160 @@ do
             return "error"
         end
         return "active"
+    end)
+end
+
+do
+    local SG = (getgenv and getgenv()) or _G
+
+    local function runSpy()
+        local G = (getgenv and getgenv()) or _G
+        if G.__RNTeam then
+        	pcall(G.__RNTeam.Unload)
+        end
+
+        local cloneref = cloneref or function(x) return x end
+        local function Service(n) return cloneref(game:GetService(n)) end
+
+        local RunService = Service("RunService")
+        local UIS = Service("UserInputService")
+        local Players = Service("Players")
+        local CoreGui = Service("CoreGui")
+
+        local checkcaller = checkcaller or function() return false end
+        local getcallingscript = getcallingscript or function() return nil end
+        local setnamecallmethod = setnamecallmethod or function() end
+        local newcclosure = newcclosure or function(f) return f end
+        local clipboard = setclipboard or toclipboard or (Clipboard and Clipboard.set)
+
+        if not getnamecallmethod or not (hookmetamethod or (getrawmetatable and setreadonly)) then
+        	warn("[RN TEAM SPY] Executor sem suporte a getnamecallmethod/hookmetamethod.")
+        	return
+        end
+
+        local find, sub, format, rep, byte, gsub, lower =
+        	string.find, string.sub, string.format, string.rep, string.byte, string.gsub, string.lower
+        local concat, pack, unpack = table.concat, table.pack, table.unpack
+
+        local CFG = {
+        	MaxCalls = 30,
+        	MaxRemotes = 400,
+        	RateCap = 60,
+        	UIInterval = 0.1,
+        	MaxRender = 6000,
+        	LogBlocked = true,
+        }
+
+        local State = {
+        	Paused = false,
+        	HidePM = true,
+        	Kinds = { Event = true, Func = true, Bind = true },
+        	Query = "",
+        }
+
+        local Alive = true
+        local Dirty, ViewDirty = true, true
+        local TotalCalls = 0
+
+        local Remotes = {}
+        local Order = {}
+        local View = {}
+
+        local Selected, ViewCall, Follow = nil, nil, true
+
+        local Conns = {}
+        local function connect(signal, fn)
+        	local c = signal:Connect(fn)
+        	Conns[#Conns + 1] = c
+        	return c
+        end
+
+        local Classes = {
+        	RemoteEvent = true,
+        	UnreliableRemoteEvent = true,
+        	RemoteFunction = true,
+        	BindableEvent = true,
+        	BindableFunction = true,
+        }
+        local KindOf = {
+        	RemoteEvent = "Event",
+        	UnreliableRemoteEvent = "Event",
+        	RemoteFunction = "Func",
+        	BindableEvent = "Bind",
+        	BindableFunction = "Bind",
+        }
+        local IsBindable = { BindableEvent = true, BindableFunction = true }
+        local NCMethods = {
+        	FireServer = true, InvokeServer = true, Fire = true, Invoke = true,
+        	fireServer = true, invokeServer = true, fire = true, invoke = true,
+        }
+        local Invokes = { InvokeServer = true, invokeServer = true, Invoke = true, invoke = true }
+        local Canon = {
+        	fireServer = "FireServer", invokeServer = "InvokeServer", fire = "Fire", invoke = "Invoke",
+        }
+
+        local KW = {}
+        for w in ("and break do else elseif end false for function if in local nil not or repeat return then true until while continue"):gmatch("%a+") do
+        	KW[w] = true
+        end
+        local PROPS = { Name = true, Parent = true, ClassName = true, Archivable = true }
+        local IDENT = "^[%a_][%w_]*$"
+        local ESC = { ["\n"] = "\\n", ["\r"] = "\\r", ["\t"] = "\\t", ["\\"] = "\\\\", ['"'] = '\\"' }
+        local huge = math.huge
+        local MAXDEPTH, MAXITEMS = 8, 120
+
+        local function quote(s)
+        	local pattern = '[%c"\\]'
+        	if find(s, "[\128-\255]") and not utf8.len(s) then
+        		pattern = '[%c"\\\128-\255]'
+        	end
+        	return '"' .. gsub(s, pattern, function(c)
+        		return ESC[c] or format("\\%03d", byte(c))
+        	end) .. '"'
+        end
+
+        local function num(n)
+        	if n ~= n then return "0/0" end
+        	if n == huge then return "math.huge" end
+        	if n == -huge then return "-math.huge" end
+        	if n % 1 == 0 and n > -1e15 and n < 1e15 then
+        		if n > -2147483648 and n < 2147483648 then return format("%d", n) end
+        		return format("%.0f", n)
+        	end
+        	return format("%.14g", n)
+        end
+
+        local function seg(name)
+        	if find(name, IDENT) and not KW[name] and not PROPS[name] then
+        		return "." .. name
+        	end
+        	return ":FindFirstChild(" .. quote(name) .. ")"
+        end
+
+        local function pathOf(inst)
+        	local ok, res = pcall(function()
+        		if inst == game then return "game" end
+        		local chain, cur = {}, inst
+        		while cur and cur ~= game do
+        			chain[#chain + 1] = cur
+        			cur = cur.Parent
+        		end
+        		if cur ~= game then
+        			return "nil --[[ " .. inst.ClassName .. " " .. quote(inst.Name) .. " fora do DataModel ]]"
+        		end
+        		local n = #chain
+        		local top = chain[n]
+        		local head
+        		local okSvc, svc = pcall(game.GetService, game, top.ClassName)
+        		if okSvc and svc == top then
+        			head = 'game:GetService("' .. top.ClassName .. '")'
+        		else
+        			head = "game" .. seg(top.Name)
+        		end
+        		local last = n - 1
+        		if top.ClassName == "Players" and chain[n - 1] and chain[n - 1] == Players.LocalPlayer then
+        			head = head .. ".LocalPlayer"
+        			last = n - 2
+        		end
+        		for i = last, 1, -1 do
+        			head = head .. seg(chain[i].Name)
+        		end
+        		return head
+        	end)
+        	return ok and res or "nil --[[ instance inválida ]]"
+        end
+
+        local ser
+
+        local function serTable(t, depth, seen)
+        	if seen[t] then return "nil --[[ ciclo ]]" end
+        	if depth > MAXDEPTH then return "{} --[[ profundidade máx. ]]" end
+        	seen[t] = true
+
+        	local items, n, more = {}, 0, false
+        	local len = rawlen and rawlen(t) or #t
+        	for i = 1, len do
+        		if n >= MAXITEMS then more = true break end
+        		n += 1
+        		items[n] = ser(rawget(t, i), depth + 1, seen)
+        	end
+        	if not more then
+        		for k, v in next, t do
+        			local isArr = type(k) == "number" and k >= 1 and k <= len and k % 1 == 0
+        			if not isArr then
+        				if n >= MAXITEMS then more = true break end
+        				n += 1
+        				local key
+        				if type(k) == "string" and find(k, IDENT) and not KW[k] then
+        					key = k
+        				else
+        					key = "[" .. ser(k, depth + 1, seen) .. "]"
+        				end
+        				items[n] = key .. " = " .. ser(v, depth + 1, seen)
+        			end
+        		end
+        	end
+        	seen[t] = nil
+
+        	if n == 0 then return "{}" end
+        	if more then items[n + 1] = "--[[ ... ]]" end
+        	local flat = concat(items, ", ")
+        	if #flat <= 72 and not find(flat, "\n", 1, true) then
+        		return "{" .. flat .. "}"
+        	end
+        	local pad = rep("\t", depth + 1)
+        	return "{\n" .. pad .. concat(items, ",\n" .. pad) .. "\n" .. rep("\t", depth) .. "}"
+        end
+
+        local function r255(x) return math.floor(x * 255 + 0.5) end
+
+        ser = function(v, depth, seen)
+        	local t = typeof(v)
+        	if t == "string" then return quote(v)
+        	elseif t == "number" then return num(v)
+        	elseif t == "boolean" or t == "nil" then return tostring(v)
+        	elseif t == "table" then return serTable(v, depth, seen)
+        	elseif t == "Instance" then return pathOf(v)
+        	elseif t == "Vector3" then return format("Vector3.new(%s, %s, %s)", num(v.X), num(v.Y), num(v.Z))
+        	elseif t == "Vector2" then return format("Vector2.new(%s, %s)", num(v.X), num(v.Y))
+        	elseif t == "Color3" then return format("Color3.fromRGB(%d, %d, %d)", r255(v.R), r255(v.G), r255(v.B))
+        	elseif t == "UDim2" then
+        		return format("UDim2.new(%s, %s, %s, %s)", num(v.X.Scale), num(v.X.Offset), num(v.Y.Scale), num(v.Y.Offset))
+        	elseif t == "UDim" then return format("UDim.new(%s, %s)", num(v.Scale), num(v.Offset))
+        	elseif t == "CFrame" then
+        		local c = { v:GetComponents() }
+        		local ident = c[4] == 1 and c[5] == 0 and c[6] == 0 and c[7] == 0 and c[8] == 1
+        			and c[9] == 0 and c[10] == 0 and c[11] == 0 and c[12] == 1
+        		if ident then return format("CFrame.new(%s, %s, %s)", num(c[1]), num(c[2]), num(c[3])) end
+        		for i = 1, #c do c[i] = num(c[i]) end
+        		return "CFrame.new(" .. concat(c, ", ") .. ")"
+        	elseif t == "EnumItem" or t == "Enum" or t == "Enums" then return tostring(v)
+        	elseif t == "BrickColor" then return "BrickColor.new(" .. quote(v.Name) .. ")"
+        	elseif t == "NumberRange" then return format("NumberRange.new(%s, %s)", num(v.Min), num(v.Max))
+        	elseif t == "Rect" then
+        		return format("Rect.new(%s, %s, %s, %s)", num(v.Min.X), num(v.Min.Y), num(v.Max.X), num(v.Max.Y))
+        	elseif t == "function" then
+        		local ok, name = pcall(debug.info, v, "n")
+        		return "nil --[[ function" .. ((ok and name and name ~= "") and (": " .. name) or "") .. " ]]"
+        	elseif t == "buffer" then return "nil --[[ buffer ]]"
+        	end
+        	return "nil --[[ " .. t .. ": " .. tostring(v) .. " ]]"
+        end
+
+        local function serialize(v) return ser(v, 0, {}) end
+
+        local function buildCode(e, call)
+        	local lines = { "local remote = " .. pathOf(e.Remote) }
+        	local method = Canon[call.Method] or call.Method
+        	if call.Blocked then lines[#lines + 1] = "-- (chamada bloqueada)" end
+
+        	local a = call.Args
+        	local parts, multi = {}, false
+        	for i = 1, a.n do
+        		local s = serialize(a[i])
+        		parts[i] = s
+        		if find(s, "\n", 1, true) or #s > 80 then multi = true end
+        	end
+
+        	local callStr
+        	if a.n == 0 then
+        		callStr = "remote:" .. method .. "()"
+        	elseif not multi then
+        		callStr = "remote:" .. method .. "(" .. concat(parts, ", ") .. ")"
+        	else
+        		local names = {}
+        		for i = 1, a.n do
+        			names[i] = "arg" .. i
+        			lines[#lines + 1] = "local arg" .. i .. " = " .. parts[i]
+        		end
+        		callStr = "remote:" .. method .. "(" .. concat(names, ", ") .. ")"
+        	end
+        	if call.Result then
+        		callStr = "local result = table.pack(" .. callStr .. ")"
+        	end
+        	lines[#lines + 1] = callStr
+
+        	if call.Result then
+        		lines[#lines + 1] = ""
+        		lines[#lines + 1] = "-- Retorno (" .. call.Result.n .. ")"
+        		for i = 1, call.Result.n do
+        			lines[#lines + 1] = "-- [" .. i .. "] = " .. gsub(serialize(call.Result[i]), "\n", "\n-- ")
+        		end
+        	end
+        	return concat(lines, "\n")
+        end
+
+        local HX = {
+        	str = "#a5d6a7", num = "#79b8ff", kw = "#ff7b72", com = "#6e7681", fn = "#d2a8ff",
+        }
+        local KWHL = { ["local"] = true, ["nil"] = true, ["true"] = true, ["false"] = true, ["function"] = true, ["end"] = true }
+        local RICH_ESC = { ["&"] = "&amp;", ["<"] = "&lt;", [">"] = "&gt;" }
+        local function richEsc(s) return (gsub(s, "[&<>]", RICH_ESC)) end
+
+        local function highlight(src)
+        	if #src > CFG.MaxRender then
+        		src = sub(src, 1, CFG.MaxRender) .. "\n-- ... truncado (use Copy para o código completo)"
+        	end
+        	local out, n, size = {}, 0, 0
+        	local i, len = 1, #src
+
+        	local function push(color, text)
+        		n += 1
+        		local str
+        		if color then
+        			str = '<font color="' .. color .. '">' .. richEsc(text) .. "</font>"
+        		else
+        			str = richEsc(text)
+        		end
+        		out[n] = str
+        		size += #str
+        	end
+
+        	while i <= len do
+        		if size > 11000 then
+        			push(nil, sub(src, i, i + 2500) .. "\n-- ... (sem cor)")
+        			break
+        		end
+        		local c = sub(src, i, i)
+        		if c == '"' then
+        			local j = i + 1
+        			while j <= len do
+        				local d = sub(src, j, j)
+        				if d == "\\" then j += 2
+        				elseif d == '"' then break
+        				else j += 1 end
+        			end
+        			push(HX.str, sub(src, i, j))
+        			i = j + 1
+        		elseif c == "-" and sub(src, i + 1, i + 1) == "-" then
+        			local j = find(src, "\n", i, true) or (len + 1)
+        			push(HX.com, sub(src, i, j - 1))
+        			i = j
+        		elseif find(c, "[%a_]") then
+        			local _, e2 = find(src, "^[%a_][%w_]*", i)
+        			local word = sub(src, i, e2)
+        			if KWHL[word] then push(HX.kw, word)
+        			elseif word == "remote" then push(HX.fn, word)
+        			else push(nil, word) end
+        			i = e2 + 1
+        		elseif find(c, "%d") or (c == "-" and find(sub(src, i + 1, i + 1), "%d")) then
+        			local _, e2 = find(src, "^-?%d+%.?%d*", i)
+        			push(HX.num, sub(src, i, e2))
+        			i = e2 + 1
+        		else
+        			local nxt = find(src, '[%a_"%-%d]', i + 1) or (len + 1)
+        			push(nil, sub(src, i, nxt - 1))
+        			i = nxt
+        		end
+        	end
+
+        	local res = concat(out)
+        	if #res > 15500 then
+        		res = richEsc(sub(src, 1, 8000))
+        	end
+        	return res
+        end
+
+        local Ours = {}
+
+        local function callerInfo()
+        	for lvl = 1, 14 do
+        		local f, s, l = debug.info(lvl, "fsl")
+        		if not f then break end
+        		if s ~= "[C]" and not Ours[f] then
+        			return f, s, l
+        		end
+        	end
+        end
+        Ours[callerInfo] = true
+
+        local PMCache = setmetatable({}, { __mode = "k" })
+        local function fromPlayerModule(scr)
+        	if typeof(scr) == "Instance" then
+        		local c = PMCache[scr]
+        		if c == nil then
+        			local ok, res = pcall(function() return scr:FindFirstAncestor("PlayerModule") ~= nil end)
+        			c = ok and res or false
+        			PMCache[scr] = c
+        		end
+        		return c
+        	end
+        	local _, s = callerInfo()
+        	return s ~= nil and find(s, "PlayerModule", 1, true) ~= nil
+        end
+        Ours[fromPlayerModule] = true
+
+        local function newEntry(inst, class)
+        	local ok, path = pcall(inst.GetFullName, inst)
+        	path = ok and path or inst.Name
+        	local e = {
+        		Remote = inst, Class = class, Kind = KindOf[class],
+        		Name = inst.Name, Path = path,
+        		NameL = lower(inst.Name), PathL = lower(path),
+        		Count = 0, Calls = {}, Last = nil,
+        		Blocked = false, Ignored = false, Limited = false,
+        		WinT = 0, WinN = 0,
+        	}
+        	Remotes[inst] = e
+        	Order[#Order + 1] = e
+        	if #Order > CFG.MaxRemotes then
+        		local old = table.remove(Order, 1)
+        		Remotes[old.Remote] = nil
+        		if Selected == old then Selected, ViewCall = nil, nil end
+        	end
+        	ViewDirty = true
+        	return e
+        end
+
+        local function makeCall(method, exec, scr, blocked, ...)
+        	local fn, src, line = callerInfo()
+        	return {
+        		Args = pack(...), Method = method, Stamp = os.time(),
+        		Script = scr, Func = fn, Source = src, Line = line,
+        		Exec = exec, Blocked = blocked,
+        	}
+        end
+        Ours[makeCall] = true
+
+        local function push(e, call)
+        	local calls = e.Calls
+        	calls[#calls + 1] = call
+        	if #calls > CFG.MaxCalls then table.remove(calls, 1) end
+        	e.Last = call
+        end
+
+        local function onCall(self, class, method, exec, ...)
+        	local e = Remotes[self]
+        	if e then
+        		if e.Blocked then
+        			if CFG.LogBlocked and not State.Paused then
+        				e.Count += 1
+        				TotalCalls += 1
+        				Dirty = true
+        				push(e, makeCall(method, exec, getcallingscript(), true, ...))
+        			end
+        			return true
+        		end
+        		if e.Ignored or State.Paused then return false end
+        	elseif State.Paused then
+        		return false
+        	end
+
+        	local scr = getcallingscript()
+        	if State.HidePM and IsBindable[class] and fromPlayerModule(scr) then
+        		return false
+        	end
+
+        	e = e or newEntry(self, class)
+
+        	local now = os.clock()
+        	if now - e.WinT >= 1 then
+        		e.WinT, e.WinN, e.Limited = now, 0, false
+        	end
+        	e.WinN += 1
+        	e.Count += 1
+        	TotalCalls += 1
+        	Dirty = true
+        	if e.WinN > CFG.RateCap then
+        		e.Limited = true
+        		return false
+        	end
+
+        	local call = makeCall(method, exec, scr, false, ...)
+        	push(e, call)
+        	return false, call
+        end
+        Ours[onCall] = true
+
+        local function intercept(old, isNC, self, class, method, exec, ...)
+        	local ok, block, call = pcall(onCall, self, class, method, exec, ...)
+        	if ok and block then return end
+        	if isNC then setnamecallmethod(method) end
+        	if ok and call and Invokes[method] then
+        		local res = pack(old(self, ...))
+        		call.Result, call.Rich, call.Plain = res, nil, nil
+        		Dirty = true
+        		return unpack(res, 1, res.n)
+        	end
+        	return old(self, ...)
+        end
+        Ours[intercept] = true
+
+        local OldNamecall
+        local function namecallHook(self, ...)
+        	if Alive then
+        		local method = getnamecallmethod()
+        		if NCMethods[method] and typeof(self) == "Instance" then
+        			local class = self.ClassName
+        			if Classes[class] then
+        				return intercept(OldNamecall, true, self, class, method, checkcaller(), ...)
+        			end
+        		end
+        	end
+        	return OldNamecall(self, ...)
+        end
+        Ours[namecallHook] = true
+
+        if hookmetamethod then
+        	OldNamecall = hookmetamethod(game, "__namecall", newcclosure(namecallHook))
+        else
+        	local mt = getrawmetatable(game)
+        	OldNamecall = rawget(mt, "__namecall")
+        	setreadonly(mt, false)
+        	rawset(mt, "__namecall", newcclosure(namecallHook))
+        	setreadonly(mt, true)
+        end
+
+        if hookfunction then
+        	local done = {}
+        	for _, d in ipairs({
+        		{ "RemoteEvent", "FireServer" },
+        		{ "UnreliableRemoteEvent", "FireServer" },
+        		{ "RemoteFunction", "InvokeServer" },
+        		{ "BindableEvent", "Fire" },
+        		{ "BindableFunction", "Invoke" },
+        	}) do
+        		pcall(function()
+        			local inst = Instance.new(d[1])
+        			local fn = inst[d[2]]
+        			inst:Destroy()
+        			if done[fn] then return end
+        			done[fn] = true
+
+        			local method, old = d[2], nil
+        			local function hook(self, ...)
+        				if Alive and typeof(self) == "Instance" then
+        					local class = self.ClassName
+        					if Classes[class] then
+        						return intercept(old, false, self, class, method, checkcaller(), ...)
+        					end
+        				end
+        				return old(self, ...)
+        			end
+        			Ours[hook] = true
+        			old = hookfunction(fn, newcclosure(hook))
+        		end)
+        	end
+        end
+
+        local C = {
+        	bg = Color3.fromRGB(12, 12, 15),
+        	panel = Color3.fromRGB(19, 19, 24),
+        	raised = Color3.fromRGB(30, 30, 38),
+        	stroke = Color3.fromRGB(44, 44, 56),
+        	text = Color3.fromRGB(228, 228, 236),
+        	dim = Color3.fromRGB(135, 135, 152),
+        	accent = Color3.fromRGB(88, 140, 255),
+        	red = Color3.fromRGB(255, 92, 92),
+        	orange = Color3.fromRGB(255, 170, 60),
+        }
+        local ClassColor = {
+        	RemoteEvent = Color3.fromRGB(88, 150, 255),
+        	UnreliableRemoteEvent = Color3.fromRGB(160, 120, 255),
+        	RemoteFunction = Color3.fromRGB(255, 170, 60),
+        	BindableEvent = Color3.fromRGB(80, 200, 140),
+        	BindableFunction = Color3.fromRGB(235, 100, 165),
+        }
+        local function hex(c) return format("#%02x%02x%02x", r255(c.R), r255(c.G), r255(c.B)) end
+
+        local function create(class, props)
+        	local o = Instance.new(class)
+        	local parent = props.Parent
+        	for k, v in next, props do
+        		if k ~= "Parent" then o[k] = v end
+        	end
+        	o.Parent = parent
+        	return o
+        end
+
+        local function corner(o, r) return create("UICorner", { CornerRadius = UDim.new(0, r or 6), Parent = o }) end
+
+        local function label(parent, props)
+        	local p = {
+        		Parent = parent, BackgroundTransparency = 1, Font = Enum.Font.Gotham, TextSize = 12,
+        		TextColor3 = C.text, TextXAlignment = Enum.TextXAlignment.Left, Text = "",
+        		TextTruncate = Enum.TextTruncate.AtEnd,
+        	}
+        	for k, v in next, props do p[k] = v end
+        	return create("TextLabel", p)
+        end
+
+        local Base = {}
+        local function setBase(b, col) Base[b] = col b.BackgroundColor3 = col end
+        local function button(parent, text, props)
+        	local p = {
+        		Parent = parent, AutoButtonColor = false, BackgroundColor3 = C.raised, Text = text,
+        		TextColor3 = C.text, Font = Enum.Font.GothamMedium, TextSize = 12, BorderSizePixel = 0,
+        	}
+        	for k, v in next, props or {} do p[k] = v end
+        	local b = create("TextButton", p)
+        	corner(b, 5)
+        	Base[b] = b.BackgroundColor3
+        	b.MouseEnter:Connect(function() b.BackgroundColor3 = Base[b]:Lerp(Color3.new(1, 1, 1), 0.09) end)
+        	b.MouseLeave:Connect(function() b.BackgroundColor3 = Base[b] end)
+        	return b
+        end
+
+        local Gui = create("ScreenGui", {
+        	Name = format("%x", math.random(100000, 2000000000)),
+        	ResetOnSpawn = false, ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+        	IgnoreGuiInset = true, DisplayOrder = 999999,
+        })
+        do
+        	local ok = pcall(function()
+        		if syn and syn.protect_gui then syn.protect_gui(Gui) end
+        		Gui.Parent = (gethui and gethui()) or CoreGui
+        	end)
+        	if not ok or not Gui.Parent then
+        		if not Players.LocalPlayer then Players:GetPropertyChangedSignal("LocalPlayer"):Wait() end
+        		Gui.Parent = Players.LocalPlayer:WaitForChild("PlayerGui")
+        	end
+        end
+
+        local vp = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize or Vector2.new(1280, 720)
+        local MIN_W, MIN_H, LEFT_W, ROW_H = 480, 300, 220, 26
+
+        local Main = create("Frame", {
+        	Name = "Main", Parent = Gui, AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
+        	Size = UDim2.fromOffset(math.min(640, vp.X - 16), math.min(400, vp.Y - 16)),
+        	BackgroundColor3 = C.bg, BorderSizePixel = 0, ClipsDescendants = true,
+        })
+        corner(Main, 8)
+        create("UIStroke", { Color = C.stroke, Thickness = 1, Parent = Main })
+
+        local TitleBar = create("Frame", {
+        	Parent = Main, Size = UDim2.new(1, 0, 0, 34), BackgroundColor3 = C.panel, BorderSizePixel = 0,
+        })
+        local TitleLbl = label(TitleBar, {
+        	Position = UDim2.fromOffset(12, 0), Size = UDim2.new(1, -230, 1, 0), RichText = true,
+        	Font = Enum.Font.GothamBold, TextSize = 13,
+        })
+
+        local TitleBtns = create("Frame", {
+        	Parent = TitleBar, AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -8, 0.5, 0),
+        	Size = UDim2.fromOffset(212, 24), BackgroundTransparency = 1,
+        })
+        create("UIListLayout", {
+        	Parent = TitleBtns, FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 6),
+        	HorizontalAlignment = Enum.HorizontalAlignment.Right, SortOrder = Enum.SortOrder.LayoutOrder,
+        })
+        local PauseBtn = button(TitleBtns, "Pause", { Size = UDim2.fromOffset(58, 24), LayoutOrder = 1 })
+        local ClearAllBtn = button(TitleBtns, "Clear all", { Size = UDim2.fromOffset(66, 24), LayoutOrder = 2 })
+        local MinBtn = button(TitleBtns, "–", { Size = UDim2.fromOffset(28, 24), LayoutOrder = 3, TextSize = 14 })
+        local CloseBtn = button(TitleBtns, "×", { Size = UDim2.fromOffset(28, 24), LayoutOrder = 4, TextSize = 16 })
+
+        local Body = create("Frame", {
+        	Parent = Main, Position = UDim2.fromOffset(0, 34), Size = UDim2.new(1, 0, 1, -34), BackgroundTransparency = 1,
+        })
+
+        local Left = create("Frame", {
+        	Parent = Body, Size = UDim2.new(0, LEFT_W, 1, 0), BackgroundColor3 = C.panel, BorderSizePixel = 0,
+        })
+        local Search = create("TextBox", {
+        	Parent = Left, Position = UDim2.fromOffset(8, 8), Size = UDim2.new(1, -16, 0, 26),
+        	BackgroundColor3 = C.raised, BorderSizePixel = 0, Text = "", PlaceholderText = "Search remotes...",
+        	PlaceholderColor3 = C.dim, TextColor3 = C.text, Font = Enum.Font.Gotham, TextSize = 12,
+        	TextXAlignment = Enum.TextXAlignment.Left, ClearTextOnFocus = false,
+        })
+        corner(Search, 5)
+        create("UIPadding", { Parent = Search, PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8) })
+
+        local Chips = create("Frame", {
+        	Parent = Left, Position = UDim2.fromOffset(8, 40), Size = UDim2.new(1, -16, 0, 22), BackgroundTransparency = 1,
+        })
+        create("UIListLayout", {
+        	Parent = Chips, FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 4),
+        	SortOrder = Enum.SortOrder.LayoutOrder,
+        })
+        local ChipDefs = {
+        	{ "Events", "Event" }, { "Funcs", "Func" }, { "Binds", "Bind" }, { "No PM", "PM" },
+        }
+        local ChipBtns = {}
+        local function paintChip(b, on)
+        	setBase(b, on and C.accent or C.raised)
+        	b.TextColor3 = on and Color3.new(1, 1, 1) or C.dim
+        end
+        for i, d in ipairs(ChipDefs) do
+        	local b = button(Chips, d[1], { Size = UDim2.new(0.25, -3, 1, 0), LayoutOrder = i, TextSize = 11 })
+        	ChipBtns[d[2]] = b
+        	paintChip(b, d[2] == "PM" and State.HidePM or State.Kinds[d[2]])
+        	b.Activated:Connect(function()
+        		if d[2] == "PM" then
+        			State.HidePM = not State.HidePM
+        			paintChip(b, State.HidePM)
+        		else
+        			State.Kinds[d[2]] = not State.Kinds[d[2]]
+        			paintChip(b, State.Kinds[d[2]])
+        		end
+        		Dirty, ViewDirty = true, true
+        	end)
+        end
+
+        local List = create("ScrollingFrame", {
+        	Parent = Left, Position = UDim2.fromOffset(0, 68), Size = UDim2.new(1, 0, 1, -68),
+        	BackgroundTransparency = 1, BorderSizePixel = 0, ScrollBarThickness = 4,
+        	ScrollBarImageColor3 = C.stroke, CanvasSize = UDim2.new(), ScrollingDirection = Enum.ScrollingDirection.Y,
+        })
+        create("Frame", {
+        	Parent = Body, Position = UDim2.fromOffset(LEFT_W, 0), Size = UDim2.new(0, 1, 1, 0),
+        	BackgroundColor3 = C.stroke, BorderSizePixel = 0,
+        })
+
+        local Right = create("Frame", {
+        	Parent = Body, Position = UDim2.fromOffset(LEFT_W + 1, 0), Size = UDim2.new(1, -(LEFT_W + 1), 1, 0),
+        	BackgroundTransparency = 1,
+        })
+        local NameLbl = label(Right, {
+        	Position = UDim2.fromOffset(14, 10), Size = UDim2.new(1, -28, 0, 20),
+        	Font = Enum.Font.GothamBold, TextSize = 15,
+        })
+        local SubLbl = label(Right, {
+        	Position = UDim2.fromOffset(14, 32), Size = UDim2.new(1, -28, 0, 16), RichText = true, TextSize = 11,
+        })
+
+        local CallBar = create("Frame", {
+        	Parent = Right, Position = UDim2.fromOffset(14, 56), Size = UDim2.new(1, -28, 0, 26), BackgroundTransparency = 1,
+        })
+        local PrevBtn = button(CallBar, "<", { Size = UDim2.fromOffset(28, 26) })
+        local CallLbl = label(CallBar, {
+        	Position = UDim2.fromOffset(34, 0), Size = UDim2.new(1, -68, 1, 0), RichText = true, TextSize = 11,
+        	TextColor3 = C.dim,
+        })
+        local NextBtn = button(CallBar, ">", { Position = UDim2.new(1, -28, 0, 0), Size = UDim2.fromOffset(28, 26) })
+
+        local InfoLbl = label(Right, {
+        	Position = UDim2.fromOffset(14, 86), Size = UDim2.new(1, -28, 0, 16), TextSize = 11, TextColor3 = C.dim,
+        })
+
+        local CodeBox = create("ScrollingFrame", {
+        	Parent = Right, Position = UDim2.fromOffset(14, 108), Size = UDim2.new(1, -28, 1, -154),
+        	BackgroundColor3 = C.panel, BorderSizePixel = 0, ScrollBarThickness = 4, ScrollBarImageColor3 = C.stroke,
+        	CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y,
+        	ScrollingDirection = Enum.ScrollingDirection.Y,
+        })
+        corner(CodeBox, 6)
+        create("UIStroke", { Color = C.stroke, Parent = CodeBox })
+        local CodeLbl = create("TextLabel", {
+        	Parent = CodeBox, Position = UDim2.fromOffset(8, 6), Size = UDim2.new(1, -16, 0, 0),
+        	AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1, Font = Enum.Font.Code, TextSize = 13,
+        	TextColor3 = C.text, TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top,
+        	TextWrapped = true, RichText = true, Text = "",
+        })
+        local EmptyLbl = label(Right, {
+        	Position = UDim2.fromOffset(14, 108), Size = UDim2.new(1, -28, 1, -154), TextWrapped = true,
+        	TextXAlignment = Enum.TextXAlignment.Center, TextColor3 = C.dim, TextSize = 13,
+        	Text = "Select a remote on the left.\nCalls appear here as they happen.", TextTruncate = Enum.TextTruncate.None,
+        })
+
+        local Actions = create("Frame", {
+        	Parent = Right, Position = UDim2.new(0, 14, 1, -38), Size = UDim2.new(1, -28, 0, 28), BackgroundTransparency = 1,
+        })
+        create("UIListLayout", {
+        	Parent = Actions, FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 4),
+        	SortOrder = Enum.SortOrder.LayoutOrder,
+        })
+        local function actionBtn(text, order)
+        	return button(Actions, text, { Size = UDim2.new(1 / 6, -4, 1, 0), LayoutOrder = order, TextSize = 11 })
+        end
+        local CopyBtn = actionBtn("Copy code", 1)
+        local PathBtn = actionBtn("Copy path", 2)
+        local RunBtn = actionBtn("Run", 3)
+        local BlockBtn = actionBtn("Block", 4)
+        local IgnoreBtn = actionBtn("Ignore", 5)
+        local ResetBtn = actionBtn("Reset", 6)
+
+        local Mini = button(Gui, "RN TEAM SPY", {
+        	AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0, 12), Size = UDim2.fromOffset(120, 28),
+        	BackgroundColor3 = C.panel, Visible = false,
+        })
+        create("UIStroke", { Color = C.stroke, Parent = Mini })
+
+        local function isPointer(i)
+        	return i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch
+        end
+        local function isMove(i)
+        	return i.UserInputType == Enum.UserInputType.MouseMovement or i.UserInputType == Enum.UserInputType.Touch
+        end
+
+        local function dragger(handle, onMove)
+        	connect(handle.InputBegan, function(i)
+        		if not isPointer(i) then return end
+        		local start = i.Position
+        		local moveConn, endConn
+        		local init = onMove(nil, nil)
+        		moveConn = UIS.InputChanged:Connect(function(m)
+        			if isMove(m) then onMove(m.Position - start, init) end
+        		end)
+        		endConn = i.Changed:Connect(function()
+        			if i.UserInputState == Enum.UserInputState.End then
+        				moveConn:Disconnect()
+        				endConn:Disconnect()
+        			end
+        		end)
+        	end)
+        end
+
+        dragger(TitleBar, function(delta, init)
+        	if not delta then return Main.Position end
+        	Main.Position = UDim2.new(init.X.Scale, init.X.Offset + delta.X, init.Y.Scale, init.Y.Offset + delta.Y)
+        end)
+
+        local Grip = create("TextButton", {
+        	Parent = Main, AnchorPoint = Vector2.new(1, 1), Position = UDim2.new(1, -3, 1, -3), Size = UDim2.fromOffset(14, 14),
+        	BackgroundColor3 = C.accent, BackgroundTransparency = 0.55, Text = "", AutoButtonColor = false, ZIndex = 5,
+        })
+        corner(Grip, 4)
+        dragger(Grip, function(delta, init)
+        	if not delta then return Main.AbsoluteSize end
+        	Main.Size = UDim2.fromOffset(
+        		math.clamp(init.X + delta.X, MIN_W, vp.X), math.clamp(init.Y + delta.Y, MIN_H, vp.Y)
+        	)
+        end)
+
+        local Pool = {}
+
+        local function fmtCount(n)
+        	if n >= 10000 then return format("x%.1fk", n / 1000) end
+        	return "x" .. n
+        end
+
+        local selectEntry
+
+        local function makeRow()
+        	local btn = create("TextButton", {
+        		Parent = List, Size = UDim2.new(1, -6, 0, ROW_H), BackgroundColor3 = C.raised, BackgroundTransparency = 1,
+        		BorderSizePixel = 0, Text = "", AutoButtonColor = false, Visible = false,
+        	})
+        	local bar = create("Frame", {
+        		Parent = btn, Position = UDim2.new(0, 6, 0.5, -7), Size = UDim2.fromOffset(3, 14), BorderSizePixel = 0,
+        	})
+        	corner(bar, 2)
+        	local row = {
+        		Btn = btn, Bar = bar, Shown = false,
+        		NameL = label(btn, { Position = UDim2.fromOffset(16, 0), Size = UDim2.new(1, -68, 1, 0) }),
+        		CntL = label(btn, {
+        			Position = UDim2.new(1, -50, 0, 0), Size = UDim2.fromOffset(44, ROW_H), TextColor3 = C.dim,
+        			TextXAlignment = Enum.TextXAlignment.Right, TextSize = 11,
+        		}),
+        	}
+        	btn.Activated:Connect(function()
+        		if row.E then selectEntry(row.E) end
+        	end)
+        	return row
+        end
+
+        local function layoutList()
+        	local need = math.ceil(List.AbsoluteSize.Y / ROW_H) + 2
+        	for i = #Pool + 1, need do Pool[i] = makeRow() end
+
+        	local total = #View
+        	List.CanvasSize = UDim2.fromOffset(0, total * ROW_H)
+        	local first = math.floor(List.CanvasPosition.Y / ROW_H)
+
+        	for i = 1, #Pool do
+        		local row = Pool[i]
+        		local e = View[first + i]
+        		if e then
+        			local y = (first + i - 1) * ROW_H
+        			if row.Y ~= y then
+        				row.Y = y
+        				row.Btn.Position = UDim2.fromOffset(0, y)
+        			end
+        			if row.E ~= e then
+        				row.E = e
+        				row.Sig = nil
+        				row.NameL.Text = e.Name
+        				row.Bar.BackgroundColor3 = ClassColor[e.Class]
+        			end
+        			if row.C ~= e.Count or row.CE ~= e then
+        				row.C, row.CE = e.Count, e
+        				row.CntL.Text = fmtCount(e.Count)
+        			end
+        			local sig = (e == Selected and 1 or 0) + (e.Blocked and 2 or (e.Ignored and 4 or 0))
+        			if row.Sig ~= sig then
+        				row.Sig = sig
+        				row.Btn.BackgroundTransparency = (e == Selected) and 0 or 1
+        				row.NameL.TextColor3 = e.Blocked and C.red or (e.Ignored and C.dim or C.text)
+        			end
+        			if not row.Shown then
+        				row.Shown = true
+        				row.Btn.Visible = true
+        			end
+        		elseif row.Shown then
+        			row.Shown = false
+        			row.E = nil
+        			row.Btn.Visible = false
+        		end
+        	end
+        end
+
+        local function rebuildView()
+        	table.clear(View)
+        	local q = State.Query
+        	local kinds = State.Kinds
+        	for i = 1, #Order do
+        		local e = Order[i]
+        		if kinds[e.Kind] and (q == "" or find(e.NameL, q, 1, true) or find(e.PathL, q, 1, true)) then
+        			View[#View + 1] = e
+        		end
+        	end
+        end
+
+        local Shown = {}
+        local FlashText
+
+        local function indexOf(calls, call)
+        	for i = #calls, 1, -1 do
+        		if calls[i] == call then return i end
+        	end
+        end
+
+        local function safeName(inst)
+        	local ok, n = pcall(inst.GetFullName, inst)
+        	return ok and n or tostring(inst)
+        end
+
+        local function updateDetail(force)
+        	local e = Selected
+        	if not e then
+        		if Shown.E ~= false then
+        			Shown = { E = false }
+        			NameLbl.Text, SubLbl.Text, CallLbl.Text, InfoLbl.Text = "", "", "", ""
+        			CodeBox.Visible, EmptyLbl.Visible = false, true
+        		end
+        		return
+        	end
+
+        	if Follow then ViewCall = e.Last end
+        	local call = ViewCall
+        	local flags = (e.Blocked and 1 or 0) + (e.Ignored and 2 or 0) + (e.Limited and 4 or 0)
+        	local res = call and call.Result
+        	if not force and Shown.E == e and Shown.Call == call and Shown.Count == e.Count
+        		and Shown.Flags == flags and Shown.Res == res and Shown.N == #e.Calls then
+        		return
+        	end
+        	Shown = { E = e, Call = call, Count = e.Count, Flags = flags, Res = res, N = #e.Calls }
+
+        	NameLbl.Text = e.Name
+        	SubLbl.Text = format('<font color="%s">%s</font>   %s', hex(ClassColor[e.Class]), e.Class, richEsc(e.Path))
+        	setBase(BlockBtn, e.Blocked and C.red or C.raised)
+        	setBase(IgnoreBtn, e.Ignored and C.orange or C.raised)
+        	BlockBtn.Text = e.Blocked and "Unblock" or "Block"
+        	IgnoreBtn.Text = e.Ignored and "Unignore" or "Ignore"
+
+        	local calls = e.Calls
+        	if call then
+        		local idx = indexOf(calls, call) or #calls
+        		local extra = ""
+        		if call.Exec then extra ..= '  <font color="#58a6ff">EXECUTOR</font>' end
+        		if call.Blocked then extra ..= '  <font color="#ff5c5c">BLOCKED</font>' end
+        		if e.Limited then extra ..= '  <font color="#ffaa3c">rate-limited</font>' end
+        		CallLbl.Text = format("Call %d/%d  ·  %s  ·  %d total%s", idx, #calls, os.date("%H:%M:%S", call.Stamp), e.Count, extra)
+
+        		local who = call.Script and safeName(call.Script) or call.Source or "?"
+        		local fname = ""
+        		if call.Func then
+        			local ok, n = pcall(debug.info, call.Func, "n")
+        			if ok and n and n ~= "" then fname = "  ·  " .. n .. "()" end
+        		end
+        		InfoLbl.Text = "Caller: " .. who .. ":" .. tostring(call.Line or "?") .. fname
+
+        		if not call.Rich then
+        			call.Plain = buildCode(e, call)
+        			call.Rich = highlight(call.Plain)
+        		end
+        		CodeLbl.Text = call.Rich
+        		PrevBtn.TextTransparency = idx > 1 and 0 or 0.6
+        		NextBtn.TextTransparency = idx < #calls and 0 or 0.6
+        	else
+        		CallLbl.Text = format("No calls stored  ·  %d total", e.Count)
+        		InfoLbl.Text = e.Ignored and "Ignored" or ""
+        		CodeLbl.Text = ""
+        	end
+        	CodeBox.Visible, EmptyLbl.Visible = true, false
+        end
+
+        selectEntry = function(e)
+        	Selected, ViewCall, Follow = e, e.Last, true
+        	CodeBox.CanvasPosition = Vector2.zero
+        	Dirty = true
+        	layoutList()
+        	updateDetail(true)
+        end
+
+        local StatusOverride
+        FlashText = function(text)
+        	StatusOverride = text
+        	Dirty = true
+        	task.delay(1.4, function()
+        		if Alive then
+        			StatusOverride = nil
+        			Dirty = true
+        		end
+        	end)
+        end
+
+        local function copy(text, what)
+        	if clipboard then
+        		clipboard(text)
+        		FlashText(what .. " copied")
+        	else
+        		FlashText("Executor sem setclipboard")
+        	end
+        end
+
+        local function step(dir)
+        	local e = Selected
+        	if not e or not ViewCall then return end
+        	local idx = indexOf(e.Calls, ViewCall) or #e.Calls
+        	local nxt = math.clamp(idx + dir, 1, #e.Calls)
+        	ViewCall = e.Calls[nxt]
+        	Follow = (nxt == #e.Calls)
+        	updateDetail(true)
+        end
+        PrevBtn.Activated:Connect(function() step(-1) end)
+        NextBtn.Activated:Connect(function() step(1) end)
+
+        CopyBtn.Activated:Connect(function()
+        	if Selected and ViewCall then
+        		copy(ViewCall.Plain or buildCode(Selected, ViewCall), "Code")
+        	end
+        end)
+        PathBtn.Activated:Connect(function()
+        	if Selected then copy(pathOf(Selected.Remote), "Path") end
+        end)
+        RunBtn.Activated:Connect(function()
+        	local e, call = Selected, ViewCall
+        	if not e or not call then return end
+        	task.spawn(function()
+        		local ok, err = pcall(function()
+        			local inst, f = e.Remote, e.Remote[call.Method]
+        			return f(inst, unpack(call.Args, 1, call.Args.n))
+        		end)
+        		FlashText(ok and "Fired" or ("Error: " .. tostring(err)))
+        	end)
+        end)
+        BlockBtn.Activated:Connect(function()
+        	if Selected then
+        		Selected.Blocked = not Selected.Blocked
+        		Dirty = true
+        		updateDetail(true)
+        		layoutList()
+        	end
+        end)
+        IgnoreBtn.Activated:Connect(function()
+        	if Selected then
+        		Selected.Ignored = not Selected.Ignored
+        		Dirty = true
+        		updateDetail(true)
+        		layoutList()
+        	end
+        end)
+        ResetBtn.Activated:Connect(function()
+        	if Selected then
+        		table.clear(Selected.Calls)
+        		Selected.Count, Selected.Last, ViewCall = 0, nil, nil
+        		Dirty = true
+        		updateDetail(true)
+        	end
+        end)
+
+        PauseBtn.Activated:Connect(function()
+        	State.Paused = not State.Paused
+        	PauseBtn.Text = State.Paused and "Resume" or "Pause"
+        	setBase(PauseBtn, State.Paused and C.orange or C.raised)
+        	Dirty = true
+        end)
+        ClearAllBtn.Activated:Connect(function()
+        	table.clear(Remotes)
+        	table.clear(Order)
+        	table.clear(View)
+        	Selected, ViewCall, Follow, TotalCalls = nil, nil, true, 0
+        	Dirty, ViewDirty = true, true
+        	layoutList()
+        	updateDetail(true)
+        end)
+
+        local function setOpen(open)
+        	Main.Visible = open
+        	Mini.Visible = not open
+        	if open then Dirty, ViewDirty = true, true end
+        end
+        MinBtn.Activated:Connect(function() setOpen(false) end)
+        Mini.Activated:Connect(function() setOpen(true) end)
+
+        local function unload()
+        	if not Alive then return end
+        	Alive = false
+        	for _, c in ipairs(Conns) do pcall(c.Disconnect, c) end
+        	pcall(function() Gui:Destroy() end)
+        	if G.__RNTeam and G.__RNTeam.Unload == unload then G.__RNTeam = nil end
+        end
+        CloseBtn.Activated:Connect(unload)
+        G.__RNTeam = { Unload = unload, SetOpen = setOpen }
+
+        connect(UIS.InputBegan, function(i, processed)
+        	if not processed and i.KeyCode == Enum.KeyCode.RightShift then setOpen(not Main.Visible) end
+        end)
+
+        connect(Search:GetPropertyChangedSignal("Text"), function()
+        	State.Query = lower(Search.Text)
+        	Dirty, ViewDirty = true, true
+        end)
+        connect(List:GetPropertyChangedSignal("CanvasPosition"), layoutList)
+        connect(List:GetPropertyChangedSignal("AbsoluteSize"), layoutList)
+
+        local function updateStatus()
+        	local right
+        	if StatusOverride then
+        		right = '<font color="#58a6ff">' .. richEsc(StatusOverride) .. "</font>"
+        	else
+        		right = format('<font color="#878798">%d remotes · %d calls</font>', #Order, TotalCalls)
+        		if State.Paused then right ..= '  <font color="#ffaa3c">paused</font>' end
+        	end
+        	TitleLbl.Text = "RN TEAM SPY   " .. right
+        end
+
+        local acc = 0
+        connect(RunService.Heartbeat, function(dt)
+        	acc += dt
+        	if acc < CFG.UIInterval then return end
+        	acc = 0
+        	if not Dirty or not Main.Visible then return end
+        	Dirty = false
+        	if ViewDirty then
+        		ViewDirty = false
+        		rebuildView()
+        	end
+        	layoutList()
+        	updateDetail(false)
+        	updateStatus()
+        end)
+
+        updateDetail(true)
+        updateStatus()
+        layoutList()
+    end
+
+    local sp = tabRemote:AddSection("🕵️ Remote Spy", false)
+    sp:AddButton({Name = "Abrir Spy", Callback = function()
+        local cur = SG.__RNTeam
+        if cur and cur.SetOpen then
+            cur.SetOpen(true)
+            return
+        end
+        local ok, err = pcall(runSpy)
+        if not ok then
+            notify("Remote Spy", tostring(err), "error")
+        elseif not SG.__RNTeam then
+            notify("Remote Spy", "Este executor não oferece hookmetamethod/getnamecallmethod.", "warning")
+        end
+    end})
+    Win:OnDestroy(function()
+        local cur = SG.__RNTeam
+        if cur and cur.Unload then
+            pcall(cur.Unload)
+        end
     end)
 end
 
