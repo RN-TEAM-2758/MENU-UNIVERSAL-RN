@@ -4548,12 +4548,62 @@ local function savedList(flag)
     return out
 end
 
+-- Modo universal: registro automático de NPCs (qualquer Model com Humanoid que não seja jogador).
+-- Usado quando o campo de pasta fica vazio; não precisa de Dex nem de caminho.
+local autoNPCs = setmetatable({}, {__mode = "k"})
+do
+    local function track(inst)
+        if inst:IsA("Humanoid") then
+            local m = inst.Parent
+            if m and m:IsA("Model") then
+                autoNPCs[m] = true
+            end
+        end
+    end
+    connect(Workspace.DescendantAdded, function(inst)
+        pcall(track, inst)
+    end)
+    connect(Workspace.DescendantRemoving, function(inst)
+        if inst:IsA("Humanoid") then
+            local m = inst.Parent
+            if m then
+                autoNPCs[m] = nil
+            end
+        end
+    end)
+    task.spawn(function()
+        local n = 0
+        for _, d in ipairs(Workspace:GetDescendants()) do
+            pcall(track, d)
+            n = n + 1
+            if n % 4000 == 0 then
+                task.wait()
+            end
+        end
+    end)
+end
+
 local npcCache = {}
 local function getNPCs(dirText)
+    dirText = dirText or ""
     local now = os.clock()
     local c = npcCache[dirText]
     if c and now - c.t < 0.5 then
         return c.list
+    end
+    if tostring(dirText):match("^%s*(.-)%s*$") == "" then
+        local auto = {}
+        for m in pairs(autoNPCs) do
+            if m.Parent and m:IsDescendantOf(Workspace) then
+                if m:FindFirstChildOfClass("Humanoid") and not Players:GetPlayerFromCharacter(m) then
+                    auto[#auto + 1] = m
+                end
+            else
+                autoNPCs[m] = nil
+            end
+        end
+        npcCache[dirText] = {t = now, list = auto}
+        return auto
     end
     local list = {}
     local seen = {}
@@ -5135,7 +5185,7 @@ do
     n:AddToggle({Name = "Aimbot NPC", Flag = "aimn_on", Default = false})
     n:AddToggle({Name = "FOV", Flag = "aimn_fov_show", Default = false, Feature = false})
     n:AddToggle({Name = "Visible Check", Flag = "aimn_vis", Default = true, Feature = false})
-    n:AddInput({Name = "Pasta de NPCs", Flag = "aimn_dir", Default = "", Placeholder = "Ex.: Workspace.NPCs"})
+    n:AddInput({Name = "Pasta de NPCs", Flag = "aimn_dir", Default = "", Placeholder = "Vazio = automático (todo o mapa)"})
     n:AddSlider({Name = "FOV", Flag = "aimn_fov", Min = 10, Max = 360, Default = 50, Step = 1})
     n:AddSlider({Name = "Suavidade 1", Flag = "aimn_smooth", Min = 0, Max = 1, Default = 0.8, Step = 0.05})
     n:AddDropdown({Name = "Parte do corpo", Flag = "aimn_part", Options = AIM_PARTS, Default = "Head"})
@@ -5245,10 +5295,7 @@ do
             Mon.tick("aim", "sem alvo dentro do FOV")
         end
 
-        if F.aimn_on and trim(F.aimn_dir) == "" then
-            Mon.tick("aimn", "informe a pasta de NPCs", true)
-        end
-        if F.aimn_on and trim(F.aimn_dir) ~= "" then
+        if F.aimn_on then
             local models = {}
             for _, m in ipairs(getNPCs(F.aimn_dir)) do
                 if isAlive(m) then
@@ -5302,10 +5349,9 @@ do
 
     local n = tabCombat:AddSection("💥 Hitbox NPCs")
     n:AddToggle({Name = "Hitbox NPC", Flag = "hbn_on", Default = false})
-    n:AddInput({Name = "Pasta de NPCs", Flag = "hbn_dir", Default = "", Placeholder = "Ex.: Workspace.NPCs"})
+    n:AddInput({Name = "Pasta de NPCs", Flag = "hbn_dir", Default = "", Placeholder = "Vazio = automático (todo o mapa)"})
     n:AddDropdown({Name = "Parte do corpo", Flag = "hbn_part", Options = HB_PARTS, Default = "HumanoidRootPart"})
     n:AddInput({Name = "Parte personalizada (opcional)", Flag = "hbn_custom", Default = "", Placeholder = "Vazio = usa a parte do corpo acima"})
-    n:AddLabel("Só preencha se a hitbox do NPC for outra parte (nome ou caminho dentro do NPC, ex.: Hitbox ou Corpo.Hitbox). Se deixar vazio, usa a parte do corpo escolhida acima (padrão HumanoidRootPart).")
     n:AddSlider({Name = "Tamanho", Flag = "hbn_size", Min = 2, Max = 500, Default = 20, Step = 1})
     n:AddSlider({Name = "Transparência", Flag = "hbn_transp", Min = 0, Max = 100, Default = 50, Step = 1, Suffix = "%"})
 
@@ -5400,7 +5446,7 @@ do
             restoreAll(storeP)
         end
 
-        if F.hbn_on and trim(F.hbn_dir) ~= "" then
+        if F.hbn_on then
             local wanted = {}
             local custom = trim(F.hbn_custom)
             for _, m in ipairs(getNPCs(F.hbn_dir)) do
@@ -5429,9 +5475,6 @@ do
         elseif next(storeN) then
             restoreAll(storeN)
         end
-        if F.hbn_on and trim(F.hbn_dir) == "" then
-            Mon.tick("hbn", "informe a pasta de NPCs", true)
-        end
     end, {"hb", "hbn"})
 
     Win:OnDestroy(function()
@@ -5451,7 +5494,6 @@ do
     s:AddToggle({Name = "XRay Colorido", Flag = "esp_xray", Default = false})
     s:AddToggle({Name = "ESP Assassino (papéis)", Flag = "esp_role", Default = false})
     s:AddToggle({Name = "Team Check (ignorar aliados)", Flag = "esp_team", Default = true, Feature = false})
-    s:AddLabel("Papéis: detectados pelo nome das Tools do jogador (faca/adaga/espada = assassino, arma = xerife, o resto = inocente). Só funciona em jogos que expõem isso.")
 
     local c = tabVisual:AddSection("Chams")
     c:AddToggle({Name = "Chams", Flag = "chams_on", Default = false})
@@ -5707,6 +5749,11 @@ do
     local s = tabVisual:AddSection("ESP Objetos e NPCs")
     local espoDirBox = s:AddInput({Name = "Diretório", Flag = "espo_dir", Default = "", Placeholder = "Ex.: Workspace.Itens", PathHistory = true})
     s:AddTempDropdown({Name = "📂 Diretórios usados", Input = espoDirBox, Multi = true})
+    s:AddButton({Name = "🔷 Seletor de objeto", Callback = function()
+        if Win.OpenObjectPicker then
+            Win.OpenObjectPicker("esp")
+        end
+    end})
     s:AddToggle({Name = "ESP de objetos / itens / modelos", Flag = "espo_on", Default = false})
     s:AddColorPicker({Name = "Cor do destaque", Flag = "espo_color", Default = "80, 220, 255"})
 
@@ -5801,7 +5848,7 @@ do
     end)
 
     local sp = tabVisual:AddSection("🎥 Espectador Universal")
-    local specDirBox = sp:AddInput({Name = "Diretório dos NPCs", Flag = "spec_dir", Default = "", Placeholder = "Ex.: Workspace.NPCs", PathHistory = true})
+    local specDirBox = sp:AddInput({Name = "Diretório dos NPCs", Flag = "spec_dir", Default = "", Placeholder = "Vazio = automático (todo o mapa)", PathHistory = true})
     sp:AddTempDropdown({Name = "📂 Diretórios usados", Input = specDirBox, Multi = true})
     local specIdx = 0
     local current
@@ -5970,7 +6017,6 @@ do
     s:AddSlider({Name = "Sensibilidade do giro", Flag = "cam_sens", Min = 0.2, Max = 3, Default = 1, Step = 0.1})
     s:AddToggle({Name = "Congelar personagem", Flag = "cam_freeze", Default = true, Feature = false})
     s:AddToggle({Name = "Esconder arma/braços da tela", Flag = "cam_vm", Default = true, Feature = false})
-    s:AddLabel("Joystick move para onde você olha, arrastar a tela gira. PC: WASD, E sobe, Q desce, botão direito gira.")
 
     local bound = false
     local yaw, pitch, pos = 0, 0, Vector3.new()
@@ -6261,7 +6307,6 @@ do
         end,
     })
     s:AddToggle({Name = "Atalho Shift (PC)", Flag = "sl_key", Default = true, Feature = false})
-    s:AddLabel("Toque curto no botão liga/desliga; arraste para mudar de lugar.")
 
     connect(LocalPlayer.CharacterAdded, function(char)
         if not enabled then
@@ -6381,7 +6426,6 @@ do
 
     local u = tabVisual:AddSection("🚫 Anti Interface")
     u:AddToggle({Name = "Fechar telas de compra / tela cheia", Flag = "antiui", Default = false})
-    u:AddLabel("Fecha janelas que cobrem mais de 70% da tela (ex.: pop-ups de compra). Ao desligar, elas voltam.")
 
     local stored = {}
     local lightProps = {"Brightness", "ClockTime", "FogEnd", "FogStart", "GlobalShadows", "Ambient", "OutdoorAmbient"}
@@ -6656,7 +6700,7 @@ do
             notify("FX Clean", (removedCount - before) .. " efeito(s) apagado(s) do Workspace.", "success")
         end)
     end})
-    fxs:AddLabel("Apaga de vez (sem restauração) partículas, trails, beams, fumaça, fogo, luzes e efeitos de tela em todas as pastas do Workspace, inclusive os escondidos ou desligados. O que for apagado não volta.")
+    fxs:AddLabel("⚠️ Apaga os efeitos de vez, não volta.")
 
     Win:Track(Workspace.DescendantAdded:Connect(function(inst)
         if fxOn then
@@ -6790,13 +6834,142 @@ do
 end
 
 do
+    -- ================= Detectar pasta de NPCs (chegando perto do NPC) =================
+    -- Acha a pasta onde o NPC está, destaca ele por 3 s e preenche os campos de pasta de NPCs.
+    -- Não mexe em campos de peça específica (ex.: parte personalizada da hitbox).
+    local DIR_FLAGS = {"fn_dir", "pn_dir", "aimn_dir", "hbn_dir", "spec_dir", "ev_npc_dir"}
+    local FLASH_TIME = 3
+    local known = {}
+
+    local function rootOf(m)
+        return m:FindFirstChild("HumanoidRootPart") or m.PrimaryPart or m:FindFirstChildWhichIsA("BasePart")
+    end
+
+    local function nearestNPC(maxDist)
+        local me = getRoot()
+        if not me then
+            return nil
+        end
+        local best, bestD = nil, maxDist
+        for _, m in ipairs(getNPCs("")) do
+            if isAlive(m) then
+                local r = rootOf(m)
+                if r then
+                    local d = (r.Position - me.Position).Magnitude
+                    if d <= bestD then
+                        best, bestD = m, d
+                    end
+                end
+            end
+        end
+        return best
+    end
+
+    local function flash(model, text)
+        local hl = new("Highlight", {
+            Adornee = model, FillColor = Color3.fromRGB(60, 255, 140), FillTransparency = 0.45,
+            OutlineColor = Color3.new(1, 1, 1), DepthMode = Enum.HighlightDepthMode.AlwaysOnTop,
+        }, ESPFolder)
+        local gui = new("BillboardGui", {
+            Adornee = model:FindFirstChild("Head") or rootOf(model), Size = UDim2.fromOffset(240, 44),
+            StudsOffset = Vector3.new(0, 3.6, 0), AlwaysOnTop = true, ResetOnSpawn = false,
+        }, ESPFolder)
+        new("TextLabel", {
+            Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, Text = text, Font = FONT_BOLD, TextSize = 14,
+            TextColor3 = Color3.fromRGB(80, 255, 150), TextStrokeTransparency = 0.3, TextWrapped = true,
+        }, gui)
+        task.delay(FLASH_TIME, function()
+            pcall(function()
+                hl:Destroy()
+            end)
+            pcall(function()
+                gui:Destroy()
+            end)
+        end)
+    end
+
+    local function fillDirs(path)
+        local replace = F.dirdet_replace == true
+        local changed = 0
+        for _, flag in ipairs(DIR_FLAGS) do
+            local el = Win.Elements[flag]
+            if el then
+                local cur = trim(F[flag])
+                local value
+                if cur == "" or replace then
+                    value = path
+                else
+                    local has = false
+                    for _, part in ipairs(splitDirs(cur)) do
+                        if part == path then
+                            has = true
+                        end
+                    end
+                    if not has then
+                        value = cur .. " | " .. path
+                    end
+                end
+                if value and value ~= cur then
+                    pcall(el.Set, el, value, false)
+                    changed = changed + 1
+                end
+            end
+        end
+        return changed
+    end
+
+    local function detect(manual)
+        local model = nearestNPC(manual and math.huge or (F.dirdet_dist or 15))
+        if not model then
+            if manual then
+                notify("Pasta de NPCs", "Nenhum NPC vivo encontrado.", "warning")
+            end
+            return
+        end
+        local parent = model.Parent
+        if not parent or parent == Workspace then
+            flash(model, model.Name .. " (solto no Workspace)")
+            if manual or not known.__ws then
+                known.__ws = true
+                notify("Pasta de NPCs", "Esse NPC está solto direto no Workspace: não há pasta. Deixe os campos vazios (modo automático).", "info")
+            end
+            return
+        end
+        local path = parent:GetFullName()
+        if not manual and known[path] then
+            return
+        end
+        known[path] = true
+        flash(model, model.Name .. "\n📂 " .. path)
+        local n = fillDirs(path)
+        notify("Pasta de NPCs", path .. (n > 0 and (" · " .. n .. " campo(s) preenchido(s)") or " · campos já tinham essa pasta"), "success")
+    end
+
+    local s = tabFarm:AddSection("📍 Detectar pasta de NPCs")
+    s:AddToggle({Name = "Detectar ao chegar perto", Flag = "dirdet_on", Default = false, Feature = false})
+    s:AddSlider({Name = "Distância", Flag = "dirdet_dist", Min = 5, Max = 80, Default = 15, Step = 1, Suffix = " studs"})
+    s:AddToggle({Name = "Substituir em vez de adicionar", Flag = "dirdet_replace", Default = false, Feature = false})
+    s:AddButton({Name = "Detectar o NPC mais próximo agora", Callback = function()
+        detect(true)
+    end})
+    task.spawn(function()
+        while Win:IsAlive() do
+            task.wait(0.7)
+            if F.dirdet_on then
+                pcall(detect, false)
+            end
+        end
+    end)
+end
+
+do
     local s = tabFarm:AddSection("Farm NPCs")
     local selSet = {}
     local dd
 
     s:AddToggle({Name = "Ativar farm", Flag = "fn_on", Default = false})
     local fnDirBox = s:AddInput({
-        Name = "Diretório dos NPCs", Flag = "fn_dir", Default = "", Placeholder = "Ex.: Workspace.Mobs",
+        Name = "Diretório dos NPCs", Flag = "fn_dir", Default = "", Placeholder = "Vazio = automático (todo o mapa)",
         PathHistory = true,
         Callback = function()
             refreshMulti(dd, "NPC")
@@ -6834,11 +7007,6 @@ do
             target = nil
             return
         end
-        if trim(F.fn_dir) == "" then
-            target = nil
-            Mon.tick("fn", "informe a pasta de NPCs", true)
-            return
-        end
         local myRoot = getRoot()
         if not myRoot or not isAlive(LocalPlayer.Character) then
             Mon.tick("fn", "aguardando o personagem (respawn)", true)
@@ -6867,10 +7035,9 @@ do
     local selSet = {}
     local dd
 
-    s:AddLabel("Traz os NPCs da pasta até você.")
     s:AddToggle({Name = "Ativar puxar NPCs", Flag = "pn_on", Default = false})
     local pnDirBox = s:AddInput({
-        Name = "Diretório dos NPCs", Flag = "pn_dir", Default = "", Placeholder = "Ex.: Workspace.Mobs",
+        Name = "Diretório dos NPCs", Flag = "pn_dir", Default = "", Placeholder = "Vazio = automático (todo o mapa)",
         PathHistory = true,
         Callback = function()
             refreshMulti(dd, "NPC")
@@ -6906,10 +7073,6 @@ do
 
     connect(RunService.Heartbeat, function()
         if not F.pn_on then
-            return
-        end
-        if trim(F.pn_dir) == "" then
-            Mon.tick("pull", "informe a pasta de NPCs", true)
             return
         end
         local myRoot = getRoot()
@@ -7037,6 +7200,11 @@ do
         end,
     })
     s:AddTempDropdown({Name = "📂 Diretórios usados", Input = fiDirBox, Multi = true})
+    s:AddButton({Name = "🔷 Seletor de objeto", Callback = function()
+        if Win.OpenObjectPicker then
+            Win.OpenObjectPicker("fi")
+        end
+    end})
     s:AddToggle({Name = "Coletar Todos os Itens", Flag = "fi_all", Default = false, Feature = false})
     dd = s:AddMultiDropdown({
         Name = "Itens específicos", Flag = "fi_sel", Source = itemNames,
@@ -7138,7 +7306,6 @@ do
     s:AddToggle({Name = "Sem caminho: ir em linha reta", Flag = "nav_fallback", Default = true, Feature = false})
     s:AddSlider({Name = "Espaçamento dos pontos", Flag = "nav_spacing", Min = 2, Max = 20, Default = 6, Step = 1, Suffix = " studs"})
     s:AddSlider({Name = "Raio do agente", Flag = "nav_radius", Min = 1, Max = 6, Default = 2, Step = 0.5, Suffix = " studs"})
-    s:AddLabel("Vale para o Farm de Itens e a Perseguição Tween. Ligado, o personagem segue os pontos calculados pelo PathfindingService em vez de uma linha reta.")
 end
 
 Win:OnDestroy(function()
@@ -7157,7 +7324,6 @@ do
     f:AddToggle({Name = "Voo", Flag = "fly_on", Default = false})
     f:AddToggle({Name = "Mostrar barra de Fly", Flag = "flybar_show", Default = true, Feature = false})
     f:AddSlider({Name = "Velocidade de voo", Flag = "fly_speed", Min = 1, Max = 1000, Default = 60, Step = 1})
-    f:AddLabel("Celular: use os botões SOBE / DESCE que aparecem na tela com o voo ligado. PC: Espaço sobe, Shift/Ctrl desce.")
     f:AddToggle({Name = "AntiVoid (voltar ao último ponto seguro)", Flag = "antivoid", Default = false})
     f:AddToggle({Name = "Alterar gravidade do mapa", Flag = "grav_on", Default = false})
     f:AddSlider({Name = "Gravidade", Flag = "grav", Min = 0, Max = 196, Default = 196, Step = 1})
@@ -7503,23 +7669,439 @@ end
 local Actions = {}
 
 do
+    local MARK_COLOR = Color3.fromRGB(130, 210, 255)
+    local TARGETS = {
+        ia = {dirs = {"ia_dir"}, sels = {"ia_sel"}, method = true},
+        esp = {dirs = {"espo_dir"}, sels = {}},
+        fi = {dirs = {"fi_dir"}, sels = {}},
+        tp = {dirs = {"tp_dir"}, sels = {"tp_sel"}},
+    }
+    local target = TARGETS.ia
+    local PANEL_W, PANEL_H = 232, 178
+    local NO_SELECTION = "Nenhum objeto selecionado."
+
+    local armed, busy = false, false
+    local conns = {}
+    local markUnit, markBox = nil, nil
+    local panel = nil
+
+    local function setInfo(text)
+        if panel and panel.info then
+            panel.info.Text = text
+        end
+    end
+
+    local function refreshSelBtn()
+        if not panel then
+            return
+        end
+        if armed then
+            panel.selBtn.BackgroundColor3 = Color3.fromRGB(190, 55, 65)
+        else
+            panel.selBtn.BackgroundColor3 = Theme.Element
+        end
+    end
+
+    local function disarm()
+        armed = false
+        for _, c in ipairs(conns) do
+            pcall(function()
+                c:Disconnect()
+            end)
+        end
+        conns = {}
+        refreshSelBtn()
+    end
+
+    local function clearOutline()
+        if markBox then
+            pcall(function()
+                markBox:Destroy()
+            end)
+            markBox = nil
+        end
+    end
+
+    local function showOutline(unit)
+        clearOutline()
+        local size = 10
+        if unit:IsA("BasePart") then
+            size = unit.Size.Magnitude
+        else
+            local ok, ext = pcall(function()
+                return unit:GetExtentsSize()
+            end)
+            if ok then
+                size = ext.Magnitude
+            end
+        end
+        markBox = new("SelectionBox", {
+            Adornee = unit, Color3 = MARK_COLOR, SurfaceTransparency = 1,
+            LineThickness = math.clamp(size * 0.006, 0.04, 0.3),
+        }, ESPFolder)
+    end
+
+    local function scan(unit)
+        local k = {pp = 0, cd = 0, ti = 0}
+        local list = unit:GetDescendants()
+        list[#list + 1] = unit
+        for i = 1, math.min(#list, 800) do
+            local cn = list[i].ClassName
+            if cn == "ProximityPrompt" then
+                k.pp = k.pp + 1
+            elseif cn == "ClickDetector" then
+                k.cd = k.cd + 1
+            elseif cn == "TouchTransmitter" then
+                k.ti = k.ti + 1
+            end
+        end
+        return k
+    end
+
+    local function hasKind(k)
+        return k.pp + k.cd + k.ti > 0
+    end
+
+    local function pickUnit(part)
+        local unit = part
+        local par = part.Parent
+        while par and par ~= Workspace and par:IsA("Model") do
+            local ok, size = pcall(function()
+                return par:GetExtentsSize()
+            end)
+            if ok and size.Magnitude <= 80 and not par:FindFirstChildOfClass("Humanoid") then
+                unit = par
+                par = par.Parent
+            else
+                break
+            end
+        end
+        return unit
+    end
+
+    local function findNear(pos, radius)
+        local best, bestD = nil, radius
+        local n = 0
+        for _, d in ipairs(Workspace:GetDescendants()) do
+            n = n + 1
+            if n % 4000 == 0 then
+                task.wait()
+            end
+            local cn = d.ClassName
+            if cn == "ProximityPrompt" or cn == "ClickDetector" or cn == "TouchTransmitter" then
+                local host = d.Parent
+                if host and not host:IsA("BasePart") then
+                    host = d:FindFirstAncestorWhichIsA("BasePart")
+                end
+                if host and host:IsA("BasePart") then
+                    local dist = (host.Position - pos).Magnitude
+                    if dist <= bestD then
+                        best, bestD = host, dist
+                    end
+                end
+            end
+        end
+        return best
+    end
+
+    local function setEl(flag, value)
+        local el = Win.Elements[flag]
+        if el then
+            pcall(el.Set, el, value, false)
+        end
+    end
+
+    local function fillDirs(path, forceReplace)
+        local replace = forceReplace == true or F.dirdet_replace == true
+        for _, flag in ipairs(target.dirs) do
+            local cur = trim(F[flag])
+            local value
+            if cur == "" or replace then
+                value = path
+            else
+                local has = false
+                for _, part in ipairs(splitDirs(cur)) do
+                    if part == path then
+                        has = true
+                    end
+                end
+                if not has then
+                    value = cur .. " | " .. path
+                end
+            end
+            if value and value ~= cur then
+                setEl(flag, value)
+            end
+        end
+    end
+
+    local function selectObject(name, forceReplace)
+        for _, flag in ipairs(target.sels) do
+            local el = Win.Elements[flag]
+            if el then
+                pcall(el.Refresh, el)
+                local list = {name}
+                if not (forceReplace == true or F.dirdet_replace == true) then
+                    local ok, cur = pcall(el.Get, el)
+                    if ok and type(cur) == "table" then
+                        list = {}
+                        local has = false
+                        for _, n in ipairs(cur) do
+                            list[#list + 1] = n
+                            if n == name then
+                                has = true
+                            end
+                        end
+                        if not has then
+                            list[#list + 1] = name
+                        end
+                    end
+                end
+                pcall(el.Set, el, list)
+            end
+        end
+    end
+
+    local function applyMark(unit, kinds, forceReplace)
+        markUnit = unit
+        showOutline(unit)
+        local parts = {}
+        if kinds.pp > 0 then
+            parts[#parts + 1] = "Prompt ×" .. kinds.pp
+        end
+        if kinds.cd > 0 then
+            parts[#parts + 1] = "Click ×" .. kinds.cd
+        end
+        if kinds.ti > 0 then
+            parts[#parts + 1] = "Toque ×" .. kinds.ti
+        end
+        local what = #parts > 0 and table.concat(parts, " · ") or "sem prompt/click/toque visível"
+        local parent = unit.Parent
+        if not parent or parent == Workspace or parent == game then
+            setInfo("🔷 " .. unit.Name .. "\n" .. what .. "\nSolto no Workspace: pasta não preenchida.")
+            notify("Seletor de objeto", unit.Name .. " está solto direto no Workspace: não preenchi pasta.", "warning")
+            return
+        end
+        local path = parent:GetFullName()
+        setInfo("🔷 " .. unit.Name .. "\n" .. what .. "\n📂 " .. path)
+        fillDirs(path, forceReplace)
+        if target.method then
+            if kinds.pp > 0 then
+                setEl("ia_method", "ProximityPrompt")
+            elseif kinds.cd > 0 then
+                setEl("ia_method", "ClickDetector")
+            elseif kinds.ti > 0 then
+                setEl("ia_method", "Toque (TouchInterest)")
+            end
+        end
+        selectObject(unit.Name, forceReplace)
+        notify("Seletor de objeto", unit.Name .. " · " .. what .. "\n📂 " .. path, "success")
+    end
+
+    local function tap(pos)
+        if busy or not armed then
+            return
+        end
+        busy = true
+        local ok, err = pcall(function()
+            local cam = Workspace.CurrentCamera
+            if not cam then
+                return
+            end
+            local params = RaycastParams.new()
+            params.FilterType = Enum.RaycastFilterType.Exclude
+            local ex = {}
+            if LocalPlayer.Character then
+                ex[1] = LocalPlayer.Character
+            end
+            params.FilterDescendantsInstances = ex
+            local ray = cam:ScreenPointToRay(pos.X, pos.Y)
+            local res = Workspace:Raycast(ray.Origin, ray.Direction * 3000, params)
+            if not res then
+                notify("Seletor de objeto", "O toque não atingiu nada. Toque no objeto de novo.", "warning")
+                return
+            end
+            local part = res.Instance
+            if part:IsA("Terrain") then
+                part = nil
+            end
+            local unit, kinds
+            if part then
+                unit = pickUnit(part)
+                kinds = scan(unit)
+            end
+            if not unit or not hasKind(kinds) then
+                local host = findNear(res.Position, 12)
+                if host then
+                    unit = pickUnit(host)
+                    kinds = scan(unit)
+                end
+            end
+            if not unit then
+                notify("Seletor de objeto", "Você tocou no terreno. Toque em um objeto.", "warning")
+                return
+            end
+            disarm()
+            applyMark(unit, kinds, false)
+        end)
+        busy = false
+        if not ok then
+            warn("[RN TEAM] seletor de objeto: " .. tostring(err))
+        end
+    end
+
+    local function arm()
+        disarm()
+        armed = true
+        refreshSelBtn()
+        conns[1] = UserInputService.TouchTapInWorld:Connect(function(pos, processed)
+            if not processed then
+                task.spawn(tap, pos)
+            end
+        end)
+        conns[2] = UserInputService.InputBegan:Connect(function(input, processed)
+            if not processed and input.UserInputType == Enum.UserInputType.MouseButton1 then
+                task.spawn(tap, Vector2.new(input.Position.X, input.Position.Y))
+            end
+        end)
+    end
+
+    local function climb()
+        local u = markUnit
+        local par = u and u.Parent
+        if par and par ~= Workspace and par:IsA("Model") then
+            applyMark(par, scan(par), true)
+        else
+            notify("Seletor de objeto", "Não há um objeto maior acima deste.", "warning")
+        end
+    end
+
+    local function closePanel()
+        disarm()
+        clearOutline()
+        markUnit = nil
+        if panel then
+            local card = panel.card
+            panel = nil
+            pcall(function()
+                card:Destroy()
+            end)
+        end
+    end
+
+    local function openPanel(kind)
+        target = TARGETS[kind] or target
+        if panel then
+            if MainFrame.Visible then
+                Win:SetVisible(false)
+            end
+            return
+        end
+        local card = new("Frame", {
+            Name = "RN_ObjectPicker", Size = UDim2.fromOffset(PANEL_W, PANEL_H), BackgroundColor3 = Theme.Surface,
+            BorderSizePixel = 0, Active = true, ZIndex = 6,
+        }, Root)
+        corner(card, 10)
+        stroke(card, MARK_COLOR, 1.5)
+        local handle = new("TextButton", {
+            Position = UDim2.fromOffset(6, 6), Size = UDim2.fromOffset(PANEL_W - 52, 28), BackgroundColor3 = Theme.Element,
+            AutoButtonColor = false, Text = "🔷 Seletor de objeto", Font = FONT_BOLD, TextSize = 12,
+            TextColor3 = Theme.Text, ZIndex = 7,
+        }, card)
+        corner(handle, 8)
+        local close = new("TextButton", {
+            Position = UDim2.fromOffset(PANEL_W - 40, 6), Size = UDim2.fromOffset(34, 28),
+            BackgroundColor3 = Color3.fromRGB(150, 50, 60), Text = "X", Font = FONT_BOLD, TextSize = 13,
+            TextColor3 = Color3.new(1, 1, 1), ZIndex = 7,
+        }, card)
+        corner(close, 8)
+        local selBtn = new("TextButton", {
+            Position = UDim2.fromOffset(6, 40), Size = UDim2.fromOffset(PANEL_W - 12, 36), BackgroundColor3 = Theme.Element,
+            Text = "👆 Tocar para selecionar", Font = FONT_BOLD, TextSize = 12, TextColor3 = Theme.Text, TextWrapped = true, ZIndex = 7,
+        }, card)
+        corner(selBtn, 8)
+        local info = new("TextLabel", {
+            Position = UDim2.fromOffset(8, 82), Size = UDim2.fromOffset(PANEL_W - 16, 58), BackgroundTransparency = 1,
+            Text = NO_SELECTION, Font = FONT, TextSize = 12, TextColor3 = Theme.SubText, TextWrapped = true,
+            TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top, ZIndex = 7,
+        }, card)
+        local half = (PANEL_W - 18) / 2
+        local parentBtn = new("TextButton", {
+            Position = UDim2.fromOffset(6, 144), Size = UDim2.fromOffset(half, 28), BackgroundColor3 = Theme.Element,
+            Text = "⬆ Objeto pai", Font = FONT_BOLD, TextSize = 11, TextColor3 = Theme.Text, ZIndex = 7,
+        }, card)
+        corner(parentBtn, 8)
+        local clearBtn = new("TextButton", {
+            Position = UDim2.fromOffset(12 + half, 144), Size = UDim2.fromOffset(half, 28), BackgroundColor3 = Theme.Element,
+            Text = "🧹 Limpar", Font = FONT_BOLD, TextSize = 11, TextColor3 = Theme.Text, ZIndex = 7,
+        }, card)
+        corner(clearBtn, 8)
+
+        panel = {card = card, selBtn = selBtn, info = info}
+        refreshSelBtn()
+
+        selBtn.MouseButton1Click:Connect(function()
+            if armed then
+                disarm()
+            else
+                arm()
+            end
+        end)
+        parentBtn.MouseButton1Click:Connect(climb)
+        clearBtn.MouseButton1Click:Connect(function()
+            clearOutline()
+            markUnit = nil
+            setInfo(NO_SELECTION)
+        end)
+        close.MouseButton1Click:Connect(closePanel)
+
+        local pos = {x = Win._viewport().X * 0.5 - PANEL_W / 2, y = 8}
+        pos.x, pos.y = Win._place(card, pos.x, pos.y, Vector2.new(PANEL_W, PANEL_H))
+        Win._makeDraggable(handle, card, pos, function()
+            return card.AbsoluteSize
+        end, nil, nil)
+
+        if MainFrame.Visible then
+            Win:SetVisible(false)
+        end
+    end
+
+    Win.OpenObjectPicker = openPanel
+    Win:OnDestroy(closePanel)
+end
+
+do
     local s = tabMisc:AddSection("🔌 Interação Automática")
     local selSet = {}
     local dd
+    local tpSet = {}
+    local tpDd
     local tpIndex = 0
 
-    local function objectList(onlySelected)
-        local dirs = resolveDirs(F.ia_dir)
+    local function objectListFrom(dirValue, onlySet)
+        local dirs = resolveDirs(dirValue)
         local out = {}
         if #dirs > 0 then
             for _, o in ipairs(childrenOf(dirs)) do
                 local isRemote = o:IsA("RemoteEvent") or o:IsA("RemoteFunction")
                 if (o:IsA("Model") or o:IsA("BasePart") or isRemote) and (isRemote or posOf(o)) then
-                    if not onlySelected or selSet[o.Name] then
+                    if not onlySet or onlySet[o.Name] then
                         table.insert(out, o)
                     end
                 end
             end
+        end
+        return out
+    end
+
+    local function objectList(onlySelected)
+        return objectListFrom(F.ia_dir, onlySelected and selSet or nil)
+    end
+
+    local function tpObjectNames()
+        local out = {}
+        for _, o in ipairs(objectListFrom(F.tp_dir, nil)) do
+            out[#out + 1] = o.Name
         end
         return out
     end
@@ -7637,7 +8219,7 @@ do
     end
 
     function Actions.tpOnce()
-        local list = objectList(true)
+        local list = objectListFrom(F.tp_dir, tpSet)
         if #list == 0 then
             Mon.tick("ia_tp", "nenhum objeto selecionado", true)
             return
@@ -7672,6 +8254,11 @@ do
         end,
     })
     s:AddTempDropdown({Name = "📂 Diretórios usados", Input = iaDirBox, Multi = true})
+    s:AddButton({Name = "🔷 Seletor de objeto", Callback = function()
+        if Win.OpenObjectPicker then
+            Win.OpenObjectPicker("ia")
+        end
+    end})
     s:AddDropdown({
         Name = "Método de interação", Flag = "ia_method",
         Options = {"ProximityPrompt", "ClickDetector", "Toque (TouchInterest)", "RemoteEvent (FireServer)", "RemoteFunction (InvokeServer)"},
@@ -7707,19 +8294,41 @@ do
     s:AddInput({Name = "Intervalo dos loops (s)", Flag = "ia_interval", Default = 0.5, Numeric = true, Min = -1, Max = 3600})
 
     local c = tabMisc:AddSection("🧺 Coleta de Itens")
-    c:AddLabel("Usa o diretório e o método do card Interação Automática.")
     c:AddButton({Name = "Coletar itens do diretório", Callback = function()
         task.spawn(Actions.collectOnce)
     end})
     loopToggle(c, "Loop de coleta", "ia_loop_collect", "ia_collect", Actions.collectOnce)
 
     local t = tabMisc:AddSection("🎯 Teleporte p/ Objetos")
-    t:AddLabel("Vai para os objetos marcados em Objetos selecionados.")
+    local tpDirBox = t:AddInput({
+        Name = "Diretório dos objetos", Flag = "tp_dir", Default = "", Placeholder = "Ex.: Workspace.Coletaveis",
+        PathHistory = true,
+        Callback = function()
+            refreshMulti(tpDd, "objeto")
+        end,
+    })
+    t:AddTempDropdown({Name = "📂 Diretórios usados", Input = tpDirBox, Multi = true})
+    t:AddButton({Name = "🔷 Seletor de objeto", Callback = function()
+        if Win.OpenObjectPicker then
+            Win.OpenObjectPicker("tp")
+        end
+    end})
+    tpDd = t:AddMultiDropdown({
+        Name = "Objetos selecionados", Flag = "tp_sel", Source = tpObjectNames,
+        Callback = function(v)
+            tpSet = toSet(v)
+        end,
+    })
+    tpSet = toSet(tpDd:Get())
+    t:AddButton({Name = "Atualizar lista de objetos", Callback = function()
+        refreshMulti(tpDd, "objeto")
+    end})
     t:AddButton({Name = "Teleportar p/ objeto selecionado", Callback = Actions.tpOnce})
     loopToggle(t, "Loop de teleporte", "ia_loop_tp", "ia_tp", Actions.tpOnce)
 
     task.defer(function()
         dd:Refresh()
+        tpDd:Refresh()
     end)
 end
 
@@ -7988,7 +8597,6 @@ do
         sh:AddSlider({Name = "Páginas de servidores (100 cada)", Flag = "hop_pages", Min = 1, Max = 10, Default = 3, Step = 1})
         sh:AddSlider({Name = "Mínimo de jogadores", Flag = "hop_min", Min = 0, Max = 20, Default = 1, Step = 1})
         sh:AddToggle({Name = "Pular servidores visitados há pouco", Flag = "hop_skip", Default = true, Feature = false})
-        sh:AddLabel("Lista os servidores públicos do jogo, escolhe o de menor população e tenta até 5 em caso de falha. Mais páginas = mais chance de achar um vazio, mas mais requisições.")
     end
 
     local info = tabMisc:AddSection("ℹ️ Informações do Jogador")
@@ -8392,8 +9000,8 @@ do
 
         local function refreshSetBtn()
             if capture then
-                setBtn.Text = "✖ CANCELAR"
-                setBtn.BackgroundColor3 = Color3.fromRGB(150, 50, 60)
+                setBtn.Text = "🎯 SET ALVO"
+                setBtn.BackgroundColor3 = Color3.fromRGB(190, 55, 65)
             elseif target then
                 setBtn.Text = "✅ TRAVADO"
                 setBtn.BackgroundColor3 = Theme.Element
@@ -8463,7 +9071,7 @@ do
             capture = new("TextButton", {
                 Name = "RN_AutoClickCapture", Size = UDim2.fromScale(1, 1), BackgroundColor3 = Color3.new(0, 0, 0),
                 BackgroundTransparency = 0.7, AutoButtonColor = false, Active = true, ZIndex = 3,
-                Text = "Toque no ponto onde o clique deve acontecer\n(pode ser em cima de qualquer botão)",
+                Text = "",
                 Font = FONT_BOLD, TextSize = 16, TextWrapped = true, TextColor3 = Color3.new(1, 1, 1),
             }, Root)
 
@@ -8594,8 +9202,6 @@ do
             floats[id] = nil
         end
     end})
-    s:AddLabel("Com o menu fechado os botões ficam travados (só clicam). Abra o menu para reposicioná-los.")
-    s:AddLabel("🎯 Auto Click: crie o botão, toque em ⚙️ → SET ALVO e toque no ponto da tela (pode ser em cima de botão do jogo). Depois toque no botão para ligar/desligar. No celular, escolha um ponto do lado direito para não pegar o joystick. Se o clique não funcionar, troque o Modo em ⚙️ (Mouse / Toque / Ambos).")
 end
 
 do
@@ -9584,7 +10190,6 @@ do
                 end)
             end
         end})
-        pre:AddLabel("A música é baixada só na primeira vez; depois toca direto do arquivo.")
 
         scan()
     end
@@ -10083,7 +10688,6 @@ do
             hud.Visible = on == true
         end,
     })
-    ov:AddLabel("FPS e ping ficam fixos no canto inferior esquerdo da tela (não se movem e não atrapalham o toque).")
 
     task.spawn(function()
         while Win:IsAlive() do
@@ -10604,7 +11208,6 @@ do
         drawRoute(nil)
         notify("Gravador", saved and ("Rota " .. n .. " apagada.") or ("Rota " .. n .. " apagada da memória (arquivo não gravado)."), saved and "success" or "warning")
     end})
-    rs:AddLabel("O replay segue o tempo, a posição e a orientação gravados (atravessa paredes). Ficar parado não gasta memória.")
 
     connect(RunService.Heartbeat, function()
         if not rec then
@@ -10737,7 +11340,6 @@ do
         slotOptions[#slotOptions + 1] = "Slot " .. i
     end
     rx:AddDropdown({Name = "Reexecutar também o slot do Executor", Flag = "reexec_slot", Options = slotOptions, Default = "Nenhum"})
-    rx:AddLabel("Ligado: o RN TEAM se executa sozinho ao entrar no próximo servidor.")
 
     local RN_DEFAULT_URL = "https://raw.githubusercontent.com/RN-TEAM-2758/MENU-UNIVERSAL-RN/refs/heads/main/script.js"
 
@@ -10860,7 +11462,6 @@ do
     local EI = {}
 
     local main = tabRemote:AddSection("⚡ Evento / Remote", true)
-    main:AddLabel("Fluxo: EVENTO → CONFIGURAÇÕES → SELEÇÃO DOS ALVOS → GERAÇÃO DOS ARGUMENTOS → EXECUÇÃO. Os argumentos são montados a cada disparo, na ordem em que você os marcar. Limite de segurança: no máximo " .. MAX_FIRES_PER_SECOND .. " disparos por segundo.")
 
     local sEvent = main:AddSubSection("🔌 EVENTO / REMOTE", false)
     local sTargets = main:AddSubSection("🎯 ALVOS", false)
@@ -11003,7 +11604,7 @@ do
     local sN = sTargets:AddSubSection("🧟 NPCs", false)
     local npcDd
     sN:AddInput({
-        Name = "Pasta de NPCs", Flag = "ev_npc_dir", Default = "", Placeholder = "Ex.: Workspace.NPCs",
+        Name = "Pasta de NPCs", Flag = "ev_npc_dir", Default = "", Placeholder = "Vazio = automático (todo o mapa)",
         Callback = function()
             refreshMulti(npcDd, "NPC")
         end,
@@ -11062,7 +11663,6 @@ do
     })
     sArgs:AddInput({Name = "Texto fixo", Flag = "ev_text", Default = "", Placeholder = 'Ex.: slash'})
     sArgs:AddInput({Name = "Número fixo", Flag = "ev_number", Default = 0, Numeric = true, Min = -1e9, Max = 1e9})
-    sArgs:AddLabel("A ordem em que você marca vira a ordem dos argumentos (#1, #2...). Ex.: Character + Position envia (personagem do alvo, posição da parte de mira). Se um argumento não existir para um alvo, aquele alvo é pulado.")
 
     sPos:AddDropdown({
         Name = "Parte de mira", Flag = "ev_aim_part", Options = {"HumanoidRootPart", "Head", "Torso", "UpperTorso"},
@@ -13873,7 +14473,6 @@ do
                     p.follow = on
                 end,
             })
-            panel:AddLabel("'Seguir' usa o último valor observado nos argumentos que você não editou (somente se o tipo for o mesmo). Desligado, vale o valor original colado.")
             for _, s in ipairs(p.slots) do
                 addSlotControls(p, s)
             end
@@ -14121,7 +14720,6 @@ do
             end,
         })
         ui.status = sec:AddLabel("Desativado. O modo manual continua funcionando normalmente; nada é analisado nem monitorado.")
-        sec:AddLabel("🧲 MODO SÓ CAMINHO: informe apenas o caminho do evento. O Event Intelligence passa a observar esse evento e aprende os argumentos sozinho na 1ª chamada real do jogo (use o item/faça a ação uma vez). Não precisa colar nada do RSpy. Se a Tool estiver no Backpack ou no Character, ele acha nos dois.")
         local pathBox = sec:AddInput({
             Name = "Caminho do evento", Flag = "ev_ei_path", Default = "",
             Placeholder = "Players.LocalPlayer.Backpack.DefaultSlap.Event", Feature = false,
@@ -14131,8 +14729,6 @@ do
         sec:AddButton({Name = "🧲 Aprender só pelo caminho", Callback = function()
             learnByPath(pathBox:Get())
         end})
-        sec:AddLabel("Ou, se preferir, cole abaixo a chamada completa do RSpy.")
-        sec:AddLabel("Cole abaixo a chamada copiada do RSpy. O texto é apenas lido, nunca executado. O que não for reconhecido com segurança fica intacto e marcado para análise manual. Só são acompanhadas chamadas que o executor consegue observar.")
 
         local inputRow = sec:_row(150)
         local holder = new("ScrollingFrame", {
@@ -14265,7 +14861,6 @@ do
     s:AddToggle({Name = "Anti-AFK", Flag = "afk_on", Default = false})
     s:AddSlider({Name = "Intervalo mínimo (s)", Flag = "afk_min", Min = 10, Max = 300, Default = 30, Step = 5})
     s:AddSlider({Name = "Intervalo máximo (s)", Flag = "afk_max", Min = 10, Max = 600, Default = 90, Step = 5})
-    s:AddLabel("Evita a expulsão por inatividade. Além de reagir ao aviso de AFK do Roblox, faz uma ação leve em um intervalo sorteado entre o mínimo e o máximo, para não ficar um padrão fixo.")
 
     local rng = Random.new()
     local left = nil
@@ -14328,7 +14923,6 @@ do
     s:AddToggle({Name = "Remover sombras", Flag = "potato_shadows", Default = true, Feature = false})
     s:AddToggle({Name = "Remover texturas e materiais", Flag = "potato_textures", Default = true, Feature = false})
     s:AddToggle({Name = "Desligar partículas e efeitos de tela", Flag = "potato_effects", Default = true, Feature = false})
-    s:AddLabel("Deixa o jogo mais leve só para você. Diferente do FX Clean, nada é apagado: ao desligar, tudo volta ao que era. Em mapas grandes a primeira aplicação pode levar alguns segundos.")
 
     local rs
     pcall(function()
